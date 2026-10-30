@@ -53,6 +53,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="撮るモニターの番号（ddagrab の output_idx）。モニターが2枚以上で、映像と操作がずれるときに変える",
     )
     p.add_argument("--show-token", action="store_true", help="トークンを表示する")
+    p.add_argument(
+        "--control-stdin", action="store_true",
+        help="標準入力に stop の行が来るか、標準入力が閉じたら、後片付けをして止まる（管理画面から動かすとき）",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     return p.parse_args(argv)
 
@@ -101,10 +105,23 @@ async def run(args: argparse.Namespace) -> None:
             if created or args.show_token:
                 print(f"トークン: {settings.token}")
                 print(f"（{args.config} に保存してあります。他の人に見せないでください）")
-            await asyncio.Future()
+            await wait_for_stop(args.control_stdin)
     finally:
         # 持ってきたウィンドウを元に戻し、仮想ディスプレイを無効に戻す
         backend.shutdown()
+
+
+async def wait_for_stop(control_stdin: bool) -> None:
+    """止める合図まで待つ。control_stdin のときは、標準入力の stop の行か、標準入力が閉じたのを合図にする。
+    そうでなければ、Ctrl+C まで待つ。"""
+    if not control_stdin:
+        await asyncio.Future()
+        return
+    while True:
+        line = await asyncio.to_thread(sys.stdin.readline)
+        if not line or line.strip() == "stop":
+            print("止める合図を受け取りました")
+            return
 
 
 LOG_PATH = Path(__file__).resolve().parent.parent / "duo_server.log"
