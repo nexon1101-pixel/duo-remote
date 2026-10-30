@@ -39,7 +39,11 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            if session.isConnectedOrReconnecting {
+                Color.black.ignoresSafeArea()
+            } else {
+                backdrop
+            }
             if session.isConnectedOrReconnecting {
                 connectedView
             } else {
@@ -149,29 +153,37 @@ struct ContentView: View {
         .overlay(alignment: .topTrailing) { menu }
         .overlay(alignment: .top) {
             if let notice = session.notice {
-                Text(notice)
-                    .font(.callout)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(.regularMaterial, in: Capsule())
+                Label(notice, systemImage: "info.circle.fill")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .glass(in: Capsule())
                     .padding(.top, 8 + safeInsets.top)
-                    .padding(.horizontal, 60)
-                    .transition(.opacity)
+                    .padding(.horizontal, 64)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
         .overlay {
             if session.state == .reconnecting {
-                VStack(spacing: 12) {
+                VStack(spacing: 14) {
                     ProgressView()
+                        .controlSize(.large)
+                        .tint(.white)
                     Text("つなぎ直しています…")
+                        .font(.headline)
+                        .foregroundStyle(.white)
                     Button("やめる") { session.disconnect() }
-                        .buttonStyle(.bordered)
+                        .glassButton()
                 }
-                .padding(24)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                .padding(.horizontal, 32)
+                .padding(.vertical, 24)
+                .glass(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .transition(.scale(scale: 0.9).combined(with: .opacity))
             }
         }
-        .animation(.default, value: session.notice)
+        .animation(.spring(duration: 0.35), value: session.notice)
+        .animation(.spring(duration: 0.35), value: session.state)
         .sheet(isPresented: $showingWindows, onDismiss: { refocus += 1 }) {
             WindowPicker(fitSize: fitSize)
         }
@@ -226,17 +238,22 @@ struct ContentView: View {
             default: inputMode = keyboardKind == .software ? .software : .overlay
             }
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Image(systemName: inputMode == .software || inputMode == .overlay
                       ? "keyboard.chevron.compact.down" : inputMode.systemImage)
+                    .contentTransition(.symbolEffect(.replace))
                 if inputMode != .touch, let on = session.imeOn {
-                    Text(on ? "あ" : "A").font(.callout.bold())
+                    Text(on ? "あ" : "A")
+                        .font(.callout.bold())
+                        .frame(width: 22, height: 22)
+                        .background(on ? Color.accentColor : Color.white.opacity(0.2), in: Circle())
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .font(.body.weight(.semibold))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
             .foregroundStyle(.white)
-            .background(.black.opacity(0.5), in: Capsule())
+            .glass(in: Capsule(), interactive: true)
         }
         .padding(12)
         .padding(.trailing, safeInsets.trailing)
@@ -314,76 +331,183 @@ struct ContentView: View {
             }
             Button("切断", systemImage: "xmark.circle", role: .destructive) { session.disconnect() }
         } label: {
-            Image(systemName: "ellipsis.circle.fill")
-                .font(.title)
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(.white, .black.opacity(0.5))
+            Image(systemName: "ellipsis")
+                .glassCircle(size: 44)
                 .padding(12)
         }
         .padding(.top, safeInsets.top)
         .padding(.trailing, safeInsets.trailing)
     }
 
+    /// 接続の画面の背景。暗い色に、ぼかした光を2つ置く
+    private var backdrop: some View {
+        ZStack {
+            Color(red: 0.03, green: 0.04, blue: 0.09)
+            Circle()
+                .fill(Color.blue.opacity(0.45))
+                .frame(width: 420, height: 420)
+                .blur(radius: 120)
+                .offset(x: -140, y: -260)
+            Circle()
+                .fill(Color.purple.opacity(0.35))
+                .frame(width: 380, height: 380)
+                .blur(radius: 120)
+                .offset(x: 160, y: 280)
+        }
+        .ignoresSafeArea()
+    }
+
     private var connectForm: some View {
-        Form {
-            Section("接続先") {
-                TextField("ホスト（例: 100.x.x.x）", text: $host)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                TextField("ポート", text: $port)
-                    .keyboardType(.numberPad)
-                HStack {
-                    // 伏せ字のままだと、打ち間違いに気づけないので、目のボタンで表示を切り替える
-                    Group {
-                        if showToken {
-                            TextField("トークン", text: $token)
-                        } else {
-                            SecureField("トークン", text: $token)
+        ScrollView {
+            VStack(spacing: 24) {
+                header
+                    .padding(.top, 40)
+
+                card(title: "接続先", systemImage: "network") {
+                    field(systemImage: "server.rack") {
+                        TextField("ホスト（例: 100.x.x.x）", text: $host)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                    }
+                    Divider().overlay(Color.white.opacity(0.1))
+                    field(systemImage: "number") {
+                        TextField("ポート", text: $port)
+                            .keyboardType(.numberPad)
+                    }
+                    Divider().overlay(Color.white.opacity(0.1))
+                    field(systemImage: "key.fill") {
+                        // 伏せ字のままだと、打ち間違いに気づけないので、目のボタンで表示を切り替える
+                        Group {
+                            if showToken {
+                                TextField("トークン", text: $token)
+                            } else {
+                                SecureField("トークン", text: $token)
+                            }
+                        }
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.asciiCapable) // 日本語のキーボードで、全角の文字が入らないようにする
+                        .font(.body.monospaced())
+                        Button {
+                            showToken.toggle()
+                        } label: {
+                            Image(systemName: showToken ? "eye.slash" : "eye")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel(showToken ? "トークンを隠す" : "トークンを表示する")
+                    }
+                }
+
+                card(title: "画質", systemImage: "sparkles.tv") {
+                    Picker("画質", selection: $quality) {
+                        ForEach(VideoQuality.allCases) { q in
+                            Text(q.label).tag(q)
                         }
                     }
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.asciiCapable) // 日本語のキーボードで、全角の文字が入らないようにする
-                    .font(.body.monospaced())
-                    Button {
-                        showToken.toggle()
-                    } label: {
-                        Image(systemName: showToken ? "eye.slash" : "eye")
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel(showToken ? "トークンを隠す" : "トークンを表示する")
+                    .pickerStyle(.segmented)
+                    Text("外（4G/5G）からつなぐときは、低くすると遅れがたまりにくくなります")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
-            }
-            Section {
-                Picker("画質", selection: $quality) {
-                    ForEach(VideoQuality.allCases) { q in
-                        Text(q.label).tag(q)
-                    }
-                }
-            } footer: {
-                Text("外（4G/5G）からつなぐときは、低くすると遅れがたまりにくくなります")
-            }
-            Section {
-                Button(session.state == .connecting ? "接続しています…" : "接続") {
-                    // 貼り付けたときに付いてくる空白や、全角の英数字を直してから使う
-                    host = Self.cleaned(host)
-                    port = Self.cleaned(port)
-                    token = Self.cleaned(token)
-                    Keychain.save("token", token)
-                    session.setAudio(audioOn, mixWithOthers: audioMix)
-                    session.connect(host: host, port: Int(port) ?? 8765, token: token, quality: quality)
-                }
-                .disabled(host.isEmpty || token.isEmpty || session.state == .connecting)
-                if session.state == .connecting {
-                    Button("やめる", role: .cancel) { session.disconnect() }
-                }
+
                 if let message = session.errorMessage {
-                    Text(message).foregroundStyle(.red)
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(14)
+                        .glass(in: RoundedRectangle(cornerRadius: 16, style: .continuous), tint: .red)
+                        .transition(.opacity)
+                }
+
+                VStack(spacing: 10) {
+                    Button {
+                        // 貼り付けたときに付いてくる空白や、全角の英数字を直してから使う
+                        host = Self.cleaned(host)
+                        port = Self.cleaned(port)
+                        token = Self.cleaned(token)
+                        Keychain.save("token", token)
+                        session.setAudio(audioOn, mixWithOthers: audioMix)
+                        session.connect(host: host, port: Int(port) ?? 8765, token: token, quality: quality)
+                    } label: {
+                        HStack(spacing: 10) {
+                            if session.state == .connecting {
+                                ProgressView().tint(.white)
+                                Text("接続しています…")
+                            } else {
+                                Image(systemName: "bolt.horizontal.fill")
+                                Text("接続")
+                            }
+                        }
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                    }
+                    .glassButton(prominent: true)
+                    .controlSize(.large)
+                    .disabled(host.isEmpty || token.isEmpty || session.state == .connecting)
+
+                    if session.state == .connecting {
+                        Button("やめる", role: .cancel) { session.disconnect() }
+                            .glassButton()
+                    }
                 }
             }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 32)
+            .frame(maxWidth: 520)
+            .frame(maxWidth: .infinity)
+            .animation(.spring(duration: 0.35), value: session.errorMessage)
+            .animation(.spring(duration: 0.35), value: session.state)
         }
-        .scrollContentBackground(.hidden)
+        .scrollDismissesKeyboard(.interactively)
+    }
+
+    private var header: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "display")
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 76, height: 76)
+                .background(
+                    LinearGradient(colors: [.blue, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing),
+                    in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+                )
+                .shadow(color: .blue.opacity(0.5), radius: 20, y: 8)
+            Text("DuoRemote")
+                .font(.largeTitle.bold())
+                .foregroundStyle(.white)
+            Text("自宅の PC を、この iPhone から")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// 見出しと、ガラスの板
+    private func card<Content: View>(title: String, systemImage: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(title, systemImage: systemImage)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 4)
+            VStack(alignment: .leading, spacing: 12) {
+                content()
+            }
+            .padding(16)
+            .glass(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        }
+    }
+
+    /// 左にアイコンを置いた入力の欄
+    private func field<Content: View>(systemImage: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
+            content()
+        }
     }
 
     /// 全角の英数字と記号を半角にし、前後の空白と改行を取り除く
@@ -411,12 +535,18 @@ struct LatencyBadge: View {
 
     var body: some View {
         if let ms = session.latencyMs {
-            Text("\(ms)ms")
-                .font(.caption2.monospacedDigit())
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .foregroundStyle(.white.opacity(0.85))
-                .background(.black.opacity(0.35), in: Capsule())
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(LatencyColor.color(ms: ms))
+                    .frame(width: 6, height: 6)
+                Text("\(ms)ms")
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .contentTransition(.numericText())
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .foregroundStyle(.white.opacity(0.9))
+            .glass(in: Capsule())
         }
     }
 }

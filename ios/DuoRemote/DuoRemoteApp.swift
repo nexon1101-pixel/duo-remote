@@ -8,6 +8,8 @@ struct DuoRemoteApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(session)
+                // 映像を見るアプリなので、いつも暗い見た目にする
+                .preferredColorScheme(.dark)
         }
     }
 }

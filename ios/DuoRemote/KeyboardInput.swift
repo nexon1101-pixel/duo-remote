@@ -244,10 +244,14 @@ struct SoftwareInputBar: View {
             }
             ComposeField(refocus: refocus, asciiOnly: asciiKeyboard, onText: send, onKey: { tap($0) }, onEnd: onClose)
                 .frame(height: 36)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.08)))
                 .padding(.horizontal, 8)
         }
-        .padding(.vertical, 6)
-        .background(.bar)
+        .padding(.vertical, 8)
+        .glass(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        // 画面の端から少し浮かせる
+        .padding(.horizontal, 8)
+        .padding(.bottom, 4)
     }
 
     private var imeButton: some View {
@@ -256,7 +260,7 @@ struct SoftwareInputBar: View {
         case false?: "A"
         case nil: "あ/A"
         }
-        return key(label) { session.setIME(!(session.imeOn ?? false)) }
+        return key(label, isOn: session.imeOn == true) { session.setIME(!(session.imeOn ?? false)) }
     }
 
     private func send(_ text: String) {
@@ -290,18 +294,41 @@ struct SoftwareInputBar: View {
 
     private func key(_ title: String, isOn: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title).font(.callout.monospaced()).frame(minWidth: 28)
+            Text(title)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(minWidth: 28, minHeight: 34)
+                .padding(.horizontal, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(isOn ? Color.accentColor : Color.white.opacity(0.12))
+                )
         }
-        .buttonStyle(.bordered)
-        .tint(isOn ? Color.accentColor : Color.secondary)
+        .buttonStyle(KeyPressStyle())
     }
 
     private func key(systemImage: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage).frame(minWidth: 28)
+            Image(systemName: systemImage)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(minWidth: 28, minHeight: 34)
+                .padding(.horizontal, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Color.white.opacity(0.12))
+                )
         }
-        .buttonStyle(.bordered)
-        .tint(Color.secondary)
+        .buttonStyle(KeyPressStyle())
+    }
+}
+
+/// 押したとき、少し縮むボタン
+private struct KeyPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
@@ -321,7 +348,7 @@ struct ComposeField: UIViewRepresentable {
         let view = ComposeTextView()
         view.delegate = context.coordinator
         view.font = .preferredFont(forTextStyle: .body)
-        view.backgroundColor = .secondarySystemBackground
+        view.backgroundColor = .clear // 後ろの SwiftUI 側で、薄い角丸を敷く
         view.layer.cornerRadius = 8
         view.textContainer.maximumNumberOfLines = 1
         view.isScrollEnabled = false

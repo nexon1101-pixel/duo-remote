@@ -43,9 +43,11 @@ struct OverlayKeyboard: View {
                 OverlayKeysView(session: session, layout: layout)
                     .frame(width: width, height: keysHeight)
             }
-            .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal, 4)
+            .padding(.bottom, 4)
+            .glass(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .opacity(opacity)
-            .frame(width: width, height: height)
+            .frame(width: width + 8, height: height + 4)
             .position(center)
         }
     }
@@ -55,13 +57,25 @@ struct OverlayKeyboard: View {
         HStack(spacing: 0) {
             Button(action: onClose) {
                 Image(systemName: "xmark")
-                    .frame(width: 36, height: Self.barHeight)
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: 22, height: 22)
+                    .background(Color.white.opacity(0.15), in: Circle())
+                    .frame(width: 40, height: Self.barHeight)
             }
             Spacer()
-            Image(systemName: "line.3.horizontal")
-            Text(layout.label).font(.caption2)
+            // 引いて動かせることが分かるように、シートと同じつまみを出す
+            Capsule()
+                .fill(Color.white.opacity(0.45))
+                .frame(width: 40, height: 5)
+            Text(layout.label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.6))
+                .padding(.leading, 6)
             Spacer()
             Image(systemName: "arrow.left.and.right")
+                .font(.system(size: 11, weight: .bold))
+                .frame(width: 22, height: 22)
+                .background(Color.white.opacity(0.15), in: Circle())
                 .frame(width: 44, height: Self.barHeight)
                 .contentShape(Rectangle())
                 .gesture(
@@ -180,7 +194,7 @@ final class OverlayKeysUIView: UIView {
     private static let repeatDelay: Duration = .milliseconds(450)
     private static let repeatInterval: Duration = .milliseconds(33)
     private static let doubleTap: TimeInterval = 0.35
-    private static let gap: CGFloat = 3
+    private static let gap: CGFloat = 4
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -241,18 +255,22 @@ final class OverlayKeysUIView: UIView {
             let state = key.modifier.flatMap { modifiers[$0] }
             let fill: UIColor
             if pressed.contains("\(f.row),\(f.col)") {
-                fill = UIColor(white: 0.55, alpha: 1)
+                fill = UIColor(white: 1, alpha: 0.5)
             } else if case .locked? = state {
                 fill = .systemBlue
             } else if state != nil {
                 fill = UIColor.systemBlue.withAlphaComponent(0.6)
             } else if key.modifier != nil || key.width > 1 {
-                fill = UIColor(white: 0.18, alpha: 1)
+                fill = UIColor(white: 1, alpha: 0.09)
             } else {
-                fill = UIColor(white: 0.28, alpha: 1)
+                fill = UIColor(white: 1, alpha: 0.2)
             }
+            let radius = min(8, box.height * 0.2)
+            // 下に薄い影を付けて、キーが少し浮いて見えるようにする
+            UIColor(white: 0, alpha: 0.25).setFill()
+            UIBezierPath(roundedRect: box.offsetBy(dx: 0, dy: 1), cornerRadius: radius).fill()
             fill.setFill()
-            UIBezierPath(roundedRect: box, cornerRadius: min(6, box.height * 0.15)).fill()
+            UIBezierPath(roundedRect: box, cornerRadius: radius).fill()
 
             let main: String
             var small: String?
