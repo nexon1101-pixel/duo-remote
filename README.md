@@ -69,12 +69,15 @@ iPhone Duo から、自宅の Windows PC を遠隔操作するアプリです。
 
 ## サーバーを動かす（Windows）
 
-必要なもの:
+`server` フォルダの `start.bat` をダブルクリックする。
 
-- Python 3.10以上
-- ffmpeg（NVENCを使うため、`full` 版のビルド。例: `winget install Gyan.FFmpeg`）。PATHに通すか、`--ffmpeg` でパスを指定する
+- 初回は、準備もここで行う（Python の仮想環境を作り、必要なパッケージを入れる）
+- Python（3.10以上）や ffmpeg が見つからないときは、winget で入れるかを聞く。「Y」と答えると入れる
+- 2回目からは、すぐに起動する。`requirements.txt` が変わったときだけ、パッケージを入れ直す
+- 起動したら、画面は開いたままにしておく。閉じるとサーバーも止まる。止めるときは Ctrl+C
+- オプションを付けるときは、コマンドプロンプトで `start.bat --fps 30` のように実行する
 
-手順:
+自分で動かす場合は、次のとおり。
 
 ```powershell
 cd server
@@ -84,7 +87,9 @@ pip install -r requirements.txt
 python -m duo_server
 ```
 
-初回の起動で `server/config.json` が作られ、接続用のトークンが表示されます。トークンはアプリに入力します。`config.json` はコミットしないでください（`.gitignore` に入れてあります）。
+ffmpeg は、NVENCを使うため、`full` 版のビルドを使う（例: `winget install Gyan.FFmpeg`）。PATHに通すか、`--ffmpeg` でパスを指定する。
+
+初回の起動で `server/config.json` が作られ、接続用のトークンが表示されます。トークンはアプリに入力します。`config.json` はコミットしないでください（`.gitignore` に入れてあります）。トークンをもう一度見たいときは、`start.bat --show-token` で起動します。
 
 主なオプション:
 
