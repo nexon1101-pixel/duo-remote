@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 
 from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosed
 
 from . import protocol
 from .capture import iter_nals
@@ -116,6 +117,18 @@ async def run_check(
         r.bad(f"サーバーにつながりません（{e}）。start.bat でサーバーが動いているか確認してください")
         return False
 
+    try:
+        await _run_checks(ws, r, token, seconds, try_window, try_audio, try_virtual)
+    except ConnectionClosed as e:
+        reason = e.rcvd.reason if e.rcvd and e.rcvd.reason else str(e)
+        r.bad(f"サーバーが接続を閉じました: {reason}。サーバーの画面と、server\\duo_server.log を確認してください")
+
+    print()
+    print("すべて問題ありません" if r.ok else "[NG] の項目があります。上のメッセージと、サーバーの画面、server\\duo_server.log を確認してください")
+    return r.ok
+
+
+async def _run_checks(ws, r: Report, token: str, seconds: float, try_window: bool, try_audio: bool, try_virtual: bool) -> None:
     async with ws:
         # 1. 接続とトークン
         await ws.send(json.dumps({"t": "hello", "v": protocol.VERSION, "token": token}))
@@ -123,10 +136,10 @@ async def run_check(
             msg = await _recv_json(ws, {"welcome", "error"})
         except asyncio.TimeoutError:
             r.bad("welcome が届きません。サーバーの画面に出ているエラーを確認してください")
-            return False
+            return
         if msg["t"] == "error":
             r.bad(f"サーバーに断られました: {msg.get('message')}")
-            return False
+            return
         r.good(f"接続できました（映像の大きさ {msg['w']}x{msg['h']}）")
         virtual_installed = bool(msg.get("virtual"))
 
@@ -249,9 +262,6 @@ async def run_check(
                     r.good(f"音が届きました: {count} 個（約{count * 20 / 1000:.1f}秒ぶん）、最大の音の大きさ {peak}/32767")
                 await ws.send(json.dumps({"t": "audio", "on": False}))
 
-    print()
-    print("すべて問題ありません" if r.ok else "[NG] の項目があります。上のメッセージと、サーバーの画面を確認してください")
-    return r.ok
 
 
 def main(argv: list[str] | None = None) -> None:

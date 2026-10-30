@@ -461,7 +461,23 @@ class VirtualDisplay:
             raise VirtualDisplayError("仮想モニターが出せる解像度が見つかりません")
         if current_mode(monitor["name"]) != mode:
             apply_mode(monitor["name"], *mode)
+            self._wait_settled(mode)
         return mode
+
+    def _wait_settled(self, mode: tuple[int, int, int], timeout: float = 10) -> None:
+        """解像度を変えると、仮想モニターが作り直される。大きさと番号が、2回続けて同じになるまで待つ。"""
+        deadline = time.monotonic() + timeout
+        stable = 0
+        while time.monotonic() < deadline:
+            found = self.monitor()
+            if found and tuple(found["rect"][2:]) == (mode[0], mode[1]) and found.get("output") is not None:
+                stable += 1
+                if stable >= 2:
+                    return
+            else:
+                stable = 0
+            time.sleep(0.5)
+        log.warning("解像度を変えたあと、仮想モニターが落ち着きませんでした（%dx%d）", mode[0], mode[1])
 
 
 # --- 診断用のコマンド ----------------------------------------------------------

@@ -115,6 +115,12 @@ class NullInput(_BringMixin):
             self.calls.append(("virtual_off",))
         self.virtual_enabled = False
 
+    def virtual_cleanup_leftover(self) -> bool:
+        """有効のまま残っている仮想ディスプレイを、無効に戻す。戻したときは True。"""
+        was = self.virtual_enabled
+        self.virtual_off()
+        return was
+
     def virtual_set_aspect(self, aspect: float) -> dict:
         self.calls.append(("virtual_aspect", round(aspect, 3)))
         self._virtual_width = round(1080 * aspect / 2) * 2
@@ -422,6 +428,18 @@ if sys.platform == "win32":
 
         def virtual_off(self) -> None:
             self._vd.off()
+
+        def virtual_cleanup_leftover(self) -> bool:
+            """有効のまま残っている仮想ディスプレイを、無効に戻す（サーバーが、後片付けをせずに止められたあとに残る）。
+            戻したときは True。管理者でなくて戻せないときは、理由をログに出して False。"""
+            try:
+                if self._vd.monitor() is None:
+                    return False
+                self._vd.off(force=True)
+                return True
+            except VirtualDisplayError as e:
+                log.warning("有効のまま残っている仮想ディスプレイを、無効に戻せませんでした: %s", e)
+                return False
 
         def virtual_set_aspect(self, aspect: float) -> dict:
             self._vd.set_resolution(aspect)

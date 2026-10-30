@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from websockets.asyncio.server import serve
 
@@ -102,3 +103,21 @@ def test_selfcheck_virtual_ok(capsys):
 def test_selfcheck_virtual_not_installed(capsys):
     assert not asyncio.run(check_against_server("secret", False, virtual=False))
     assert "ドライバーが見つかりません" in capsys.readouterr().out
+
+
+def test_selfcheck_reports_server_closing_the_connection(capsys):
+    """サーバーが、途中で接続を閉じても、落ちずに [NG] で理由を出す。"""
+
+    async def closing_handler(ws):
+        await ws.recv()  # hello
+        await ws.send(json.dumps({"t": "welcome", "v": 1, "w": 1920, "h": 1080, "codec": "h264", "mode": "screen"}))
+        await ws.close(1008, "映像の取得が止まりました。サーバーのログを確認してください")
+
+    async def go():
+        async with serve(closing_handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            return await run_check(f"ws://127.0.0.1:{port}/", "x", seconds=0.3)
+
+    assert not asyncio.run(go())
+    out = capsys.readouterr().out
+    assert "サーバーが接続を閉じました" in out and "映像の取得が止まりました" in out and "duo_server.log" in out
