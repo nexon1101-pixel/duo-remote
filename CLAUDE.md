@@ -1,6 +1,6 @@
 # duo-remote
 
-iPhone Duo から自宅の Windows PC を操作するアプリ。計画は `docs/plan.md`、通信の取り決めは `docs/protocol.md`。
+iPhone Duo から自宅の Windows PC を操作するアプリ。計画は `docs/plan.md`、通信の取り決めは `docs/protocol.md`、やることの一覧は `docs/tasks.md`。
 
 ## 構成
 

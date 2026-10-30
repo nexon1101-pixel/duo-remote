@@ -145,6 +145,7 @@ PCとiPhoneの両方に [Tailscale](https://tailscale.com/) を入れ、同じ�
 
 - 計画: [docs/plan.md](docs/plan.md)
 - 通信の取り決め: [docs/protocol.md](docs/protocol.md)
+- やることの一覧: [docs/tasks.md](docs/tasks.md)
 
 | フォルダ | 内容 |
 |---|---|
