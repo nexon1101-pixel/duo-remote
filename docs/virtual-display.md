@@ -27,15 +27,40 @@ virtual.bat status
 
 ### 2. ドライバーを入れる
 
-管理者のコマンドプロンプトか PowerShell で、次を実行する。
+`winget install VirtualDrivers.Virtual-Display-Driver` で入るのは、**操作用のアプリ（VDD Control）だけ**で、ドライバー本体は入らない。ドライバー本体は、次のどちらかで入れる。
+
+**入れる前に、ユーザーに次を伝えて、入れてよいかを確かめる。**
+
+- 入れるのは、Virtual Display Driver 25.7.23（MIT ライセンス、署名つき）
+- 入れるときに、署名の証明書を、このPCの「信頼された発行元」に登録する
+- グラフィックボードやチップセットのドライバーを大きく更新するときは、先にこのドライバーを消す。更新のあとに、画面が真っ黒になったときは、セーフ モードで起動して消す（公式の README より）
+- 消し方は、この文書の最後の「元に戻すには」
+
+**方法A（おすすめ）: 公式のスクリプトで入れる**
+
+管理者の Windows PowerShell（`powershell.exe`。`pwsh` ではない）で、次を実行する。
 
 ```powershell
-winget install --id=VirtualDrivers.Virtual-Display-Driver -e
+$url = "https://raw.githubusercontent.com/VirtualDrivers/Virtual-Display-Driver/master/Community%20Scripts/silent-install.ps1"
+Invoke-WebRequest $url -OutFile "$env:TEMP\silent-install.ps1" -UseBasicParsing
+Get-Content "$env:TEMP\silent-install.ps1"   # 中身を見て、ユーザーに「何をするか」を伝える
+powershell -ExecutionPolicy Bypass -File "$env:TEMP\silent-install.ps1"
 ```
 
-- 「vcruntime140.dll が見つからない」と出たら、Microsoft Visual C++ 再頒布可能パッケージ（最新）を入れる
-- 入ったか確かめる: デバイス マネージャーの「ディスプレイ アダプター」に「Virtual Display Driver」が出る
-- 入れ終わると、仮想モニターが1枚出る（画面が一瞬ちらつく）。「設定」→「システム」→「ディスプレイ」にモニターが増えていることを確かめる
+このスクリプトがすること（公式のもの）:
+1. Nefcon 1.14.0（ドライバーを入れる道具）と、ドライバー本体（25.7.23）を、GitHub から取る
+2. ドライバーの署名（`mttvdd.cat`）にある証明書を、「信頼された発行元」に登録する
+3. `nefconw.exe install MttVDD.inf Root\MttVDD` でドライバーを入れる（10秒ほどかかる）
+
+**方法B: VDD Control のボタンで入れる**
+
+winget で入れた「VDD Control」を起動し、「Install」を押す（管理者の確認画面が出る）。
+
+**入ったか確かめる**
+
+- デバイス マネージャーの「ディスプレイ アダプター」に、「Virtual Display Driver」が出る
+- `virtual.bat status` の「ドライバー」に、`Virtual Display Driver` が出る（「見つかりません」でなくなる）
+- 「設定」→「システム」→「ディスプレイ」に、モニターが増える（増えないときは、手順 3 の設定のあとに出る）
 
 ### 3. 設定ファイルを書く
 
