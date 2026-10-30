@@ -9,6 +9,7 @@ struct ContentView: View {
     @AppStorage("host") private var host = ""
     @AppStorage("port") private var port = "8765"
     @State private var token = ""
+    @State private var showToken = false
 
     @AppStorage("pointerMode") private var pointerMode = PointerMode.direct
     @AppStorage(KeyCaptureView.commandAsControlKey) private var commandAsControl = false
@@ -58,22 +59,31 @@ struct ContentView: View {
     }
 
     private var connectedView: some View {
-        VStack(spacing: 0) {
+        // 映像は画面いっぱいに置いたままにして、iPhoneのキーボードは、その上に重ねる（映像を縮めない）。
+        // 入力の欄とボタンだけが、キーボードの上に出る
+        ZStack(alignment: .bottom) {
             VideoView(
                 renderer: session.renderer,
                 videoSize: session.videoSize,
                 pointerMode: pointerMode,
                 send: session.send
             )
-            .overlay(alignment: .bottomTrailing) { inputButton }
-            if inputMode == .software {
-                SoftwareInputBar(refocus: refocus) {
-                    // キーボードが閉じられたら、タッチだけに戻す
-                    if inputMode == .software { inputMode = .touch }
+            .ignoresSafeArea() // キーボードの分も含めて、動かさない
+
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    inputButton
+                }
+                if inputMode == .software {
+                    SoftwareInputBar(refocus: refocus) {
+                        // キーボードが閉じられたら、タッチだけに戻す
+                        if inputMode == .software { inputMode = .touch }
+                    }
                 }
             }
         }
-        // 画面の端までは使うが、iPhoneのキーボードが出たら、その上までにする
+        // 画面の端までは使う。キーボードが出たときだけ、入力の欄がその上に上がる
         .ignoresSafeArea(.container)
         .background {
             HardwareKeyView(
@@ -227,9 +237,27 @@ struct ContentView: View {
                     .keyboardType(.URL)
                 TextField("ポート", text: $port)
                     .keyboardType(.numberPad)
-                SecureField("トークン", text: $token)
+                HStack {
+                    // 伏せ字のままだと、打ち間違いに気づけないので、目のボタンで表示を切り替える
+                    Group {
+                        if showToken {
+                            TextField("トークン", text: $token)
+                        } else {
+                            SecureField("トークン", text: $token)
+                        }
+                    }
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .keyboardType(.asciiCapable) // 日本語のキーボードで、全角の文字が入らないようにする
+                    .font(.body.monospaced())
+                    Button {
+                        showToken.toggle()
+                    } label: {
+                        Image(systemName: showToken ? "eye.slash" : "eye")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(showToken ? "トークンを隠す" : "トークンを表示する")
+                }
             }
             Section {
                 Picker("画質", selection: $quality) {
@@ -242,6 +270,10 @@ struct ContentView: View {
             }
             Section {
                 Button(session.state == .connecting ? "接続しています…" : "接続") {
+                    // 貼り付けたときに付いてくる空白や、全角の英数字を直してから使う
+                    host = Self.cleaned(host)
+                    port = Self.cleaned(port)
+                    token = Self.cleaned(token)
                     Keychain.save("token", token)
                     session.connect(host: host, port: Int(port) ?? 8765, token: token, quality: quality)
                 }
@@ -255,6 +287,12 @@ struct ContentView: View {
             }
         }
         .scrollContentBackground(.hidden)
+    }
+
+    /// 全角の英数字と記号を半角にし、前後の空白と改行を取り除く
+    static func cleaned(_ text: String) -> String {
+        let halfWidth = text.applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? text
+        return halfWidth.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func loadToken() {
