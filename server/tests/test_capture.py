@@ -53,6 +53,12 @@ def test_ffmpeg_cmd_nvenc_no_scale_stays_on_gpu():
     graph = cmd[cmd.index("-i") + 1]
     assert "ddagrab" in graph and "hwdownload" not in graph
     assert "h264_nvenc" in cmd and "-aud" in cmd
+    assert cmd[cmd.index("-zerolatency") + 1] == "1" and cmd[cmd.index("-delay") + 1] == "0"
+
+
+def test_ffmpeg_cmd_output_idx():
+    cmd = build_ffmpeg_cmd(encoder="h264_nvenc", output_idx=1)
+    assert "ddagrab=output_idx=1:" in cmd[cmd.index("-i") + 1]
 
 
 def test_ffmpeg_cmd_region():

@@ -7,8 +7,9 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
 from duo_server import protocol
+from duo_server.capture import StreamError
 from duo_server.input_win import NullInput
-from duo_server.server import Settings, make_handler
+from duo_server.server import Session, Settings, make_handler
 
 TOKEN = "test-token"
 
@@ -31,13 +32,21 @@ class FakeStream:
         self.stopped = True
 
 
-async def run_with_server(body, backend=None, streams=None):
+class WindowFailsStream(FakeStream):
+    """ウィンドウの範囲を撮ろうとすると、起動に失敗する映像。"""
+
+    async def start(self):
+        if self.region is not None:
+            raise StreamError("ffmpeg が起動できませんでした（テスト）")
+
+
+async def run_with_server(body, backend=None, streams=None, stream_cls=FakeStream):
     backend = backend or NullInput((1920, 1080))
     streams = streams if streams is not None else []
 
     def factory(settings, src, region):
-        s = FakeStream()
-        s.src, s.region = src, region
+        s = stream_cls()
+        s.settings, s.src, s.region = settings, src, region
         streams.append(s)
         return s
 
@@ -53,6 +62,14 @@ async def recv_json(ws):
         raw = await asyncio.wait_for(ws.recv(), 5)
         if isinstance(raw, str):
             return json.loads(raw)
+
+
+async def recv_frame(ws):
+    """制御メッセージ（JSON）は読み飛ばして、次の映像のフレームを返す。"""
+    while True:
+        raw = await asyncio.wait_for(ws.recv(), 5)
+        if isinstance(raw, bytes):
+            return protocol.unpack_frame(raw)
 
 
 def hello(token=TOKEN, **extra):
@@ -89,9 +106,9 @@ def test_welcome_video_and_input():
             assert welcome == {
                 "t": "welcome", "v": 1, "w": 960, "h": 540, "codec": "h264", "mode": "screen",
             }
-            key, ts, payload = protocol.unpack_frame(await ws.recv())
+            key, ts, payload = await recv_frame(ws)
             assert key and payload.endswith(b"KEY")
-            key, ts2, payload = protocol.unpack_frame(await ws.recv())
+            key, ts2, payload = await recv_frame(ws)
             assert not key and payload.endswith(b"P1") and ts2 >= ts
 
             send = lambda **m: ws.send(json.dumps(m))
@@ -189,7 +206,7 @@ def test_window_mode_crops_and_maps_input():
             assert mode == {"t": "mode", "mode": "window", "id": 101, "title": "メモ帳"}
             assert await recv_until(ws, "resize") == {"t": "resize", "w": 800, "h": 600}
             # 撮り直した映像が、resizeの後に届く
-            key, _, payload = protocol.unpack_frame(await ws.recv())
+            key, _, payload = await recv_frame(ws)
             assert key and payload.endswith(b"KEY")
 
             await ws.send(json.dumps({"t": "mode", "mode": "screen"}))
@@ -315,3 +332,140 @@ def test_new_client_replaces_old_and_stream_is_stopped():
         assert len(streams) == 2 and all(s.stopped for s in streams)
 
     asyncio.run(run_with_server(body, streams=streams))
+
+
+def test_text_newlines_become_enter():
+    async def body(url, backend):
+        async with connect(url) as ws:
+            await ws.send(hello())
+            await recv_until(ws, "welcome")
+            await ws.send(json.dumps({"t": "text", "s": "a\nb\r\nc"}))
+            await ws.send(json.dumps({"t": "text", "s": "\n"}))
+            await ws.send(json.dumps({"t": "ping", "n": 1}))
+            await recv_until(ws, "pong")
+        enter = [("key", 0x0D, True), ("key", 0x0D, False)]
+        assert backend.calls == [("text", "a"), *enter, ("text", "b"), *enter, ("text", "c"), *enter]
+
+    asyncio.run(run_with_server(body))
+
+
+def test_move_rel():
+    async def body(url, backend):
+        async with connect(url) as ws:
+            await ws.send(hello())
+            await recv_until(ws, "welcome")
+            await ws.send(json.dumps({"t": "move_rel", "dx": 0.1, "dy": -2}))  # 範囲外は -1〜1 にそろえる
+            await ws.send(json.dumps({"t": "move_rel", "dx": 0, "dy": 0}))  # 動かないものは送らない
+            await ws.send(json.dumps({"t": "ping", "n": 1}))
+            await recv_until(ws, "pong")
+        assert backend.calls == [("move_rel", 0.1, -1.0)]
+
+    asyncio.run(run_with_server(body))
+
+
+def test_hello_quality_settings():
+    streams = []
+
+    async def body(url, backend):
+        async with connect(url) as ws:
+            await ws.send(hello(bitrate=1500, fps=30, max_height=720))
+            assert (await recv_until(ws, "welcome"))["h"] == 720
+        async with connect(url) as ws:
+            await ws.send(hello(bitrate=999999, fps=1000))  # 上限と下限にそろえる
+            await recv_until(ws, "welcome")
+
+    asyncio.run(run_with_server(body, streams=streams))
+    first, second = streams[0].settings, streams[1].settings
+    assert (first.bitrate_kbps, first.fps, first.max_height) == (1500, 30, 720)
+    assert (second.bitrate_kbps, second.fps) == (20000, 120)
+
+
+def test_window_that_cannot_be_captured_falls_back_to_screen():
+    async def body(url, backend):
+        async with connect(url) as ws:
+            await ws.send(hello())
+            await recv_until(ws, "welcome")
+            await ws.send(json.dumps({"t": "mode", "mode": "window", "id": 101}))
+            assert (await recv_until(ws, "mode"))["mode"] == "window"
+            assert "表示できません" in (await recv_until(ws, "error"))["message"]
+            assert (await recv_until(ws, "mode"))["mode"] == "screen"
+            # 接続は続いている
+            await ws.send(json.dumps({"t": "ping", "n": 5}))
+            assert (await recv_until(ws, "pong"))["n"] == 5
+            assert backend.region is None
+
+    asyncio.run(run_with_server(body, backend=make_backend(), stream_cls=WindowFailsStream))
+
+
+def test_unresponsive_previous_client_does_not_delay_new_one():
+    streams = []
+
+    async def body(url, backend):
+        async with connect(url) as first:
+            await first.send(hello())
+            await recv_until(first, "welcome")
+            await first.send(json.dumps({"t": "key", "vk": 0x41, "d": "down"}))
+            await first.send(json.dumps({"t": "ping", "n": 1}))
+            await recv_until(first, "pong")
+            first.transport.pause_reading()  # 電波が切れて、応答しなくなった端末のかわり
+
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            async with connect(url) as second:
+                await second.send(hello())
+                await recv_until(second, "welcome")
+                assert loop.time() - started < 1.0
+            # 前の接続の後片付けが、新しい映像の前に終わっている
+            assert streams[0].stopped
+            assert ("key", 0x41, False) in backend.calls
+            first.transport.resume_reading()
+
+    asyncio.run(run_with_server(body, streams=streams))
+
+
+class SlowSocket:
+    """送るのが遅い接続のかわり。届いた映像を記録する。"""
+
+    def __init__(self):
+        self.frames = []
+
+    async def send(self, data):
+        if isinstance(data, bytes):
+            await asyncio.sleep(0.02)
+            self.frames.append(protocol.unpack_frame(data))
+
+
+class BurstStream:
+    """速く次々とフレームを出す映像。10フレームごとにキーフレーム。"""
+
+    async def start(self):
+        pass
+
+    async def frames(self):
+        for i in range(80):
+            yield i % 10 == 0, f"{i:03d}".encode()
+            await asyncio.sleep(0.002)
+        raise StreamError("おわり")
+
+    async def stop(self):
+        pass
+
+
+def test_frames_are_dropped_until_keyframe_when_sending_falls_behind():
+    async def go():
+        ws = SlowSocket()
+        session = Session(ws, Settings(token="t"), NullInput(), lambda *a: BurstStream())
+        await session.open_stream()
+        session.start_video()
+        with pytest.raises(StreamError):
+            await asyncio.wait_for(session.failed, 10)
+        await session.stop_stream()
+        return ws.frames
+
+    frames = asyncio.run(go())
+    numbers = [int(payload) for _, _, payload in frames]
+    assert numbers[0] == 0 and len(numbers) < 80  # 捨てたフレームがある
+    for prev, cur, (key, _, _) in zip(numbers, numbers[1:], frames[1:]):
+        if cur != prev + 1:
+            # 捨てたあとは、キーフレームから始まる
+            assert key and cur % 10 == 0
