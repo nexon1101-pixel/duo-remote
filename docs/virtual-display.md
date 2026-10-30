@@ -98,11 +98,11 @@ ffmpeg -hide_banner -f lavfi -i "ddagrab=output_idx=1:framerate=30:draw_mouse=1"
 - エラーなく終わり、`frame=` の数が増えていれば、撮れている
 - 「output index」に関するエラーが出たら、仮想モニターが、ffmpeg が使うグラフィックアダプターとは別のものにつながっている。`status` の「アダプター」の番号が 0 でないときが、これに当たる。その出力を、そのまま報告する
 
-### 6. 管理者でサーバーを起動して、出し入れを確かめる
+### 6. 出し入れを確かめて、普段は無効にしておく
 
-1. すでに動いているサーバーは、止める（Ctrl+C）
-2. `server\start-admin.bat` をダブルクリックする（管理者の確認画面が出るので、ユーザーに「はい」を押してもらう）
-3. 別の管理者のコマンドプロンプトで、次を順に実行して、画面の動きを見る
+ドライバーは、**使わないときは無効にしておく**（サーバーが、必要なときだけ有効にする）。
+
+1. 管理者のコマンドプロンプトで、次を順に実行して、画面の動きを見る
 
    ```bat
    cd /d "%USERPROFILE%\duo-remote\server"
@@ -110,10 +110,24 @@ ffmpeg -hide_banner -f lavfi -i "ddagrab=output_idx=1:framerate=30:draw_mouse=1"
    virtual.bat monitors
    virtual.bat on
    virtual.bat monitors
+   virtual.bat off
    ```
 
    - `off` のあとは、`【仮想】` のモニターがなくなる。`on` のあとは、また出る
+   - 最後に `off` で、無効に戻しておく
    - それぞれ、何秒かかったか（目安でよい）を控える
+2. すでに動いているサーバーは、止める（Ctrl+C）
+3. `server\start-admin.bat` をダブルクリックする（管理者の確認画面が出るので、ユーザーに「はい」を押してもらう）。「仮想ディスプレイ: 使えます」と出ること
+4. 別のコマンドプロンプトで、サーバーを自己診断する
+
+   ```bat
+   cd /d "%USERPROFILE%\duo-remote\server"
+   check.bat --virtual
+   ```
+
+   - 仮想ディスプレイを出して、そのモニターを映し、画面全体の表示に戻す。`[OK]` と `[NG]` を全部控える
+   - 出す時間も出る（`出すまで ○秒`）
+5. 終わったら、仮想モニターが消えていること（`virtual.bat monitors`）。サーバーを管理者で動かしたまま、iPhoneを切断すると、無効に戻る
 
 ## 報告の形
 
@@ -133,8 +147,8 @@ ffmpeg -hide_banner -f lavfi -i "ddagrab=output_idx=1:framerate=30:draw_mouse=1"
 - 仮想モニターのアダプターと出力の番号
 
 ## 出し入れ（手順 6）
-- off / on で、モニターが消えて、出たか
-- それぞれ何秒かかったか
+- off / on で、モニターが消えて、出たか。それぞれ何秒かかったか
+- check.bat --virtual の出力（そのまま）
 
 ## そのほか気づいたこと
 ```

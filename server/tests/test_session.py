@@ -44,7 +44,7 @@ async def run_with_server(body, backend=None, streams=None, stream_cls=FakeStrea
     backend = backend or NullInput((1920, 1080))
     streams = streams if streams is not None else []
 
-    def factory(settings, src, region):
+    def factory(settings, src, region, monitor=None):
         s = stream_cls()
         s.settings, s.src, s.region = settings, src, region
         streams.append(s)
@@ -104,7 +104,7 @@ def test_welcome_video_and_input():
             await ws.send(hello(max_height=540))
             welcome = json.loads(await ws.recv())
             assert welcome == {
-                "t": "welcome", "v": 1, "w": 960, "h": 540, "codec": "h264", "mode": "screen",
+                "t": "welcome", "v": 1, "w": 960, "h": 540, "codec": "h264", "mode": "screen", "virtual": False,
             }
             key, ts, payload = await recv_frame(ws)
             assert key and payload.endswith(b"KEY")
@@ -188,7 +188,7 @@ def test_list_windows():
             await recv_until(ws, "welcome")
             await ws.send(json.dumps({"t": "list_windows"}))
             msg = await recv_until(ws, "windows")
-            assert msg["list"][0] == {"id": 101, "title": "メモ帳", "app": "notepad.exe"}
+            assert msg["list"][0] == {"id": 101, "title": "メモ帳", "app": "notepad.exe", "where": "main"}
             assert len(msg["list"]) == 2
 
     asyncio.run(run_with_server(body, backend=make_backend()))

@@ -15,6 +15,7 @@ from websockets.exceptions import ConnectionClosed
 from . import protocol
 from .audio import ALLOWED_CHANNELS, ALLOWED_RATES, AudioError
 from .capture import StreamError, output_size
+from .virtual_display import VirtualDisplayError, monitor_of
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +24,9 @@ IME_POLL_SEC = 0.5
 WINDOW_POLL_SEC = 0.5
 # 撮る範囲の最小の大きさ（画素）。これより小さいと、エンコーダーが受け付けないことがある
 MIN_REGION = 160
+# 通信が切れたとき、仮想ディスプレイを無効に戻し、持ってきたウィンドウを元に戻すまでの待ち時間（秒）。
+# この間につなぎ直せば、そのまま続きができる。iPhone の「切断」ボタンのときは、待たずに戻す
+RESTORE_GRACE_SEC = 120
 # 前の接続の後片付けを待つ時間の上限
 PREVIOUS_CLEANUP_SEC = 3
 # 送り待ちの映像がこれを超えたら、次のキーフレームまで映像を捨てる（遅れをためないため）
@@ -55,8 +59,8 @@ class Stream(Protocol):
 # 引数: (周波数, チャンネル数) -> 音の取得元（start、frames、stop を持つ）
 AudioFactory = Callable[[int, int], Any]
 
-# 引数: (設定, 撮る大きさ, 撮る範囲（Noneなら画面全体）) -> 映像の取得元
-StreamFactory = Callable[[Settings, "tuple[int, int]", "tuple[int, int, int, int] | None"], Stream]
+# 引数: (設定, 撮る大きさ, 撮る範囲（Noneなら、モニター全体。デスクトップ上の位置）, モニター（Noneなら主モニター）) -> 映像の取得元
+StreamFactory = Callable[[Settings, "tuple[int, int]", "tuple[int, int, int, int] | None", "dict | None"], Stream]
 
 
 def _num(v: Any, default: float | None = None) -> float | None:
@@ -74,13 +78,16 @@ def _int(v: Any) -> int | None:
     return v if isinstance(v, int) and not isinstance(v, bool) else None
 
 
-def clamp_region(rect: tuple[int, int, int, int], screen: tuple[int, int]) -> tuple[int, int, int, int] | None:
-    """ウィンドウの範囲を、主モニターの中に収まるよう切り詰める。幅と高さは偶数にそろえる。
+def clamp_region(
+    rect: tuple[int, int, int, int], bounds: tuple[int, ...]
+) -> tuple[int, int, int, int] | None:
+    """ウィンドウの範囲を、モニターの中に収まるよう切り詰める。幅と高さは偶数にそろえる。
+    bounds は、モニターの (x, y, 幅, 高さ)。(幅, 高さ) だけのときは、左上が (0, 0) のモニター。
     モニターの外にあるときや、小さすぎるときはNone。"""
     x, y, w, h = rect
-    sw, sh = screen
-    left, top = max(x, 0), max(y, 0)
-    right, bottom = min(x + w, sw), min(y + h, sh)
+    bx, by, bw, bh = bounds if len(bounds) == 4 else (0, 0, *bounds)
+    left, top = max(x, bx), max(y, by)
+    right, bottom = min(x + w, bx + bw), min(y + h, by + bh)
     w, h = right - left, bottom - top
     w, h = w - (w % 2), h - (h % 2)
     if w < MIN_REGION or h < MIN_REGION:
@@ -176,8 +183,10 @@ class Session:
         self.backend = backend
         self.stream_factory = stream_factory
         self.held: set = set()
-        self.window: int | None = None  # 表示しているウィンドウ。Noneなら画面全体
+        self.window: int | None = None  # 表示しているウィンドウ。Noneなら、ウィンドウ1つではない
         self.region: tuple[int, int, int, int] | None = None
+        # 撮っているモニター。Noneなら主モニター。仮想ディスプレイのデスクトップを映すときは、そのモニター
+        self.monitor: dict | None = None
         self.size = (0, 0)
         loop = asyncio.get_running_loop()
         self.failed: asyncio.Future = loop.create_future()
@@ -197,12 +206,14 @@ class Session:
 
     async def open_stream(self) -> None:
         """今の範囲で撮り始める（まだ送らない）。"""
-        if self.region is None:
-            src = self.backend.screen_size()
-        else:
+        if self.region is not None:
             src = self.region[2], self.region[3]
+        elif self.monitor is not None:
+            src = self.monitor["rect"][2], self.monitor["rect"][3]
+        else:
+            src = self.backend.screen_size()
         self.size = output_size(src[0], src[1], self.settings.max_height)
-        self._stream = self.stream_factory(self.settings, src, self.region)
+        self._stream = self.stream_factory(self.settings, src, self.region, self.monitor)
         await self._stream.start()
 
     def start_video(self) -> None:
@@ -331,35 +342,79 @@ class Session:
             await self._stream.stop()
             self._stream = None
 
-    async def _switch(self, window: int | None, region: tuple[int, int, int, int] | None) -> None:
+    async def _switch(
+        self, window: int | None, region: tuple[int, int, int, int] | None, monitor: dict | None = None
+    ) -> None:
         """表示する範囲を変えて、撮り直す。大きさが変わるときは、先に resize を送る。"""
         await self.stop_stream()
-        self.window, self.region = window, region
-        self.backend.set_region(region)
+        self.window, self.region, self.monitor = window, region, monitor
+        # 入力の座標は、撮っている範囲が基準。範囲がなければ、モニター全体（主モニターなら、Noneのまま）
+        self.backend.set_region(region or (monitor["rect"] if monitor else None))
         old = self.size
         await self.open_stream()
         if self.size != old:
             await self.send({"t": "resize", "w": self.size[0], "h": self.size[1]})
         self.start_video()
 
-    async def _switch_to_window(self, wid: int, region: tuple[int, int, int, int]) -> None:
+    async def _switch_to_window(
+        self, wid: int, region: tuple[int, int, int, int], monitor: dict | None
+    ) -> None:
         """ウィンドウに切り替える。撮れなかったときは、画面全体に戻す（それも撮れなければ、接続を閉じる）。"""
         try:
-            await self._switch(wid, region)
+            await self._switch(wid, region, monitor)
         except StreamError as e:
             log.error("ウィンドウを撮れませんでした: %s", e)
             await self.send({"t": "error", "message": "このウィンドウは表示できませんでした。画面全体に戻します"})
             await self.send({"t": "mode", "mode": "screen"})
             await self._switch(None, None)
 
+    # --- モニターとウィンドウの位置
+
+    def _locate(self, rect: tuple[int, int, int, int]) -> tuple[dict | None, tuple[int, int, int, int] | None]:
+        """ウィンドウの範囲が出ているモニター（主モニターなら None）と、撮る範囲を返す。
+        どのモニターにも出ていないときや、小さすぎるときは、撮る範囲が None。"""
+        found = monitor_of(rect, self.backend.monitors())
+        if found is None:
+            return None, None
+        return (None if found["primary"] else found), clamp_region(rect, found["rect"])
+
+    def _where(self, rect: tuple[int, int, int, int], monitors: list[dict]) -> str:
+        found = monitor_of(rect, monitors)
+        if found is None:
+            return "none"
+        return "virtual" if found["virtual"] else "main" if found["primary"] else "other"
+
+    async def _ensure_virtual(self, fit_w: float | None = None, fit_h: float | None = None) -> dict | None:
+        """仮想ディスプレイを出して、そのモニターを返す。出せないときは、理由を知らせて None。
+        fit_w、fit_h があれば、その縦横比に近い解像度にする。"""
+        if not self.backend.virtual_available():
+            await self.send({"t": "error", "message": "仮想ディスプレイのドライバーが入っていません"})
+            return None
+        if not any(m["virtual"] for m in self.backend.monitors()):
+            await self.send({"t": "notice", "message": "仮想ディスプレイを出しています…"})
+        try:
+            monitor = await asyncio.to_thread(self.backend.virtual_on)
+            if fit_w and fit_h and fit_w > 0 and fit_h > 0:
+                monitor = await asyncio.to_thread(self.backend.virtual_set_aspect, fit_w / fit_h)
+        except VirtualDisplayError as e:
+            log.warning("仮想ディスプレイを出せませんでした: %s", e)
+            await self.send({"t": "error", "message": str(e)})
+            return None
+        return monitor
+
     # --- 制御メッセージ
 
     async def handle(self, msg: dict[str, Any]) -> None:
         t = msg.get("t")
         if t == "list_windows":
-            await self.send({"t": "windows", "list": self.backend.list_windows()})
+            await self.send({"t": "windows", "list": await self._window_list()})
         elif t == "mode":
             await self.set_mode(msg)
+        elif t == "bring":
+            await self.bring(msg)
+        elif t == "restore":
+            restored = await asyncio.to_thread(self.backend.restore_brought)
+            await self.send({"t": "notice", "message": f"ウィンドウを元の場所に戻しました（{len(restored)}個）"})
         elif t == "audio":
             await self.set_audio(msg)
         else:
@@ -367,12 +422,44 @@ class Session:
             if reply:
                 await self.send(reply)
 
+    async def _window_list(self) -> list[dict]:
+        monitors = await asyncio.to_thread(self.backend.monitors)
+        windows = await asyncio.to_thread(self.backend.list_windows)
+        return [
+            {"id": w["id"], "title": w["title"], "app": w["app"], "where": self._where(w["rect"], monitors)}
+            for w in windows
+        ]
+
+    async def bring(self, msg: dict[str, Any]) -> None:
+        """ウィンドウを、仮想モニターに持ってくる（表示は、今のまま）。切断したら、元に戻す。"""
+        wid = _int(msg.get("id"))
+        info = self.backend.window_info(wid) if wid is not None else None
+        if info is None:
+            await self.send({"t": "error", "message": "そのウィンドウは見つかりません。一覧を読み直してください"})
+            return
+        monitor = await self._ensure_virtual()
+        if monitor is None:
+            return
+        if not await asyncio.to_thread(self.backend.bring_window, wid, monitor["work"]):
+            await self.send({"t": "error", "message": "そのウィンドウは、仮想ディスプレイに移せませんでした"})
+            return
+        await asyncio.to_thread(self.backend.focus_window, wid)
+        await self.send({"t": "brought", "id": wid, "title": info["title"]})
+
     async def set_mode(self, msg: dict[str, Any]) -> None:
         mode = msg.get("mode")
         if mode == "screen":
             async with self._lock:
                 await self.send({"t": "mode", "mode": "screen"})
                 await self._switch(None, None)
+            return
+        if mode == "desktop":
+            monitor = await self._ensure_virtual(_num(msg.get("fit_w")), _num(msg.get("fit_h")))
+            if monitor is None:
+                return
+            async with self._lock:
+                await self.send({"t": "mode", "mode": "desktop"})
+                await self._switch(None, None, monitor)
             return
         if mode != "window":
             await self.send({"t": "error", "message": f"知らない表示の範囲です: {mode!r}"})
@@ -383,26 +470,36 @@ class Session:
             await self.send({"t": "error", "message": "そのウィンドウは見つかりません。一覧を読み直してください"})
             return
         fit_w, fit_h = _num(msg.get("fit_w")), _num(msg.get("fit_h"))
-        # 相手のアプリが固まっていると戻ってこないことがあるので、別のスレッドで呼ぶ
-        if fit_w and fit_h and fit_w > 0 and fit_h > 0:
-            await asyncio.to_thread(self.backend.fit_window, wid, fit_w, fit_h)
+        # 相手のアプリが固まっていると戻ってこないことがあるので、ウィンドウの操作は、別のスレッドで呼ぶ
+        if msg.get("to_virtual") is True:
+            # 仮想モニターを、iPhoneの画面の縦横比にして、そこにウィンドウを移す（作業領域いっぱいに広げる）
+            monitor = await self._ensure_virtual(fit_w, fit_h)
+            if monitor is None:
+                return
+            if not await asyncio.to_thread(self.backend.bring_window, wid, monitor["work"]):
+                await self.send({"t": "error", "message": "そのウィンドウは、仮想ディスプレイに移せませんでした"})
+                return
+        elif fit_w and fit_h and fit_w > 0 and fit_h > 0:
+            # ウィンドウが出ているモニターの作業領域に、大きさを合わせる
+            found = monitor_of(self.backend.window_info(wid)["rect"], self.backend.monitors())
+            await asyncio.to_thread(self.backend.fit_window, wid, fit_w, fit_h, found["work"] if found else None)
         # 上に他のウィンドウが重なると映像にも映るので、前に出す
         if not await asyncio.to_thread(self.backend.focus_window, wid):
             log.warning("ウィンドウを前に出せませんでした: %s", wid)
         await asyncio.sleep(0.2)  # 元の大きさに戻すときの動きが終わるのを待つ
 
         info = self.backend.window_info(wid)
-        region = clamp_region(info["rect"], self.backend.screen_size()) if info else None
+        monitor, region = self._locate(info["rect"]) if info else (None, None)
         if info is None or region is None:
-            await self.send({"t": "error", "message": "そのウィンドウは、主モニターに出ていないため表示できません"})
+            await self.send({"t": "error", "message": "そのウィンドウは、モニターに出ていないため表示できません"})
             return
         async with self._lock:
             await self.send({"t": "mode", "mode": "window", "id": wid, "title": info["title"]})
-            await self._switch_to_window(wid, region)
+            await self._switch_to_window(wid, region, monitor)
 
     async def watch_window(self) -> None:
         """表示しているウィンドウが動いたら撮り直す。閉じたら画面全体に戻す。"""
-        pending: tuple[int, int, int, int] | None = None
+        pending: tuple | None = None
         while True:
             await asyncio.sleep(WINDOW_POLL_SEC)
             wid = self.window
@@ -420,18 +517,20 @@ class Session:
                 continue
             if info["minimized"]:
                 continue  # 最小化している間は、前の範囲のまま
-            region = clamp_region(info["rect"], self.backend.screen_size())
-            if region is None or region == self.region:
+            monitor, region = self._locate(info["rect"])
+            target = (monitor["name"] if monitor else None, region)
+            current = (self.monitor["name"] if self.monitor else None, self.region)
+            if region is None or target == current:
                 pending = None
                 continue
             # 動かしている途中で何度も撮り直さないよう、同じ位置が2回続いたら撮り直す
-            if region != pending:
-                pending = region
+            if target != pending:
+                pending = target
                 continue
             pending = None
             async with self._lock:
                 if self.window == wid:
-                    await self._switch_to_window(wid, region)
+                    await self._switch_to_window(wid, region, monitor)
 
 
 async def _close_quietly(ws: ServerConnection, code: int, reason: str) -> None:
@@ -446,6 +545,36 @@ def make_handler(
 ):
     active: dict[str, Session | None] = {"session": None}
     background: set[asyncio.Task] = set()
+    cleanup: dict[str, asyncio.Task | None] = {"task": None}
+
+    async def run_cleanup() -> None:
+        """持ってきたウィンドウを元に戻し、仮想ディスプレイを無効に戻す。"""
+        try:
+            await asyncio.to_thread(backend.restore_brought)
+        except Exception:
+            log.exception("ウィンドウを元に戻せませんでした")
+        try:
+            await asyncio.to_thread(backend.virtual_off)
+        except Exception:
+            log.exception("仮想ディスプレイを無効に戻せませんでした")
+
+    def cancel_cleanup() -> None:
+        task = cleanup["task"]
+        cleanup["task"] = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def schedule_cleanup(delay: float) -> None:
+        cancel_cleanup()
+
+        async def later() -> None:
+            await asyncio.sleep(delay)
+            await run_cleanup()
+
+        task = asyncio.create_task(later())
+        cleanup["task"] = task
+        background.add(task)
+        task.add_done_callback(background.discard)
 
     async def reject(ws: ServerConnection, message: str) -> None:
         try:
@@ -506,6 +635,7 @@ def make_handler(
             max(max_height, 0),
         )
         session = Session(ws, per_conn, backend, stream_factory, audio_factory)
+        cancel_cleanup()  # 切れていた間に、戻す予定だったものは、続きから使う
 
         # 同時に1台だけ。前の接続は切る。
         # 前の接続が応答しなくても待たされないよう、閉じるのは裏で行い、後片付けだけを待つ
@@ -528,7 +658,10 @@ def make_handler(
             await session.open_stream()
             w, h = session.size
             await ws.send(protocol.dumps(
-                {"t": "welcome", "v": protocol.VERSION, "w": w, "h": h, "codec": "h264", "mode": "screen"}
+                {
+                    "t": "welcome", "v": protocol.VERSION, "w": w, "h": h, "codec": "h264", "mode": "screen",
+                    "virtual": bool(backend.virtual_available()),
+                }
             ))
             log.info("接続しました: %s（%dx%d, %dfps）", ws.remote_address, w, h, per_conn.fps)
             session.start_video()
@@ -561,11 +694,18 @@ def make_handler(
             if active["session"] is session:
                 active["session"] = None
                 backend.set_region(None)
-            session.finished.set()
             if session.kicked.done():
-                # 別の端末に代わったときは、この接続を閉じるのを待たない（裏で閉じている）
+                # 別の端末に代わったときは、その端末が、仮想ディスプレイとウィンドウを引き継ぐ。
+                # この接続を閉じるのも待たない（裏で閉じている）
                 log.info("別の端末に切り替えました")
-            else:
+            elif ws.close_code == 1000:
+                # iPhone の「切断」ボタン。すぐ元に戻す
+                await run_cleanup()
                 log.info("切断しました")
+            else:
+                # 通信が切れた、アプリが裏に回った、など。少し待ってから戻す
+                schedule_cleanup(RESTORE_GRACE_SEC)
+                log.info("切れました（%d秒以内につなぎ直せば、続きから使えます）", RESTORE_GRACE_SEC)
+            session.finished.set()
 
     return handler

@@ -7,6 +7,7 @@
 - ウィンドウの一覧
 - --window を付けたとき: ウィンドウ1つだけの表示に切り替えられるか（そのウィンドウが前に出る）
 - --audio を付けたとき: PCの音が届くか（PCで音を鳴らしながら実行する）
+- --virtual を付けたとき: 仮想ディスプレイを出して映せるか（サーバーを管理者として起動しておく。終わったら、無効に戻る）
 
 マウスとキーボードは動かさない。
 """
@@ -103,7 +104,8 @@ async def _collect_audio(ws, seconds: float) -> tuple[int, int]:
 
 
 async def run_check(
-    url: str, token: str, seconds: float = 3.0, try_window: bool = False, try_audio: bool = False
+    url: str, token: str, seconds: float = 3.0, try_window: bool = False, try_audio: bool = False,
+    try_virtual: bool = False,
 ) -> bool:
     r = Report()
     print(f"接続先: {url}")
@@ -126,6 +128,7 @@ async def run_check(
             r.bad(f"サーバーに断られました: {msg.get('message')}")
             return False
         r.good(f"接続できました（映像の大きさ {msg['w']}x{msg['h']}）")
+        virtual_installed = bool(msg.get("virtual"))
 
         # 2. 映像
         stats = await _count_frames(ws, seconds)
@@ -188,7 +191,44 @@ async def run_check(
                 except asyncio.TimeoutError:
                     r.bad("画面全体の表示に戻した返事がありません")
 
-        # 6. 音
+        # 6. 仮想ディスプレイ
+        if try_virtual:
+            if not virtual_installed:
+                r.bad("仮想ディスプレイのドライバーが見つかりません（docs/virtual-display.md の手順で入れてください）")
+            else:
+                started = time.monotonic()
+                await ws.send(json.dumps({"t": "mode", "mode": "desktop", "fit_w": 951, "fit_h": 669}))
+                try:
+                    reply = await _recv_json(ws, {"mode", "error"}, timeout=40)
+                except asyncio.TimeoutError:
+                    reply = None
+                if reply is None:
+                    r.bad("仮想ディスプレイを出した返事がありません")
+                elif reply["t"] == "error":
+                    r.bad(f"仮想ディスプレイを出せませんでした: {reply.get('message')}")
+                else:
+                    elapsed = time.monotonic() - started
+                    try:
+                        size = await _recv_json(ws, {"resize"}, timeout=5)
+                        shown = f"{size['w']}x{size['h']}"
+                    except asyncio.TimeoutError:
+                        shown = "大きさ不明"
+                    stats = await _count_frames(ws, seconds)
+                    if stats["frames"] and stats["first_is_key"]:
+                        r.good(
+                            f"仮想ディスプレイ（デスクトップ）を映せました: {shown}、"
+                            f"出すまで {elapsed:.1f}秒、{stats['frames']} フレーム"
+                        )
+                    else:
+                        r.bad(f"仮想ディスプレイに切り替えたあと、映像が届きません（{shown}）。サーバーの画面の ffmpeg のエラーを見てください")
+                await ws.send(json.dumps({"t": "mode", "mode": "screen"}))
+                try:
+                    await _recv_json(ws, {"mode"}, timeout=10)
+                    r.good("画面全体の表示に戻せました")
+                except asyncio.TimeoutError:
+                    r.bad("画面全体の表示に戻した返事がありません")
+
+        # 7. 音
         if try_audio:
             await ws.send(json.dumps({"t": "audio", "on": True, "rate": 48000, "channels": 2}))
             try:
@@ -222,6 +262,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--seconds", type=float, default=3.0, help="映像を受け取る秒数")
     p.add_argument("--window", action="store_true", help="ウィンドウ1つだけの表示も試す（一覧の先頭のウィンドウが前に出る）")
     p.add_argument("--audio", action="store_true", help="PCの音が届くかも試す（PCで音を鳴らしながら実行する）")
+    p.add_argument("--virtual", action="store_true", help="仮想ディスプレイを出して映せるかも試す（サーバーを管理者として起動しておく）")
     args = p.parse_args(argv)
 
     if not args.config.exists():
@@ -229,7 +270,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
     cfg = json.loads(args.config.read_text(encoding="utf-8"))
     port = args.port or cfg.get("port", 8765)
-    ok = asyncio.run(run_check(f"ws://{args.host}:{port}/", cfg.get("token", ""), args.seconds, args.window, args.audio))
+    ok = asyncio.run(run_check(f"ws://{args.host}:{port}/", cfg.get("token", ""), args.seconds, args.window, args.audio, args.virtual))
     sys.exit(0 if ok else 1)
 
 

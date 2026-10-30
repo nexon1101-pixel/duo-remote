@@ -59,6 +59,21 @@ class AccessUnitSplitter:
         return units
 
 
+def capture_target(
+    monitor: dict | None, region: tuple[int, int, int, int] | None, default_output: int = 0
+) -> tuple[int, tuple[int, int, int, int] | None]:
+    """ddagrab に渡す (モニターの番号, 撮る範囲) を決める。
+    monitor が None なら主モニター（番号は default_output）。それ以外は、調べた DXGI の番号を使う。
+    region は、デスクトップ上の位置。ddagrab の範囲は、そのモニターの左上が基準なので、引いて直す。"""
+    if monitor is not None and monitor.get("output") is not None:
+        output_idx, (ox, oy) = monitor["output"], monitor["rect"][:2]
+    else:
+        output_idx, (ox, oy) = default_output, (0, 0)
+    if region is None:
+        return output_idx, None
+    return output_idx, (region[0] - ox, region[1] - oy, region[2], region[3])
+
+
 def output_size(src_w: int, src_h: int, max_height: int) -> tuple[int, int]:
     """送る映像の大きさ。max_heightが0なら元の大きさのまま（偶数にそろえる）。"""
     if max_height and src_h > max_height:

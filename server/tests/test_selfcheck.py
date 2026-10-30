@@ -48,14 +48,16 @@ class SineAudio:
         pass
 
 
-async def check_against_server(token, try_window, try_audio=False, audio_factory=None):
+async def check_against_server(token, try_window, try_audio=False, audio_factory=None, virtual=None):
     backend = NullInput((1920, 1080))
+    backend.virtual_installed = bool(virtual)
     backend.windows = {7: {"title": "メモ帳", "app": "notepad.exe", "rect": (0, 0, 800, 600)}}
     handler = make_handler(Settings(token="secret"), backend, lambda *a: LoopStream(), audio_factory)
     async with serve(handler, "127.0.0.1", 0) as server:
         port = server.sockets[0].getsockname()[1]
         return await run_check(
-            f"ws://127.0.0.1:{port}/", token, seconds=0.5, try_window=try_window, try_audio=try_audio
+            f"ws://127.0.0.1:{port}/", token, seconds=0.5, try_window=try_window, try_audio=try_audio,
+            try_virtual=virtual is not None,
         )
 
 
@@ -89,3 +91,14 @@ def test_selfcheck_audio_silent(capsys):
 def test_selfcheck_audio_unavailable(capsys):
     assert not asyncio.run(check_against_server("secret", False, True, None))
     assert "音を始められませんでした" in capsys.readouterr().out
+
+
+def test_selfcheck_virtual_ok(capsys):
+    assert asyncio.run(check_against_server("secret", False, virtual=True))
+    out = capsys.readouterr().out
+    assert "仮想ディスプレイ（デスクトップ）を映せました" in out and "1536x1080" in out and "[NG]" not in out
+
+
+def test_selfcheck_virtual_not_installed(capsys):
+    assert not asyncio.run(check_against_server("secret", False, virtual=False))
+    assert "ドライバーが見つかりません" in capsys.readouterr().out
