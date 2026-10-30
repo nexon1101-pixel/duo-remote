@@ -20,6 +20,10 @@ struct ContentView: View {
     @AppStorage("edgeMargin") private var edgeMargin = 0
     @AppStorage("showLatency") private var showLatency = true
     @AppStorage(KeyCaptureView.zenkakuKey) private var zenkakuAsIME = false
+    /// 右下のボタンで出すキーボード（iPhoneのキーボードか、アプリのキーボード）
+    @AppStorage("keyboardKind") private var keyboardKind = InputMode.overlay
+    @AppStorage(OverlayKeyboard.layoutKey) private var overlayLayout = OverlayKeyboardLayout.us
+    @AppStorage(OverlayKeyboard.opacityKey) private var overlayOpacity = 0.8
 
     @Environment(\.scenePhase) private var scenePhase
     /// ノッチや Dynamic Island、ホームの線の分の余白。映像は端まで出すので、上に置くボタンはこの分だけ内側に寄せる
@@ -94,6 +98,16 @@ struct ContentView: View {
                     .allowsHitTesting(false)
             }
 
+            if inputMode == .overlay {
+                OverlayKeyboard(session: session) {
+                    if inputMode == .overlay { inputMode = .touch }
+                }
+                .padding(.top, safeInsets.top)
+                .padding(.leading, safeInsets.leading)
+                .padding(.trailing, safeInsets.trailing)
+                .padding(.bottom, safeInsets.bottom)
+            }
+
             VStack(spacing: 0) {
                 HStack {
                     Spacer()
@@ -164,6 +178,10 @@ struct ContentView: View {
         .onAppear {
             inputMode = GCKeyboard.coalesced != nil ? .hardware : .touch
         }
+        .onChange(of: inputMode) { _, mode in
+            // メニューで選んだキーボードを、右下のボタンで出すものにする
+            if mode == .software || mode == .overlay { keyboardKind = mode }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .GCKeyboardDidConnect)) { _ in
             inputMode = .hardware
         }
@@ -203,10 +221,14 @@ struct ContentView: View {
     /// 右下のボタン。iPhoneのキーボードを出す・しまう。PCのIMEの状態も見せる
     private var inputButton: some View {
         Button {
-            inputMode = inputMode == .software ? .touch : .software
+            switch inputMode {
+            case .software, .overlay: inputMode = .touch
+            default: inputMode = keyboardKind == .software ? .software : .overlay
+            }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: inputMode == .software ? "keyboard.chevron.compact.down" : inputMode.systemImage)
+                Image(systemName: inputMode == .software || inputMode == .overlay
+                      ? "keyboard.chevron.compact.down" : inputMode.systemImage)
                 if inputMode != .touch, let on = session.imeOn {
                     Text(on ? "あ" : "A").font(.callout.bold())
                 }
@@ -247,6 +269,17 @@ struct ContentView: View {
                 .pickerStyle(.inline)
                 Toggle("command を Ctrl にする", isOn: $commandAsControl)
                 Toggle("半角/全角キーで IME を切り替える", isOn: $zenkakuAsIME)
+                Picker("アプリのキーボードの配列", selection: $overlayLayout) {
+                    ForEach(OverlayKeyboardLayout.allCases) { layout in
+                        Text(layout.label).tag(layout)
+                    }
+                }
+                Picker("アプリのキーボードの濃さ", selection: $overlayOpacity) {
+                    Text("100%").tag(1.0)
+                    Text("80%").tag(0.8)
+                    Text("60%").tag(0.6)
+                    Text("40%").tag(0.4)
+                }
                 Toggle("遅れを画面に出す", isOn: $showLatency)
                 Picker("画面の端の余白", selection: $edgeMargin) {
                     Text("なし").tag(0)

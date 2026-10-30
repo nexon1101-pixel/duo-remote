@@ -9,6 +9,8 @@ enum InputMode: String, CaseIterable, Identifiable {
     case software
     /// Bluetoothキーボード。キーをそのまま送り、日本語の変換はPCのIMEで行う
     case hardware
+    /// アプリのキーボード（映像の上に重ねて出す、PCのキー）。日本語の変換はPCのIMEで行う
+    case overlay
 
     var id: String { rawValue }
 
@@ -17,6 +19,7 @@ enum InputMode: String, CaseIterable, Identifiable {
         case .touch: "タッチだけ"
         case .software: "iPhoneのキーボード"
         case .hardware: "Bluetoothキーボード"
+        case .overlay: "アプリのキーボード"
         }
     }
 
@@ -25,6 +28,7 @@ enum InputMode: String, CaseIterable, Identifiable {
         case .touch: "hand.tap"
         case .software: "keyboard"
         case .hardware: "keyboard.badge.ellipsis"
+        case .overlay: "keyboard.fill"
         }
     }
 }
