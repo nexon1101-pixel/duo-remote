@@ -260,6 +260,10 @@ struct ContentView: View {
                     }
                 }
             }
+            Menu("クリップボード", systemImage: "doc.on.clipboard") {
+                Button("iPhone → PC", systemImage: "arrow.up.doc") { session.sendClipboard() }
+                Button("PC → iPhone", systemImage: "arrow.down.doc") { session.requestClipboard() }
+            }
             Button("ウィンドウを選ぶ", systemImage: "macwindow") {
                 session.requestWindows()
                 showingWindows = true

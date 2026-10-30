@@ -15,6 +15,7 @@ from websockets.exceptions import ConnectionClosed
 from . import protocol
 from .audio import ALLOWED_CHANNELS, ALLOWED_RATES, AudioError
 from .capture import StreamError, output_size
+from .input_win import ClipboardError, from_windows_newlines, to_windows_newlines
 from .virtual_display import VirtualDisplayError, monitor_of
 
 log = logging.getLogger(__name__)
@@ -577,10 +578,41 @@ class Session:
             await self.send({"t": "notice", "message": f"ウィンドウを元の場所に戻しました（{len(restored)}個）"})
         elif t == "audio":
             await self.set_audio(msg)
+        elif t == "clip_get":
+            await self.clip_get()
+        elif t == "clip_set":
+            await self.clip_set(msg)
         else:
             reply = dispatch_input(msg, self.backend, self.held)
             if reply:
                 await self.send(reply)
+
+    async def clip_get(self) -> None:
+        """PCのクリップボードの文字を、iPhoneに送る。"""
+        try:
+            text = from_windows_newlines(await asyncio.to_thread(self.backend.clip_get))
+        except ClipboardError as e:
+            await self.send({"t": "error", "message": str(e)})
+            return
+        if len(text) > protocol.MAX_CLIP_LENGTH:
+            await self.send({"t": "error", "message": f"PCのクリップボードの文字が長すぎます（{protocol.MAX_CLIP_LENGTH}文字まで）"})
+            return
+        await self.send({"t": "clip", "s": text})
+
+    async def clip_set(self, msg: dict[str, Any]) -> None:
+        """iPhoneから届いた文字を、PCのクリップボードに入れる。"""
+        s = msg.get("s")
+        if not isinstance(s, str):
+            return
+        if len(s) > protocol.MAX_CLIP_LENGTH:
+            await self.send({"t": "error", "message": f"文字が長すぎます（{protocol.MAX_CLIP_LENGTH}文字まで）"})
+            return
+        try:
+            await asyncio.to_thread(self.backend.clip_set, to_windows_newlines(s))
+        except ClipboardError as e:
+            await self.send({"t": "error", "message": str(e)})
+            return
+        await self.send({"t": "notice", "message": "PCのクリップボードに入れました"})
 
     async def _window_list(self) -> list[dict]:
         monitors = await asyncio.to_thread(self.backend.monitors)
