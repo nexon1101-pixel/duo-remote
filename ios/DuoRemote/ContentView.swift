@@ -1,28 +1,179 @@
+import GameController
 import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var session: RemoteSession
 
-    // 接続先は端末に覚えておく。トークンの保管（キーチェーン）は後で対応する
+    // 接続先は端末に覚えておく。トークンはキーチェーンにしまう
     @AppStorage("host") private var host = ""
     @AppStorage("port") private var port = "8765"
-    @AppStorage("token") private var token = ""
+    @State private var token = ""
+
+    @AppStorage("pointerMode") private var pointerMode = PointerMode.direct
+    @AppStorage(KeyCaptureView.commandAsControlKey) private var commandAsControl = false
+    @AppStorage("fitWindow") private var fitWindow = true
+
+    @State private var showingWindows = false
+    /// 画面全体の大きさ（ポイント。キーボードが出ていても変わらない）。ウィンドウの大きさを合わせるときに使う
+    @State private var fullSize: CGSize = .zero
+    @State private var refitTask: Task<Void, Never>?
+    @State private var inputMode: InputMode = .touch
+    /// 変えると、キーを受け取る部品が、もう一度入力を受け取る状態になる
+    @State private var refocus = 0
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            switch session.state {
-            case .connected:
-                VideoView(renderer: session.renderer)
-                    .ignoresSafeArea()
-                    .overlay(alignment: .topTrailing) {
-                        Button("切断") { session.disconnect() }
-                            .buttonStyle(.borderedProminent)
-                            .padding()
-                    }
-            default:
+            if session.isConnectedOrReconnecting {
+                connectedView
+            } else {
                 connectForm
             }
+        }
+        .onAppear(perform: loadToken)
+    }
+
+    private var connectedView: some View {
+        VStack(spacing: 0) {
+            VideoView(
+                renderer: session.renderer,
+                videoSize: session.videoSize,
+                pointerMode: pointerMode,
+                send: session.send
+            )
+            .overlay(alignment: .bottomTrailing) { inputButton }
+            if inputMode == .software {
+                SoftwareInputBar(refocus: refocus) {
+                    // キーボードが閉じられたら、タッチだけに戻す
+                    if inputMode == .software { inputMode = .touch }
+                }
+            }
+        }
+        // 画面の端までは使うが、iPhoneのキーボードが出たら、その上までにする
+        .ignoresSafeArea(.container)
+        .background {
+            HardwareKeyView(
+                isActive: inputMode == .hardware && !showingWindows,
+                refocus: refocus,
+                session: session
+            )
+            .frame(width: 0, height: 0)
+        }
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { fullSize = proxy.size }
+                    .onChange(of: proxy.size) { _, size in
+                        fullSize = size
+                        refitWindow()
+                    }
+            }
+            .ignoresSafeArea()
+        }
+        .overlay(alignment: .topTrailing) { menu }
+        .overlay(alignment: .top) {
+            if let notice = session.notice {
+                Text(notice)
+                    .font(.callout)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.top, 8)
+                    .padding(.horizontal, 60)
+                    .transition(.opacity)
+            }
+        }
+        .overlay {
+            if session.state == .reconnecting {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("つなぎ直しています…")
+                    Button("やめる") { session.disconnect() }
+                        .buttonStyle(.bordered)
+                }
+                .padding(24)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            }
+        }
+        .animation(.default, value: session.notice)
+        .sheet(isPresented: $showingWindows, onDismiss: { refocus += 1 }) {
+            WindowPicker(fitSize: fullSize)
+        }
+        .onAppear {
+            inputMode = GCKeyboard.coalesced != nil ? .hardware : .touch
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .GCKeyboardDidConnect)) { _ in
+            inputMode = .hardware
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .GCKeyboardDidDisconnect)) { _ in
+            if inputMode == .hardware { inputMode = .touch }
+        }
+    }
+
+    /// 回したり、Duoを閉じたり開いたりして画面の大きさが変わったら、ウィンドウの大きさを合わせ直す。
+    /// 変わっている途中で何度も送らないよう、少し待ってから送る
+    private func refitWindow() {
+        refitTask?.cancel()
+        refitTask = Task {
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled, fitWindow, let window = session.currentWindow else { return }
+            session.showWindow(window, fit: fullSize)
+        }
+    }
+
+    /// 右下のボタン。iPhoneのキーボードを出す・しまう。PCのIMEの状態も見せる
+    private var inputButton: some View {
+        Button {
+            inputMode = inputMode == .software ? .touch : .software
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: inputMode == .software ? "keyboard.chevron.compact.down" : inputMode.systemImage)
+                if inputMode != .touch, let on = session.imeOn {
+                    Text(on ? "あ" : "A").font(.callout.bold())
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .foregroundStyle(.white)
+            .background(.black.opacity(0.5), in: Capsule())
+        }
+        .padding(12)
+    }
+
+    private var menu: some View {
+        Menu {
+            if let window = session.currentWindow {
+                Text("表示中: \(window.title)")
+            }
+            Picker("入力", selection: $inputMode) {
+                ForEach(InputMode.allCases) { mode in
+                    Label(mode.label, systemImage: mode.systemImage).tag(mode)
+                }
+            }
+            .pickerStyle(.inline)
+            Menu("操作の設定", systemImage: "slider.horizontal.3") {
+                Picker("画面の触り方", selection: $pointerMode) {
+                    ForEach(PointerMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.inline)
+                Toggle("command を Ctrl にする", isOn: $commandAsControl)
+            }
+            Button("ウィンドウを選ぶ", systemImage: "macwindow") {
+                session.requestWindows()
+                showingWindows = true
+            }
+            if session.currentWindow != nil {
+                Button("画面全体を表示", systemImage: "display") { session.showScreen() }
+            }
+            Button("切断", systemImage: "xmark.circle", role: .destructive) { session.disconnect() }
+        } label: {
+            Image(systemName: "ellipsis.circle.fill")
+                .font(.title)
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(.white, .black.opacity(0.5))
+                .padding(12)
         }
     }
 
@@ -41,6 +192,7 @@ struct ContentView: View {
             }
             Section {
                 Button(session.state == .connecting ? "接続しています…" : "接続") {
+                    Keychain.save("token", token)
                     session.connect(host: host, port: Int(port) ?? 8765, token: token)
                 }
                 .disabled(host.isEmpty || token.isEmpty || session.state == .connecting)
@@ -50,5 +202,16 @@ struct ContentView: View {
             }
         }
         .scrollContentBackground(.hidden)
+    }
+
+    private func loadToken() {
+        if let saved = Keychain.load("token") {
+            token = saved
+        } else if let old = UserDefaults.standard.string(forKey: "token") {
+            // 0.4 までは、トークンを普通の設定にしまっていた。キーチェーンに移す
+            token = old
+            Keychain.save("token", old)
+            UserDefaults.standard.removeObject(forKey: "token")
+        }
     }
 }
