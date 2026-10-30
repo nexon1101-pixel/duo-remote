@@ -2,9 +2,10 @@
 
 この文書は、Windows PC を操作する Claude に読ませるためのものです。ユーザーは、次のように伝えるだけです。
 
-> duo-remote のリポジトリで git pull して、docs/pc-requests.md を読んで、依頼B をやってください。
+> duo-remote のリポジトリで git pull して、docs/pc-requests.md を読んで、依頼C をやってください。
 
-（依頼A と B は、どちらもサーバーの動作確認です。名前を言われた依頼だけを、やってください。）
+（依頼A、B、C は、それぞれ別の依頼です。名前を言われた依頼だけを、やってください。
+A: 切断のあとの後片付けの確認 / B: ウィンドウと音の確認 / C: iPhone で試すあいだの、サーバーの起動と見守り）
 
 リポジトリは `%USERPROFILE%\duo-remote` にあります（なければ `git clone https://github.com/nexon1101-pixel/duo-remote.git`）。
 
@@ -186,3 +187,34 @@ check.bat --bring --title <タイトル>
 ```
 
 期待する結果: すべて `[OK]`。
+
+
+---
+
+## 依頼C: iPhone で試すあいだの、サーバーの起動と見守り
+
+目的: ユーザーが iPhone で試しているあいだ、サーバーを管理者で動かし続け、終わったあとの後片付けを確かめる。
+
+### 手順
+
+1. 動いているサーバーがあれば、Ctrl+C で止める
+2. 最新にする（`cd /d "%USERPROFILE%\duo-remote"` のあと `git pull`。ブランチ指定が必要と出たら `git pull origin claude/keen-wozniak-41r0ni`）
+3. `server\start-admin.bat` を実行する（管理者の確認画面が出るので、ユーザーに押してもらう）。「duo_server 0.7.0 を起動しました」と「仮想ディスプレイ: 使えます」が出ること
+4. このPCの IPv4 アドレス（Wi-Fi か有線の `192.168.x.x`）を調べて、ユーザーに伝える
+5. サーバーの画面は、閉じずに、そのまま動かしておく。ユーザーが「終わった」と言うまで、待つ
+   - 待っているあいだ、ユーザーに頼まれたときだけ、`virtual.bat monitors` や、ログの表示（`Get-Content "$env:USERPROFILE\duo-remote\server\duo_server.log" -Tail 60`）をする
+
+### ユーザーが「終わった」と言ったら
+
+1. ユーザーが「切断した」と言ってから **10秒待って**、`virtual.bat monitors` を実行する。`【仮想】` が、あるか、ないかを控える
+2. `duo_server.log` の最後の80行を控える（トークンは伏せる）
+3. サーバーの画面で Ctrl+C を押して止める。止めたあと、もう一度 `virtual.bat monitors` を実行して、控える
+
+### 報告の形
+
+```
+・PCの IP アドレス
+・切断のあと10秒たったときの、仮想モニターの有無
+・duo_server.log の最後の80行（そのまま）
+・止めたあとの、仮想モニターの有無
+```
