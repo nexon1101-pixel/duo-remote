@@ -33,6 +33,10 @@ enum KeyMap {
             return usage - 0x1E + 0x02
         case 0x3A...0x43: // F1〜F10
             return usage - 0x3A + 0x3B
+        case 0x68...0x72: // F13〜F23（Macのキーボードには F13〜F19 がある）
+            return usage - 0x68 + 0x64
+        case 0x73: // F24
+            return 0x76
         default:
             return others[usage]
         }

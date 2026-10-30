@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
@@ -21,6 +22,17 @@ IME_POLL_SEC = 0.5
 WINDOW_POLL_SEC = 0.5
 # 撮る範囲の最小の大きさ（画素）。これより小さいと、エンコーダーが受け付けないことがある
 MIN_REGION = 160
+# 前の接続の後片付けを待つ時間の上限
+PREVIOUS_CLEANUP_SEC = 3
+# 送り待ちの映像がこれを超えたら、次のキーフレームまで映像を捨てる（遅れをためないため）
+MAX_QUEUED_FRAMES = 4
+MAX_BUFFERED_BYTES = 256 * 1024
+# クライアントが選べるビットレートの範囲（kbps）
+MIN_BITRATE_KBPS = 500
+MAX_BITRATE_KBPS = 20000
+
+VK_RETURN = 0x0D
+_NEWLINE = re.compile(r"\r\n|\r|\n")
 
 
 @dataclass
@@ -79,6 +91,11 @@ def dispatch_input(msg: dict[str, Any], backend, held: set | None = None) -> dic
         x, y = _unit(msg.get("x")), _unit(msg.get("y"))
         if x is not None and y is not None:
             backend.move(x, y)
+    elif t == "move_rel":
+        dx, dy = _num(msg.get("dx"), 0.0), _num(msg.get("dy"), 0.0)
+        dx, dy = min(max(dx, -1.0), 1.0), min(max(dy, -1.0), 1.0)
+        if dx or dy:
+            backend.move_rel(dx, dy)
     elif t == "button":
         b, d = msg.get("b"), msg.get("d")
         if b in ("left", "right", "middle") and d in ("down", "up"):
@@ -104,7 +121,14 @@ def dispatch_input(msg: dict[str, Any], backend, held: set | None = None) -> dic
     elif t == "text":
         s = msg.get("s")
         if isinstance(s, str) and s:
-            backend.text(s[: protocol.MAX_TEXT_LENGTH])
+            # 改行は、文字のままだと多くのアプリで改行にならないので、Enter として押す
+            lines = _NEWLINE.split(s[: protocol.MAX_TEXT_LENGTH])
+            for i, line in enumerate(lines):
+                if i > 0:
+                    backend.key(VK_RETURN, True)
+                    backend.key(VK_RETURN, False)
+                if line:
+                    backend.text(line)
     elif t == "ime":
         on = msg.get("on")
         if isinstance(on, bool):
@@ -143,7 +167,12 @@ class Session:
         self.window: int | None = None  # 表示しているウィンドウ。Noneなら画面全体
         self.region: tuple[int, int, int, int] | None = None
         self.size = (0, 0)
-        self.failed: asyncio.Future = asyncio.get_running_loop().create_future()
+        loop = asyncio.get_running_loop()
+        self.failed: asyncio.Future = loop.create_future()
+        # 別の端末がつながったときに、この接続を終わらせる合図
+        self.kicked: asyncio.Future = loop.create_future()
+        # この接続の後片付け（映像を止める、押したままのキーを離す）が終わった
+        self.finished = asyncio.Event()
         self._stream: Stream | None = None
         self._video: asyncio.Task | None = None
         self._lock = asyncio.Lock()
@@ -171,9 +200,55 @@ class Session:
         self._video.add_done_callback(self._video_done)
 
     async def _send_video(self, stream: Stream) -> None:
-        async for keyframe, unit in stream.frames():
-            ts = int((time.monotonic() - self._t0) * 1000)
-            await self.ws.send(protocol.pack_frame(unit, keyframe, ts))
+        """映像を送る。ffmpegからの読み取りは別に動かし、送るのが追いつかないときは古いフレームを捨てる。"""
+        queue: asyncio.Queue = asyncio.Queue()
+        reader = asyncio.create_task(self._read_frames(stream, queue))
+        try:
+            while True:
+                item = await queue.get()
+                if isinstance(item, BaseException):
+                    raise item
+                keyframe, unit, ts = item
+                await self.ws.send(protocol.pack_frame(unit, keyframe, ts))
+        finally:
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+
+    async def _read_frames(self, stream: Stream, queue: asyncio.Queue) -> None:
+        dropping = False
+        dropped = 0
+        try:
+            async for keyframe, unit in stream.frames():
+                ts = int((time.monotonic() - self._t0) * 1000)
+                if queue.qsize() >= MAX_QUEUED_FRAMES or self._buffered_bytes() > MAX_BUFFERED_BYTES:
+                    if not dropping:
+                        log.info("通信が追いつかないため、次のキーフレームまで映像を捨てます")
+                    dropping = True
+                    while not queue.empty():
+                        queue.get_nowait()
+                        dropped += 1
+                if dropping:
+                    # キーフレームの途中からは表示できないので、次のキーフレームまで待つ
+                    if not keyframe:
+                        dropped += 1
+                        continue
+                    dropping = False
+                    log.info("映像を %d フレーム捨てました", dropped)
+                    dropped = 0
+                queue.put_nowait((keyframe, unit, ts))
+        except Exception as e:  # ffmpegが止まったときなど。送る側で投げ直す
+            queue.put_nowait(e)
+
+    def _buffered_bytes(self) -> int:
+        transport = getattr(self.ws, "transport", None)
+        try:
+            return transport.get_write_buffer_size() if transport is not None else 0
+        except (AttributeError, RuntimeError):
+            return 0
+
+    def kick(self) -> None:
+        if not self.kicked.done():
+            self.kicked.set_result(None)
 
     def _video_done(self, task: asyncio.Task) -> None:
         if task.cancelled() or self.failed.done():
@@ -201,6 +276,16 @@ class Session:
         if self.size != old:
             await self.send({"t": "resize", "w": self.size[0], "h": self.size[1]})
         self.start_video()
+
+    async def _switch_to_window(self, wid: int, region: tuple[int, int, int, int]) -> None:
+        """ウィンドウに切り替える。撮れなかったときは、画面全体に戻す（それも撮れなければ、接続を閉じる）。"""
+        try:
+            await self._switch(wid, region)
+        except StreamError as e:
+            log.error("ウィンドウを撮れませんでした: %s", e)
+            await self.send({"t": "error", "message": "このウィンドウは表示できませんでした。画面全体に戻します"})
+            await self.send({"t": "mode", "mode": "screen"})
+            await self._switch(None, None)
 
     # --- 制御メッセージ
 
@@ -231,10 +316,11 @@ class Session:
             await self.send({"t": "error", "message": "そのウィンドウは見つかりません。一覧を読み直してください"})
             return
         fit_w, fit_h = _num(msg.get("fit_w")), _num(msg.get("fit_h"))
+        # 相手のアプリが固まっていると戻ってこないことがあるので、別のスレッドで呼ぶ
         if fit_w and fit_h and fit_w > 0 and fit_h > 0:
-            self.backend.fit_window(wid, fit_w, fit_h)
+            await asyncio.to_thread(self.backend.fit_window, wid, fit_w, fit_h)
         # 上に他のウィンドウが重なると映像にも映るので、前に出す
-        if not self.backend.focus_window(wid):
+        if not await asyncio.to_thread(self.backend.focus_window, wid):
             log.warning("ウィンドウを前に出せませんでした: %s", wid)
         await asyncio.sleep(0.2)  # 元の大きさに戻すときの動きが終わるのを待つ
 
@@ -245,7 +331,7 @@ class Session:
             return
         async with self._lock:
             await self.send({"t": "mode", "mode": "window", "id": wid, "title": info["title"]})
-            await self._switch(wid, region)
+            await self._switch_to_window(wid, region)
 
     async def watch_window(self) -> None:
         """表示しているウィンドウが動いたら撮り直す。閉じたら画面全体に戻す。"""
@@ -278,11 +364,19 @@ class Session:
             pending = None
             async with self._lock:
                 if self.window == wid:
-                    await self._switch(wid, region)
+                    await self._switch_to_window(wid, region)
+
+
+async def _close_quietly(ws: ServerConnection, code: int, reason: str) -> None:
+    try:
+        await ws.close(code, reason)
+    except ConnectionClosed:
+        pass
 
 
 def make_handler(settings: Settings, backend, stream_factory: StreamFactory):
-    active: dict[str, ServerConnection | None] = {"ws": None}
+    active: dict[str, Session | None] = {"session": None}
+    background: set[asyncio.Task] = set()
 
     async def reject(ws: ServerConnection, message: str) -> None:
         try:
@@ -321,7 +415,8 @@ def make_handler(settings: Settings, backend, stream_factory: StreamFactory):
     async def watch_ime(ws: ServerConnection) -> None:
         last: bool | None = None
         while True:
-            state = backend.ime_state()
+            # 前面のアプリが固まっていても止まらないよう、別のスレッドで問い合わせる
+            state = await asyncio.to_thread(backend.ime_state)
             if state is not None and state != last:
                 last = state
                 await ws.send(protocol.dumps({"t": "ime_state", "on": state}))
@@ -332,20 +427,32 @@ def make_handler(settings: Settings, backend, stream_factory: StreamFactory):
         if hello is None:
             return
 
-        # 同時に1台だけ。前の接続は切る
-        previous = active["ws"]
-        if previous is not None:
-            try:
-                await previous.close(1000, "別の端末がつながりました")
-            except ConnectionClosed:
-                pass
-        active["ws"] = ws
-
         fps = int(_num(hello.get("fps"), settings.fps) or settings.fps)
         max_height = int(_num(hello.get("max_height"), settings.max_height) or 0)
-        per_conn = Settings(settings.token, min(max(fps, 5), 120), settings.bitrate_kbps, max_height)
-
+        bitrate = int(_num(hello.get("bitrate"), settings.bitrate_kbps) or settings.bitrate_kbps)
+        per_conn = Settings(
+            settings.token,
+            min(max(fps, 5), 120),
+            min(max(bitrate, MIN_BITRATE_KBPS), MAX_BITRATE_KBPS),
+            max(max_height, 0),
+        )
         session = Session(ws, per_conn, backend, stream_factory)
+
+        # 同時に1台だけ。前の接続は切る。
+        # 前の接続が応答しなくても待たされないよう、閉じるのは裏で行い、後片付けだけを待つ
+        # （ffmpegが2つ同時に動かないようにするため）
+        previous = active["session"]
+        active["session"] = session
+        if previous is not None:
+            previous.kick()
+            task = asyncio.create_task(_close_quietly(previous.ws, 1000, "別の端末がつながりました"))
+            background.add(task)
+            task.add_done_callback(background.discard)
+            try:
+                await asyncio.wait_for(previous.finished.wait(), PREVIOUS_CLEANUP_SEC)
+            except asyncio.TimeoutError:
+                log.warning("前の接続の後片付けが終わらないまま、新しい接続を始めます")
+
         backend.set_region(None)
         tasks: list[asyncio.Task] = []
         try:
@@ -361,7 +468,9 @@ def make_handler(settings: Settings, backend, stream_factory: StreamFactory):
                 asyncio.create_task(watch_ime(ws)),
                 asyncio.create_task(session.watch_window()),
             ]
-            done, _ = await asyncio.wait([*tasks, session.failed], return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait(
+                [*tasks, session.failed, session.kicked], return_when=asyncio.FIRST_COMPLETED
+            )
             for task in done:
                 exc = task.exception()
                 if isinstance(exc, StreamError):
@@ -379,9 +488,14 @@ def make_handler(settings: Settings, backend, stream_factory: StreamFactory):
             await session.stop_stream()
             # 押したまま切れると、PCでボタンやキーが押されたままになるので、離す
             release_held(backend, session.held)
-            if active["ws"] is ws:
-                active["ws"] = None
+            if active["session"] is session:
+                active["session"] = None
                 backend.set_region(None)
-            log.info("切断しました")
+            session.finished.set()
+            if session.kicked.done():
+                # 別の端末に代わったときは、この接続を閉じるのを待たない（裏で閉じている）
+                log.info("別の端末に切り替えました")
+            else:
+                log.info("切断しました")
 
     return handler

@@ -60,6 +60,9 @@ class NullInput:
     def move(self, x: float, y: float) -> None:
         self.calls.append(("move", x, y))
 
+    def move_rel(self, dx: float, dy: float) -> None:
+        self.calls.append(("move_rel", dx, dy))
+
     def button(self, b: str, down: bool, x: float | None = None, y: float | None = None) -> None:
         self.calls.append(("button", b, down, x, y))
 
@@ -117,8 +120,12 @@ if sys.platform == "win32":
     user32.SendInput.argtypes = (wt.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
     user32.SendInput.restype = wt.UINT
     user32.GetForegroundWindow.restype = wt.HWND
-    user32.SendMessageW.argtypes = (wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
-    user32.SendMessageW.restype = wt.LPARAM
+    user32.SendMessageTimeoutW.argtypes = (
+        wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM, wt.UINT, wt.UINT, ctypes.POINTER(ctypes.c_size_t),
+    )
+    user32.SendMessageTimeoutW.restype = wt.LPARAM
+    user32.GetCursorPos.argtypes = (ctypes.POINTER(wt.POINT),)
+    user32.GetClassNameW.argtypes = (wt.HWND, wt.LPWSTR, ctypes.c_int)
     user32.MapVirtualKeyW.argtypes = (wt.UINT, wt.UINT)
     user32.MapVirtualKeyW.restype = wt.UINT
     imm32.ImmGetDefaultIMEWnd.argtypes = (wt.HWND,)
@@ -167,6 +174,10 @@ if sys.platform == "win32":
     KEYEVENTF_UNICODE = 0x0004
     KEYEVENTF_SCANCODE = 0x0008
     WM_IME_CONTROL = 0x0283
+    SMTO_BLOCK, SMTO_ABORTIFHUNG = 0x0001, 0x0002
+    IME_QUERY_TIMEOUT_MS = 200
+    # デスクトップそのもの（壁紙とアイコンの層）。一覧には出さない
+    DESKTOP_CLASSES = {"Progman", "WorkerW"}
     IMC_GETOPENSTATUS = 0x0005
     SM_CXSCREEN, SM_CYSCREEN = 0, 1
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN = 76, 77
@@ -251,7 +262,11 @@ if sys.platform == "win32":
         dwmapi.DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
         if cloaked.value:  # 別の仮想デスクトップや、裏で止まっているストアアプリ
             return False
-        return user32.GetWindowTextLengthW(hwnd) > 0
+        if user32.GetWindowTextLengthW(hwnd) <= 0:
+            return False
+        cls = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, cls, 64)
+        return cls.value not in DESKTOP_CLASSES
 
     class WinInput:
         """主モニターを対象にした入力。set_region で範囲を決めると、座標はその範囲が基準になる。"""
@@ -266,18 +281,23 @@ if sys.platform == "win32":
         def set_region(self, region: tuple[int, int, int, int] | None) -> None:
             self.region = region
 
-        def _absolute(self, x: float, y: float) -> tuple[int, int]:
+        def _range(self) -> tuple[int, int, int, int]:
+            """座標の基準にする範囲（x, y, 幅, 高さ。画素）。"""
             if self.region is not None:
-                rx, ry, rw, rh = self.region
-            else:
-                rx, ry = 0, 0  # 主モニターの左上が(0, 0)
-                rw, rh = self.screen_size()
+                return self.region
+            w, h = self.screen_size()
+            return 0, 0, w, h  # 主モニターの左上が(0, 0)
+
+        def _absolute(self, x: float, y: float) -> tuple[int, int]:
+            rx, ry, rw, rh = self._range()
+            return self._absolute_px(rx + x * (rw - 1), ry + y * (rh - 1))
+
+        def _absolute_px(self, px: float, py: float) -> tuple[int, int]:
+            """画面上の画素の位置を、SendInput の絶対座標（仮想画面全体で0〜65535）に変える。"""
             vx = user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
             vy = user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
             vw = max(user32.GetSystemMetrics(SM_CXVIRTUALSCREEN), 2)
             vh = max(user32.GetSystemMetrics(SM_CYVIRTUALSCREEN), 2)
-            px = rx + x * (rw - 1)
-            py = ry + y * (rh - 1)
             return int((px - vx) * 65535 / (vw - 1)), int((py - vy) * 65535 / (vh - 1))
 
         # --- ウィンドウ
@@ -358,6 +378,19 @@ if sys.platform == "win32":
         def move(self, x: float, y: float) -> None:
             _send([self._move_input(x, y)])
 
+        def move_rel(self, dx: float, dy: float) -> None:
+            """今のカーソルの位置から動かす。dx, dy は、表示している範囲の幅・高さに対する割合。
+            相対移動の SendInput はマウスの加速の設定で量が変わるので、今の位置を読んで絶対座標で送る。"""
+            pos = wt.POINT()
+            if not user32.GetCursorPos(ctypes.byref(pos)):
+                return
+            rx, ry, rw, rh = self._range()
+            # 表示している範囲の外には出さない
+            px = min(max(pos.x + dx * rw, rx), rx + rw - 1)
+            py = min(max(pos.y + dy * rh, ry), ry + rh - 1)
+            ax, ay = self._absolute_px(px, py)
+            _send([_mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, ax, ay)])
+
         def button(self, b: str, down: bool, x: float | None = None, y: float | None = None) -> None:
             if b not in _BUTTON_FLAGS:
                 return
@@ -410,7 +443,15 @@ if sys.platform == "win32":
             ime = imm32.ImmGetDefaultIMEWnd(hwnd)
             if not ime:
                 return None
-            return bool(user32.SendMessageW(ime, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0))
+            # 相手のアプリが固まっていると返事が来ないので、時間を区切って聞く
+            result = ctypes.c_size_t()
+            ok = user32.SendMessageTimeoutW(
+                ime, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0,
+                SMTO_ABORTIFHUNG | SMTO_BLOCK, IME_QUERY_TIMEOUT_MS, ctypes.byref(result),
+            )
+            if not ok:
+                return None
+            return bool(result.value)
 
 
 def create_input():

@@ -20,10 +20,17 @@ DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "config.json"
 
 
 def load_config(path: Path) -> tuple[dict, bool]:
-    """設定を読む。なければ作る（トークンもこのとき作る）。作ったときはTrueを返す。"""
+    """設定を読む。なければ作る（トークンもこのとき作る）。
+    トークンを作ったとき（ファイルがなかった、またはトークンが消されていた）はTrueを返す。"""
     if path.exists():
-        return json.loads(path.read_text(encoding="utf-8")), False
-    cfg = {"token": secrets.token_urlsafe(16), "port": 8765, "fps": 60, "bitrate_kbps": 8000, "max_height": 0}
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        token = cfg.get("token")
+        if isinstance(token, str) and token:
+            return cfg, False
+        print("設定ファイルにトークンがないため、作り直しました")
+    else:
+        cfg = {"port": 8765, "fps": 60, "bitrate_kbps": 8000, "max_height": 0}
+    cfg["token"] = secrets.token_urlsafe(16)
     path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return cfg, True
 
@@ -38,6 +45,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--max-height", type=int, help="映像の高さの上限（0は元の大きさ）")
     p.add_argument("--encoder", choices=["auto", "h264_nvenc", "libx264"], default="auto")
     p.add_argument("--ffmpeg", default="ffmpeg", help="ffmpegのパス")
+    p.add_argument(
+        "--output-idx", type=int, default=0,
+        help="撮るモニターの番号（ddagrab の output_idx）。モニターが2枚以上で、映像と操作がずれるときに変える",
+    )
     p.add_argument("--show-token", action="store_true", help="トークンを表示する")
     p.add_argument("-v", "--verbose", action="store_true")
     return p.parse_args(argv)
@@ -59,12 +70,13 @@ async def run(args: argparse.Namespace) -> None:
     def stream_factory(s: Settings, src: tuple[int, int], region: tuple[int, int, int, int] | None) -> FfmpegStream:
         cmd = build_ffmpeg_cmd(
             ffmpeg=args.ffmpeg, fps=s.fps, bitrate_kbps=s.bitrate_kbps, encoder=encoder,
-            max_height=s.max_height, src_height=src[1], region=region,
+            max_height=s.max_height, src_height=src[1], region=region, output_idx=args.output_idx,
         )
         return FfmpegStream(cmd)
 
     handler = make_handler(settings, backend, stream_factory)
-    async with serve(handler, args.host, port, max_size=1024 * 1024):
+    # close_timeout: 応答しない相手を閉じるときに、待つ時間（秒）
+    async with serve(handler, args.host, port, max_size=1024 * 1024, close_timeout=2):
         print(f"duo_server {__version__} を起動しました: {args.host}:{port}（エンコーダー: {encoder}）")
         if created or args.show_token:
             print(f"トークン: {settings.token}")

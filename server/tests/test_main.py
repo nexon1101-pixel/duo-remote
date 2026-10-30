@@ -18,6 +18,14 @@ def test_load_config_creates_token_once(tmp_path):
     assert json.loads(path.read_text(encoding="utf-8"))["port"] == 8765
 
 
+def test_load_config_recreates_missing_token(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"port": 9000, "token": ""}), encoding="utf-8")
+    cfg, created = app.load_config(path)
+    assert created and len(cfg["token"]) >= 16 and cfg["port"] == 9000
+    assert json.loads(path.read_text(encoding="utf-8"))["token"] == cfg["token"]
+
+
 def test_missing_ffmpeg_gives_clear_error():
     async def go():
         stream = FfmpegStream(["ffmpeg-that-does-not-exist-xyz"])

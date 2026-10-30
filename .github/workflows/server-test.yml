@@ -1,0 +1,41 @@
+name: Server test
+
+# サーバーのテストを、Linux と Windows の両方で回す。
+# Windows では、input_win.py の Windows 用の定義（ctypes）が読み込めるかも確かめる。
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "server/**"
+      - ".github/workflows/server-test.yml"
+  pull_request:
+    paths:
+      - "server/**"
+      - ".github/workflows/server-test.yml"
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: パッケージを入れる
+        run: pip install -r requirements-dev.txt
+
+      - name: テスト
+        run: python -m pytest -q
+
+      - name: Windows 用の定義を読み込む
+        if: runner.os == 'Windows'
+        run: python -c "from duo_server.input_win import WinInput, create_input; print(type(create_input()).__name__)"

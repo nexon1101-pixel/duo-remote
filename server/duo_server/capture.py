@@ -97,6 +97,8 @@ def build_ffmpeg_cmd(
             graph += f",hwdownload,format=bgra,scale=-2:{h}:flags=fast_bilinear,format=nv12"
         enc = [
             "-c:v", "h264_nvenc", "-preset", "p1", "-tune", "ll",
+            # フレームを溜めずに、すぐ出す
+            "-delay", "0", "-zerolatency", "1",
             "-rc", "cbr", "-b:v", f"{bitrate_kbps}k",
             "-bf", "0", "-g", str(gop), "-forced-idr", "1", "-aud", "1",
         ]
