@@ -194,12 +194,16 @@ struct SoftwareInputBar: View {
 
     /// 押してある修飾キー（仮想キーコード）。次に押したキーか、次に打った英字・数字と一緒に押す（Ctrl+C、Shift+→ など）
     @State private var modifiers: [Int] = []
+    /// オンのとき、英字のキーボード（QWERTY）を出す。日本語の変換はできない。
+    /// オフのときは、iPhoneで最後に使ったキーボードが出る（フリックなどは、iPhoneの設定で決まる）
+    @AppStorage("asciiKeyboard") private var asciiKeyboard = false
 
     var body: some View {
         VStack(spacing: 6) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     imeButton
+                    key("ABC", isOn: asciiKeyboard) { asciiKeyboard.toggle() }
                     modifier("Ctrl", KeyMap.vkControl)
                     modifier("Shift", KeyMap.vkShift)
                     modifier("Alt", KeyMap.vkMenu)
@@ -218,7 +222,7 @@ struct SoftwareInputBar: View {
                 }
                 .padding(.horizontal, 8)
             }
-            ComposeField(refocus: refocus, onText: send, onKey: { tap($0) }, onEnd: onClose)
+            ComposeField(refocus: refocus, asciiOnly: asciiKeyboard, onText: send, onKey: { tap($0) }, onEnd: onClose)
                 .frame(height: 36)
                 .padding(.horizontal, 8)
         }
@@ -284,6 +288,8 @@ struct SoftwareInputBar: View {
 /// 打っている途中の文字（変換前）を見せる欄。確定した文字は送って、欄を空にする。
 struct ComposeField: UIViewRepresentable {
     let refocus: Int
+    /// trueなら、英字のキーボード（QWERTY）にする
+    let asciiOnly: Bool
     let onText: (String) -> Void
     /// 欄が空のときの、改行と削除（PCのEnterとBackspaceにする）
     let onKey: (Int) -> Void
@@ -314,6 +320,11 @@ struct ComposeField: UIViewRepresentable {
 
     func updateUIView(_ uiView: ComposeTextView, context: Context) {
         context.coordinator.parent = self
+        let type: UIKeyboardType = asciiOnly ? .asciiCapable : .default
+        if uiView.keyboardType != type {
+            uiView.keyboardType = type
+            uiView.reloadInputViews()
+        }
         if context.coordinator.lastRefocus != refocus {
             context.coordinator.lastRefocus = refocus
             DispatchQueue.main.async {

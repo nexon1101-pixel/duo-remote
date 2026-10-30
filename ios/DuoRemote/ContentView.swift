@@ -59,22 +59,31 @@ struct ContentView: View {
     }
 
     private var connectedView: some View {
-        VStack(spacing: 0) {
+        // 映像は画面いっぱいに置いたままにして、iPhoneのキーボードは、その上に重ねる（映像を縮めない）。
+        // 入力の欄とボタンだけが、キーボードの上に出る
+        ZStack(alignment: .bottom) {
             VideoView(
                 renderer: session.renderer,
                 videoSize: session.videoSize,
                 pointerMode: pointerMode,
                 send: session.send
             )
-            .overlay(alignment: .bottomTrailing) { inputButton }
-            if inputMode == .software {
-                SoftwareInputBar(refocus: refocus) {
-                    // キーボードが閉じられたら、タッチだけに戻す
-                    if inputMode == .software { inputMode = .touch }
+            .ignoresSafeArea() // キーボードの分も含めて、動かさない
+
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    inputButton
+                }
+                if inputMode == .software {
+                    SoftwareInputBar(refocus: refocus) {
+                        // キーボードが閉じられたら、タッチだけに戻す
+                        if inputMode == .software { inputMode = .touch }
+                    }
                 }
             }
         }
-        // 画面の端までは使うが、iPhoneのキーボードが出たら、その上までにする
+        // 画面の端までは使う。キーボードが出たときだけ、入力の欄がその上に上がる
         .ignoresSafeArea(.container)
         .background {
             HardwareKeyView(
