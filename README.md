@@ -115,7 +115,7 @@ Macがないため、GitHub Actions でビルドします。iPhone Duo の内側
 
 1. GitHubの「Actions」から「iOS build」を実行する（`ios/` を変更してpushしても動く）
 2. 終わったら、ipa を取り出す。次のどちらかで取れる
-   - リポジトリの「Releases」の「最新のビルド」（latest）にある `DuoRemote.ipa`。ビルドのたびに上書きする。iPhoneの Safari から直接取れる（このリポジトリは非公開なので、Safari で GitHub にログインしておく）
+   - リポジトリの「Releases」の「最新のビルド」（latest）にある `DuoRemote.ipa`。ビルドのたびに上書きする。iPhoneの Safari から直接取れる
    - ビルドの画面の「Artifacts」にある `DuoRemote-ipa`（zip なので展開する）
 3. SideStoreで入れる
 

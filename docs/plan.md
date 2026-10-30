@@ -33,7 +33,7 @@ https://applech2.com/archives/20261026-sill-for-mac-and-iphone-remote-desktop.ht
 - Mac がない。ビルドは GitHub Actions（xcode-27 のランナー）で行い、ipa を SideStore で入れる。DuoFlick と同じやり方
 - 無料の Apple ID では、同時に入れられるアプリは3つまで。SideStore 自身と DuoFlick で2つ使っているため、この遠隔操作アプリを入れるとちょうど3つになる
 - VPN は同時に1つだけ。SideStore の更新に使う LocalDevVPN と、Tailscale は同時には使えない。普段の使用中は影響しないが、更新のときは切り替えが要る
-- 公開リポジトリにするなら、鍵・パスワード・自宅の IP アドレスなどをコミットしない（このリポジトリは非公開）
+- このリポジトリは公開している（2026-10-30 から）。鍵・パスワード・トークン・自宅の IP アドレスなどはコミットしない。ビルドした ipa も誰でも取れる
 
 ## 次にやること
 
