@@ -13,6 +13,7 @@ from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed
 
 from . import protocol
+from .audio import ALLOWED_CHANNELS, ALLOWED_RATES, AudioError
 from .capture import StreamError, output_size
 
 log = logging.getLogger(__name__)
@@ -27,6 +28,8 @@ PREVIOUS_CLEANUP_SEC = 3
 # 送り待ちの映像がこれを超えたら、次のキーフレームまで映像を捨てる（遅れをためないため）
 MAX_QUEUED_FRAMES = 4
 MAX_BUFFERED_BYTES = 256 * 1024
+# 音の送信バッファがこれを超えたら、音を捨てる（遅れをためないため）
+MAX_AUDIO_BUFFERED_BYTES = 128 * 1024
 # クライアントが選べるビットレートの範囲（kbps）
 MIN_BITRATE_KBPS = 500
 MAX_BITRATE_KBPS = 20000
@@ -48,6 +51,9 @@ class Stream(Protocol):
     def frames(self): ...
     async def stop(self) -> None: ...
 
+
+# 引数: (周波数, チャンネル数) -> 音の取得元（start、frames、stop を持つ）
+AudioFactory = Callable[[int, int], Any]
 
 # 引数: (設定, 撮る大きさ, 撮る範囲（Noneなら画面全体）) -> 映像の取得元
 StreamFactory = Callable[[Settings, "tuple[int, int]", "tuple[int, int, int, int] | None"], Stream]
@@ -158,8 +164,14 @@ def release_held(backend, held: set) -> None:
 class Session:
     """1つの接続。表示する範囲（画面全体か、ウィンドウ1つ）と、その映像を受け持つ。"""
 
-    def __init__(self, ws: ServerConnection, settings: Settings, backend, stream_factory: StreamFactory) -> None:
+    def __init__(
+        self, ws: ServerConnection, settings: Settings, backend, stream_factory: StreamFactory,
+        audio_factory: AudioFactory | None = None,
+    ) -> None:
         self.ws = ws
+        self.audio_factory = audio_factory
+        self._audio = None
+        self._audio_task: asyncio.Task | None = None
         self.settings = settings
         self.backend = backend
         self.stream_factory = stream_factory
@@ -246,6 +258,59 @@ class Session:
         except (AttributeError, RuntimeError):
             return 0
 
+    # --- 音
+
+    async def set_audio(self, msg: dict[str, Any]) -> None:
+        """音を送る・止める。取り始めたら、先に audio_state で形を知らせてから、音を送る。"""
+        await self.stop_audio()
+        if msg.get("on") is not True:
+            await self.send({"t": "audio_state", "on": False})
+            return
+        rate, channels = _int(msg.get("rate")) or 48000, _int(msg.get("channels")) or 2
+        if rate not in ALLOWED_RATES or channels not in ALLOWED_CHANNELS:
+            await self.send({"t": "audio_state", "on": False, "reason": "その音の形には対応していません"})
+            return
+        if self.audio_factory is None:
+            await self.send({"t": "audio_state", "on": False, "reason": "このサーバーでは、音を送れません"})
+            return
+        stream = self.audio_factory(rate, channels)
+        try:
+            await stream.start()
+        except AudioError as e:
+            log.warning("音を始められませんでした: %s", e)
+            await self.send({"t": "audio_state", "on": False, "reason": str(e)})
+            return
+        self._audio = stream
+        await self.send({"t": "audio_state", "on": True, "rate": rate, "channels": channels})
+        self._audio_task = asyncio.create_task(self._send_audio(stream))
+
+    async def _send_audio(self, stream) -> None:
+        try:
+            async for chunk in stream.frames():
+                if self._buffered_bytes() > MAX_AUDIO_BUFFERED_BYTES:
+                    continue  # 通信が追いつかないので、この音は捨てる
+                ts = int((time.monotonic() - self._t0) * 1000)
+                await self.ws.send(protocol.pack_audio(chunk, ts))
+        except asyncio.CancelledError:
+            raise
+        except ConnectionClosed:
+            pass
+        except Exception as e:  # ffmpeg が止まったときなど。映像は続ける
+            log.warning("音が止まりました: %s", e)
+            try:
+                await self.send({"t": "audio_state", "on": False, "reason": "音が止まりました"})
+            except ConnectionClosed:
+                pass
+
+    async def stop_audio(self) -> None:
+        task, stream = self._audio_task, self._audio
+        self._audio_task = self._audio = None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if stream is not None:
+            await stream.stop()
+
     def kick(self) -> None:
         if not self.kicked.done():
             self.kicked.set_result(None)
@@ -295,6 +360,8 @@ class Session:
             await self.send({"t": "windows", "list": self.backend.list_windows()})
         elif t == "mode":
             await self.set_mode(msg)
+        elif t == "audio":
+            await self.set_audio(msg)
         else:
             reply = dispatch_input(msg, self.backend, self.held)
             if reply:
@@ -374,7 +441,9 @@ async def _close_quietly(ws: ServerConnection, code: int, reason: str) -> None:
         pass
 
 
-def make_handler(settings: Settings, backend, stream_factory: StreamFactory):
+def make_handler(
+    settings: Settings, backend, stream_factory: StreamFactory, audio_factory: AudioFactory | None = None
+):
     active: dict[str, Session | None] = {"session": None}
     background: set[asyncio.Task] = set()
 
@@ -436,7 +505,7 @@ def make_handler(settings: Settings, backend, stream_factory: StreamFactory):
             min(max(bitrate, MIN_BITRATE_KBPS), MAX_BITRATE_KBPS),
             max(max_height, 0),
         )
-        session = Session(ws, per_conn, backend, stream_factory)
+        session = Session(ws, per_conn, backend, stream_factory, audio_factory)
 
         # 同時に1台だけ。前の接続は切る。
         # 前の接続が応答しなくても待たされないよう、閉じるのは裏で行い、後片付けだけを待つ
@@ -485,6 +554,7 @@ def make_handler(settings: Settings, backend, stream_factory: StreamFactory):
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            await session.stop_audio()
             await session.stop_stream()
             # 押したまま切れると、PCでボタンやキーが押されたままになるので、離す
             release_held(backend, session.held)

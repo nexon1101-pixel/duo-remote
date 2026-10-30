@@ -15,6 +15,8 @@ struct ContentView: View {
     @AppStorage(KeyCaptureView.commandAsControlKey) private var commandAsControl = false
     @AppStorage("fitWindow") private var fitWindow = true
     @AppStorage("quality") private var quality = VideoQuality.high
+    @AppStorage("audioOn") private var audioOn = false
+    @AppStorage("audioMix") private var audioMix = false
 
     @Environment(\.scenePhase) private var scenePhase
     /// ノッチや Dynamic Island、ホームの線の分の余白。映像は端まで出すので、上に置くボタンはこの分だけ内側に寄せる
@@ -51,7 +53,14 @@ struct ContentView: View {
             default: break
             }
         }
-        .onChange(of: quality) { _, newValue in session.setQuality(newValue) }
+        .onChange(of: quality) { _, newValue in
+            session.setQuality(newValue)
+            // 画質で、音の形も変わる（低画質は、24000Hz のモノラル）。つなぎ直しのあと、あらためて頼まれる
+        }
+        .onChange(of: audioOn) { _, _ in session.setAudio(audioOn, mixWithOthers: audioMix) }
+        .onChange(of: audioMix) { _, _ in session.setAudio(audioOn, mixWithOthers: audioMix) }
+        // 音を始められなかったら、スイッチをオフに戻す
+        .onChange(of: session.audioFailures) { _, _ in audioOn = false }
     }
 
     private func updateIdleTimer() {
@@ -201,6 +210,8 @@ struct ContentView: View {
                 Text("遅れ: \(ms)ms")
             }
             Text(screenDescription)
+            Toggle("PCの音を鳴らす", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
+            Toggle("他のアプリの音と混ぜる", systemImage: "speaker.badge.exclamationmark", isOn: $audioMix)
             Picker("入力", selection: $inputMode) {
                 ForEach(InputMode.allCases) { mode in
                     Label(mode.label, systemImage: mode.systemImage).tag(mode)
@@ -287,6 +298,7 @@ struct ContentView: View {
                     port = Self.cleaned(port)
                     token = Self.cleaned(token)
                     Keychain.save("token", token)
+                    session.setAudio(audioOn, mixWithOthers: audioMix)
                     session.connect(host: host, port: Int(port) ?? 8765, token: token, quality: quality)
                 }
                 .disabled(host.isEmpty || token.isEmpty || session.state == .connecting)

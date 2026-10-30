@@ -28,13 +28,35 @@ class LoopStream:
         pass
 
 
-async def check_against_server(token, try_window):
+class SineAudio:
+    """音の入った、20msごとのかたまりを出し続ける、音の取得元のかわり。"""
+
+    def __init__(self, loud=True):
+        self.loud = loud
+
+    async def start(self):
+        pass
+
+    async def frames(self):
+        import struct
+
+        while True:
+            yield struct.pack("<1920h", *[(8000 if self.loud else 0) * (1 if i % 2 else -1) for i in range(1920)])
+            await asyncio.sleep(0.02)
+
+    async def stop(self):
+        pass
+
+
+async def check_against_server(token, try_window, try_audio=False, audio_factory=None):
     backend = NullInput((1920, 1080))
     backend.windows = {7: {"title": "メモ帳", "app": "notepad.exe", "rect": (0, 0, 800, 600)}}
-    handler = make_handler(Settings(token="secret"), backend, lambda *a: LoopStream())
+    handler = make_handler(Settings(token="secret"), backend, lambda *a: LoopStream(), audio_factory)
     async with serve(handler, "127.0.0.1", 0) as server:
         port = server.sockets[0].getsockname()[1]
-        return await run_check(f"ws://127.0.0.1:{port}/", token, seconds=0.5, try_window=try_window)
+        return await run_check(
+            f"ws://127.0.0.1:{port}/", token, seconds=0.5, try_window=try_window, try_audio=try_audio
+        )
 
 
 def test_selfcheck_passes(capsys):
@@ -51,3 +73,19 @@ def test_selfcheck_reports_wrong_token(capsys):
 def test_selfcheck_reports_no_server(capsys):
     assert not asyncio.run(run_check("ws://127.0.0.1:9/", "x", seconds=0.1))
     assert "つながりません" in capsys.readouterr().out
+
+
+def test_selfcheck_audio_ok(capsys):
+    assert asyncio.run(check_against_server("secret", False, True, lambda r, c: SineAudio()))
+    out = capsys.readouterr().out
+    assert "音が届きました" in out and "[NG]" not in out
+
+
+def test_selfcheck_audio_silent(capsys):
+    assert not asyncio.run(check_against_server("secret", False, True, lambda r, c: SineAudio(loud=False)))
+    assert "ほぼ無音" in capsys.readouterr().out
+
+
+def test_selfcheck_audio_unavailable(capsys):
+    assert not asyncio.run(check_against_server("secret", False, True, None))
+    assert "音を始められませんでした" in capsys.readouterr().out

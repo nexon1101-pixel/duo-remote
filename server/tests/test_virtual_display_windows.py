@@ -42,3 +42,10 @@ def test_pnp_query_runs():
     for d in devices:
         assert "InstanceId" in d
     assert vd.VirtualDisplay().device() is None or True  # 入っていなくてもよい。落ちないこと
+
+
+def test_audio_capture_library_installed():
+    """PCの音を取る部品（PyAudioWPatch）が入っていて、読み込める。"""
+    import pyaudiowpatch
+
+    assert hasattr(pyaudiowpatch, "PyAudio") and hasattr(pyaudiowpatch, "paWASAPI")

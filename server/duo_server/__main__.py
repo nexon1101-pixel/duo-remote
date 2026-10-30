@@ -12,6 +12,7 @@ from pathlib import Path
 from websockets.asyncio.server import serve
 
 from . import __version__
+from .audio import AudioStream
 from .capture import FfmpegStream, build_ffmpeg_cmd, detect_encoder
 from .input_win import create_input
 from .server import Settings, make_handler
@@ -74,7 +75,10 @@ async def run(args: argparse.Namespace) -> None:
         )
         return FfmpegStream(cmd)
 
-    handler = make_handler(settings, backend, stream_factory)
+    def audio_factory(rate: int, channels: int) -> AudioStream:
+        return AudioStream(args.ffmpeg, rate, channels)
+
+    handler = make_handler(settings, backend, stream_factory, audio_factory)
     # close_timeout: 応答しない相手を閉じるときに、待つ時間（秒）
     async with serve(handler, args.host, port, max_size=1024 * 1024, close_timeout=2):
         print(f"duo_server {__version__} を起動しました: {args.host}:{port}（エンコーダー: {encoder}）")

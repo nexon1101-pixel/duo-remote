@@ -68,6 +68,14 @@ final class RemoteSession: ObservableObject {
     private var noticeTask: Task<Void, Never>?
 
     let renderer = H264Renderer()
+    let audio = AudioPlayer()
+    /// サーバーが、PCの音を送っている
+    @Published private(set) var audioOn = false
+    /// 音を始められなかった回数。画面側が、スイッチを戻すために見る
+    @Published private(set) var audioFailures = 0
+    /// 音を鳴らしたいか（画面のスイッチ）と、他のアプリの音と混ぜるか
+    private var audioWanted = false
+    private var audioMix = false
 
     private var task: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
@@ -93,6 +101,17 @@ final class RemoteSession: ObservableObject {
     private var pendingPings: [Int: Date] = [:]
 
     var isConnectedOrReconnecting: Bool { state == .connected || state == .reconnecting }
+
+    init() {
+        audio.onFailure = { [weak self] message in
+            Task { @MainActor in
+                guard let self else { return }
+                self.audioOn = false
+                self.audioFailures += 1
+                self.show(notice: "音: \(message)")
+            }
+        }
+    }
 
     func connect(host: String, port: Int, token: String, quality: VideoQuality) {
         disconnect()
@@ -123,13 +142,14 @@ final class RemoteSession: ObservableObject {
 
         // 受け取りは、画面を描くスレッド（メインスレッド）とは別で動かす。
         // 映像はそのままデコーダーに渡し、制御メッセージだけをメインスレッドに渡す
+        let player = self.audio
         receiveTask = Task.detached { [weak self] in
             do {
                 try await task.send(.string(String(decoding: helloData, as: UTF8.self)))
                 while !Task.isCancelled {
                     switch try await task.receive() {
                     case .data(let data):
-                        Self.enqueueVideo(data, to: renderer)
+                        Self.handleBinary(data, video: renderer, audio: player)
                     case .string(let text):
                         await self?.handleControl(text, from: task)
                     @unknown default:
@@ -151,12 +171,18 @@ final class RemoteSession: ObservableObject {
         }
     }
 
-    /// 映像のフレーム（先頭: フラグ(1) + タイムスタンプ(4) + H.264）をデコーダーに渡す
-    private nonisolated static func enqueueVideo(_ data: Data, to renderer: H264Renderer) {
-        guard data.count > 5 else { return }
+    /// バイナリのフレーム（先頭: フラグ(1) + タイムスタンプ(4) + 中身）を、映像か音に振り分ける。
+    /// フラグの bit1 が立っていれば音（PCM）、立っていなければ映像（H.264）
+    private nonisolated static func handleBinary(_ data: Data, video: H264Renderer, audio: AudioPlayer) {
+        guard data.count > 5, let flags = data.first else { return }
+        let body = data.dropFirst(5)
+        if flags & 0x02 != 0 {
+            audio.enqueue(Data(body))
+            return
+        }
         let start = data.startIndex
         let timestamp = data[(start + 1)..<(start + 5)].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
-        renderer.enqueue(accessUnit: data.dropFirst(5), timestampMs: timestamp)
+        video.enqueue(accessUnit: body, timestampMs: timestamp)
     }
 
     /// 接続中は ping を送り、pong が来なくなったら、切れたとみなしてつなぎ直す
@@ -237,6 +263,8 @@ final class RemoteSession: ObservableObject {
         task?.cancel(with: code, reason: nil)
         task = nil
         renderer.reset()
+        audio.stop()
+        audioOn = false
         resetView()
     }
 
@@ -322,6 +350,31 @@ final class RemoteSession: ObservableObject {
         send(["t": "ime", "on": on])
     }
 
+    // MARK: - 音
+
+    /// 音を鳴らすか決める。つながっていなければ覚えておき、つながったときに始める。
+    /// mixWithOthers がオフのとき、音を鳴らす間は、他のアプリの音（YouTube など）が止まる
+    func setAudio(_ on: Bool, mixWithOthers: Bool) {
+        audioWanted = on
+        audioMix = mixWithOthers
+        if !on {
+            audio.stop()
+            audioOn = false
+        }
+        guard state == .connected else { return }
+        requestAudio()
+    }
+
+    private func requestAudio() {
+        if audioWanted {
+            // 低画質のときは、音も軽くする（24000Hz、モノラル）
+            let low = quality == .low
+            send(["t": "audio", "on": true, "rate": low ? 24000 : 48000, "channels": low ? 1 : 2])
+        } else {
+            send(["t": "audio", "on": false])
+        }
+    }
+
     // MARK: - 表示する範囲
 
     func requestWindows() {
@@ -381,6 +434,7 @@ final class RemoteSession: ObservableObject {
             connectWatchdog?.cancel()
             connectWatchdog = nil
             startHeartbeat(for: source)
+            if audioWanted { requestAudio() }
             if reconnected {
                 show(notice: "つなぎ直しました")
                 // サーバーは画面全体から始めるので、見ていたウィンドウに戻す
@@ -398,6 +452,19 @@ final class RemoteSession: ObservableObject {
                 latencyMs = Int(Date().timeIntervalSince(sent) * 1000)
                 // これより前の ping は、返事が来なかったものとして忘れる
                 pendingPings = pendingPings.filter { $0.key > n }
+            }
+        case "audio_state":
+            if json["on"] as? Bool == true, audioWanted,
+               let rate = json["rate"] as? Int, let channels = json["channels"] as? Int {
+                audio.start(rate: rate, channels: channels, mixWithOthers: audioMix)
+                audioOn = true
+            } else {
+                audio.stop()
+                audioOn = false
+                if audioWanted, let reason = json["reason"] as? String {
+                    audioFailures += 1
+                    show(notice: "音: \(reason)")
+                }
             }
         case "ime_state":
             imeOn = json["on"] as? Bool

@@ -6,6 +6,7 @@
 - 往復の時間（ping）
 - ウィンドウの一覧
 - --window を付けたとき: ウィンドウ1つだけの表示に切り替えられるか（そのウィンドウが前に出る）
+- --audio を付けたとき: PCの音が届くか（PCで音を鳴らしながら実行する）
 
 マウスとキーボードは動かさない。
 """
@@ -14,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import struct
 import sys
 import time
 from pathlib import Path
@@ -66,7 +68,7 @@ async def _count_frames(ws, seconds: float) -> dict:
             raw = await asyncio.wait_for(ws.recv(), left)
         except asyncio.TimeoutError:
             break
-        if not isinstance(raw, bytes):
+        if not isinstance(raw, bytes) or protocol.is_audio(raw):
             continue
         key, _, payload = protocol.unpack_frame(raw)
         frames += 1
@@ -83,7 +85,26 @@ async def _count_frames(ws, seconds: float) -> dict:
     }
 
 
-async def run_check(url: str, token: str, seconds: float = 3.0, try_window: bool = False) -> bool:
+async def _collect_audio(ws, seconds: float) -> tuple[int, int]:
+    """音のフレームを seconds 秒受け取る。(フレーム数, いちばん大きい音の値 0〜32767) を返す。"""
+    count = peak = 0
+    deadline = time.monotonic() + seconds
+    while (left := deadline - time.monotonic()) > 0:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), left)
+        except asyncio.TimeoutError:
+            break
+        if isinstance(raw, bytes) and protocol.is_audio(raw):
+            _, _, payload = protocol.unpack_frame(raw)
+            samples = struct.unpack(f"<{len(payload) // 2}h", payload[: len(payload) // 2 * 2])
+            peak = max(peak, max((abs(v) for v in samples), default=0))
+            count += 1
+    return count, peak
+
+
+async def run_check(
+    url: str, token: str, seconds: float = 3.0, try_window: bool = False, try_audio: bool = False
+) -> bool:
     r = Report()
     print(f"接続先: {url}")
 
@@ -167,6 +188,27 @@ async def run_check(url: str, token: str, seconds: float = 3.0, try_window: bool
                 except asyncio.TimeoutError:
                     r.bad("画面全体の表示に戻した返事がありません")
 
+        # 6. 音
+        if try_audio:
+            await ws.send(json.dumps({"t": "audio", "on": True, "rate": 48000, "channels": 2}))
+            try:
+                state = await _recv_json(ws, {"audio_state"}, timeout=10)
+            except asyncio.TimeoutError:
+                state = None
+            if state is None:
+                r.bad("音を始めた返事がありません")
+            elif not state.get("on"):
+                r.bad(f"音を始められませんでした: {state.get('reason')}")
+            else:
+                count, peak = await _collect_audio(ws, seconds)
+                if count == 0:
+                    r.bad("音が届きません。PCで音を鳴らしながら、もう一度実行してください（無音のときは、何も届きません）")
+                elif peak < 100:
+                    r.bad(f"音は届きましたが、ほぼ無音です（{count} 個、最大 {peak}）。PCで音を鳴らしながら、もう一度実行してください")
+                else:
+                    r.good(f"音が届きました: {count} 個（約{count * 20 / 1000:.1f}秒ぶん）、最大の音の大きさ {peak}/32767")
+                await ws.send(json.dumps({"t": "audio", "on": False}))
+
     print()
     print("すべて問題ありません" if r.ok else "[NG] の項目があります。上のメッセージと、サーバーの画面を確認してください")
     return r.ok
@@ -179,6 +221,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--port", type=int, help="ポート（省略すると設定ファイルの値）")
     p.add_argument("--seconds", type=float, default=3.0, help="映像を受け取る秒数")
     p.add_argument("--window", action="store_true", help="ウィンドウ1つだけの表示も試す（一覧の先頭のウィンドウが前に出る）")
+    p.add_argument("--audio", action="store_true", help="PCの音が届くかも試す（PCで音を鳴らしながら実行する）")
     args = p.parse_args(argv)
 
     if not args.config.exists():
@@ -186,7 +229,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
     cfg = json.loads(args.config.read_text(encoding="utf-8"))
     port = args.port or cfg.get("port", 8765)
-    ok = asyncio.run(run_check(f"ws://{args.host}:{port}/", cfg.get("token", ""), args.seconds, args.window))
+    ok = asyncio.run(run_check(f"ws://{args.host}:{port}/", cfg.get("token", ""), args.seconds, args.window, args.audio))
     sys.exit(0 if ok else 1)
 
 

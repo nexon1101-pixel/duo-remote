@@ -10,6 +10,7 @@ VERSION = 1
 # 映像フレームの先頭: フラグ(1バイト) + タイムスタンプ(4バイト, ミリ秒)
 FRAME_HEADER = struct.Struct(">BI")
 FLAG_KEYFRAME = 0x01
+FLAG_AUDIO = 0x02  # 音のフレーム（立っていなければ、映像）
 
 MAX_TEXT_LENGTH = 4096
 
@@ -17,6 +18,14 @@ MAX_TEXT_LENGTH = 4096
 def pack_frame(payload: bytes, keyframe: bool, ts_ms: int) -> bytes:
     flags = FLAG_KEYFRAME if keyframe else 0
     return FRAME_HEADER.pack(flags, ts_ms & 0xFFFFFFFF) + payload
+
+
+def pack_audio(payload: bytes, ts_ms: int) -> bytes:
+    return FRAME_HEADER.pack(FLAG_AUDIO, ts_ms & 0xFFFFFFFF) + payload
+
+
+def is_audio(data: bytes) -> bool:
+    return bool(data) and bool(data[0] & FLAG_AUDIO)
 
 
 def unpack_frame(data: bytes) -> tuple[bool, int, bytes]:
