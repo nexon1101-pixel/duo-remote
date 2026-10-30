@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// PCのウィンドウ（一覧の1行）。
 struct RemoteWindow: Identifiable, Equatable {
@@ -370,6 +371,29 @@ final class RemoteSession: ObservableObject {
         send(["t": "key", "sc": sc, "d": down ? "down" : "up"])
     }
 
+    // MARK: - クリップボード
+
+    /// 決まりの上限（docs/protocol.md の clip_set）
+    static let maxClipLength = 100_000
+
+    /// iPhoneのクリップボードの文字を、PCのクリップボードに入れる
+    func sendClipboard() {
+        guard let text = UIPasteboard.general.string, !text.isEmpty else {
+            show(notice: "iPhoneのクリップボードに、文字がありません")
+            return
+        }
+        guard text.unicodeScalars.count <= Self.maxClipLength else {
+            show(notice: "文字が長すぎます（\(Self.maxClipLength)文字まで）")
+            return
+        }
+        send(["t": "clip_set", "s": text])
+    }
+
+    /// PCのクリップボードの文字を、もらう（届いたら、iPhoneのクリップボードに入れる）
+    func requestClipboard() {
+        send(["t": "clip_get"])
+    }
+
     func setIME(_ on: Bool) {
         send(["t": "ime", "on": on])
     }
@@ -536,6 +560,14 @@ final class RemoteSession: ObservableObject {
                     audioFailures += 1
                     show(notice: "音: \(reason)")
                 }
+            }
+        case "clip":
+            let text = json["s"] as? String ?? ""
+            if text.isEmpty {
+                show(notice: "PCのクリップボードに、文字がありません")
+            } else {
+                UIPasteboard.general.string = text
+                show(notice: "iPhoneのクリップボードに入れました")
             }
         case "ime_state":
             imeOn = json["on"] as? Bool

@@ -54,6 +54,14 @@ function Find-Python {
     return $null
 }
 
+# panel.bat から呼ばれたときは、準備のあと、サーバーではなく管理画面を、黒い画面なしで起動する
+$panel = $false
+$rest = @($args)
+if ($rest.Count -gt 0 -and $rest[0] -eq '--panel') {
+    $panel = $true
+    $rest = @($rest | Select-Object -Skip 1)
+}
+
 Write-Host "duo_server の準備をしています…"
 
 # 1. Python
@@ -98,9 +106,16 @@ if ($installed -ne $hash) {
     Set-Content -LiteralPath $stamp -Value $hash
 }
 
+# 5a. 管理画面。pythonw.exe で動かし、この画面はすぐ閉じる
+if ($panel) {
+    $venvPythonw = Join-Path $PSScriptRoot '.venv\Scripts\pythonw.exe'
+    Start-Process -FilePath $venvPythonw -ArgumentList (@('-m', 'duo_server.panel') + $rest) -WorkingDirectory $PSScriptRoot
+    exit 0
+}
+
 # 5. 起動。start.bat に付けた引数（--fps 30 など）は、そのまま渡す
 Write-Host ""
-& $venvPython -m duo_server @args
+& $venvPython -m duo_server @rest
 $code = $LASTEXITCODE
 
 Write-Host ""

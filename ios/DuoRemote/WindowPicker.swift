@@ -32,8 +32,16 @@ struct WindowPicker: View {
 
                 Section(bringing ? "仮想画面に持ってくるウィンドウ" : "ウィンドウ") {
                     if session.windows.isEmpty {
-                        Text(session.isLoadingWindows ? "読み込んでいます…" : "ウィンドウがありません")
-                            .foregroundStyle(.secondary)
+                        if session.isLoadingWindows {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            ContentUnavailableView(
+                                "ウィンドウがありません",
+                                systemImage: "macwindow",
+                                description: Text("下に引くか、右上のボタンで読み直します")
+                            )
+                        }
                     }
                     ForEach(session.windows) { window in
                         Button {
@@ -48,9 +56,11 @@ struct WindowPicker: View {
 
                 if session.viewMode != .screen {
                     Section {
-                        Button("本物の画面を表示") {
+                        Button {
                             session.showScreen()
                             dismiss()
+                        } label: {
+                            Label("本物の画面を表示", systemImage: "display")
                         }
                     }
                 }
@@ -67,6 +77,8 @@ struct WindowPicker: View {
                 }
             }
         }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 
     private var footerText: String {
@@ -87,24 +99,49 @@ struct WindowPicker: View {
         session.showWindow(window, fit: fit, toVirtual: useVirtual && window.place != "virtual")
     }
 
+    /// 場所ごとのアイコンの記号と色
+    private func iconStyle(_ place: String) -> (symbol: String, color: Color) {
+        switch place {
+        case "virtual": ("rectangle.on.rectangle", Color.purple)
+        case "other": ("display.2", Color.orange)
+        case "none": ("eye.slash", Color.gray)
+        default: ("macwindow", Color.blue)
+        }
+    }
+
+    private func placeName(_ place: String) -> String? {
+        switch place {
+        case "virtual": "仮想画面"
+        case "other": "ほかのモニター"
+        case "none": "表示されていない"
+        default: nil
+        }
+    }
+
     private func row(_ window: RemoteWindow) -> some View {
-        HStack {
+        let icon = iconStyle(window.place)
+        let detail = [window.app, placeName(window.place)]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ・ ")
+        return HStack(spacing: 12) {
+            Image(systemName: icon.symbol)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 32, height: 32)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(icon.color.gradient))
             VStack(alignment: .leading, spacing: 2) {
-                Text(window.title).lineLimit(1)
-                HStack(spacing: 6) {
-                    if window.place == "virtual" {
-                        Label("仮想画面", systemImage: "rectangle.on.rectangle")
-                    }
-                    if !window.app.isEmpty {
-                        Text(window.app)
-                    }
+                Text(window.title).font(.body).lineLimit(1)
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
             Spacer()
             if window.id == session.currentWindow?.id {
-                Image(systemName: "checkmark").foregroundStyle(.tint)
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
             }
         }
         .contentShape(Rectangle())

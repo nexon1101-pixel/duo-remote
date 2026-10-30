@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DuoRemote サーバー</title>
+<style>
+:root {
+  --bg: #f3f3f3; --card: #ffffff; --border: #e3e3e3; --text: #1a1a1a; --sub: #5f5f5f;
+  --accent: #0067c0; --accent-text: #ffffff; --btn: #fbfbfb; --btn-hover: #f0f0f0;
+  --ok: #107c10; --off: #8a8a8a; --danger: #c42b1c; --shadow: 0 1px 3px rgba(0,0,0,.08);
+  --input: #ffffff; --warn-bg: #fff4ce; --warn-text: #5d4500;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #202020; --card: #2b2b2b; --border: #3a3a3a; --text: #f3f3f3; --sub: #b0b0b0;
+    --accent: #4cc2ff; --accent-text: #00243a; --btn: #333333; --btn-hover: #3d3d3d;
+    --ok: #6ccb5f; --off: #888888; --danger: #ff99a4; --shadow: 0 1px 3px rgba(0,0,0,.4);
+    --input: #1f1f1f; --warn-bg: #433519; --warn-text: #fce100;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.6 "Segoe UI Variable", "Segoe UI", "Yu Gothic UI", system-ui, sans-serif;
+}
+main { max-width: 860px; margin: 0 auto; padding: 16px 16px 40px; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 8px 0 16px; }
+header h1 { font-size: 22px; margin: 0; font-weight: 600; }
+header .ver { color: var(--sub); font-size: 13px; margin-left: 6px; font-weight: 400; }
+header .grow { flex: 1; }
+.badge { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px; border-radius: 999px;
+  background: var(--card); border: 1px solid var(--border); font-weight: 600; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--off); }
+.badge.on .dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
+  padding: 16px 20px; margin-bottom: 14px; }
+.card h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0; }
+.row .label { width: 120px; color: var(--sub); flex: none; }
+.row .value { flex: 1; min-width: 120px; word-break: break-all; font-family: Consolas, monospace; }
+/* ホストは複数あるので、1行ずつ、コピーのボタンをほかの行と同じ右端にそろえる */
+.hostline { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.hostline .hostaddr { flex: 1; }
+.small { font-size: 12px; color: var(--sub); }
+.tag { font-size: 11px; padding: 0 8px; border-radius: 999px; background: var(--accent); color: var(--accent-text); margin-left: 6px; }
+button { font: inherit; padding: 5px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--btn);
+  color: var(--text); cursor: pointer; }
+button:hover { background: var(--btn-hover); }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+button.primary:hover { filter: brightness(1.08); }
+button.big { padding: 8px 26px; font-size: 15px; }
+button.danger { color: var(--danger); }
+input, select { font: inherit; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--input); color: var(--text); width: 150px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px 20px; }
+.grid label { display: flex; flex-direction: column; gap: 4px; color: var(--sub); font-size: 12px; }
+.grid input, .grid select { width: 100%; }
+.notice { background: var(--warn-bg); color: var(--warn-text); border-radius: 8px; padding: 8px 12px; margin-top: 12px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.banner { display: none; background: var(--danger); color: #fff; text-align: center; padding: 8px; border-radius: 8px;
+  margin-bottom: 14px; font-weight: 600; }
+.switch { position: relative; width: 44px; height: 22px; flex: none; }
+.switch input { opacity: 0; width: 100%; height: 100%; position: absolute; margin: 0; cursor: pointer; z-index: 1; }
+.switch span { position: absolute; inset: 0; border-radius: 999px; border: 1px solid var(--off); background: transparent; transition: .15s; }
+.switch span::after { content: ""; position: absolute; width: 14px; height: 14px; top: 3px; left: 4px; border-radius: 50%;
+  background: var(--off); transition: .15s; }
+.switch input:checked + span { background: var(--accent); border-color: var(--accent); }
+.switch input:checked + span::after { left: 24px; background: var(--accent-text); }
+pre.log { background: #141414; color: #e6e6e6; font: 12px/1.5 Consolas, "Cascadia Mono", monospace; border-radius: 8px;
+  padding: 10px 12px; height: 260px; overflow: auto; margin: 0 0 10px; white-space: pre-wrap; word-break: break-all; }
+pre.log.short { height: 120px; margin-top: 10px; }
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #323232; color: #fff;
+  padding: 10px 18px; border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,.35); opacity: 0; pointer-events: none;
+  transition: opacity .2s; max-width: 90vw; z-index: 10; }
+.toast.show { opacity: 1; }
+.toast.error { background: #a4262c; }
+footer { text-align: center; margin-top: 24px; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="banner" id="down">管理画面が止まっています</div>
+
+  <header>
+    <h1>DuoRemote サーバー<span class="ver" id="ver"></span></h1>
+    <span class="grow"></span>
+    <span class="badge" id="badge"><span class="dot"></span><span id="badgeText">確認しています</span></span>
+    <button class="primary big" id="toggle" disabled>起動</button>
+    <button id="restart" disabled>再起動</button>
+  </header>
+
+  <section class="card">
+    <h2>つなぎ方</h2>
+    <div class="small">iPhone のアプリに、次の値を入れます。</div>
+    <div class="row"><span class="label">ホスト</span><span class="value" id="hosts"></span></div>
+    <div class="row"><span class="label">ポート</span><span class="value" id="portShow"></span>
+      <button data-copy="portShow">コピー</button></div>
+    <div class="row"><span class="label">トークン</span><span class="value" id="tokenShow">●●●●●●●●</span>
+      <button id="tokenEye">表示</button><button id="tokenCopy">コピー</button>
+      <button class="danger" id="tokenNew">作り直す</button></div>
+  </section>
+
+  <section class="card">
+    <h2>設定</h2>
+    <div class="grid">
+      <label>ポート<input type="number" id="s_port"></label>
+      <label>フレームレート<input type="number" id="s_fps"></label>
+      <label>ビットレート（kbps）<input type="number" id="s_bitrate_kbps"></label>
+      <label>映像の高さの上限（0は元の大きさ）<input type="number" id="s_max_height"></label>
+      <label>エンコーダー<select id="s_encoder"></select></label>
+      <label>モニターの番号<input type="number" id="s_output_idx"></label>
+    </div>
+    <div class="row"><button class="primary" id="save">保存</button>
+      <span class="small">アプリで画質を選ぶと、フレームレート、ビットレート、高さはアプリの値が使われます。</span></div>
+    <div class="notice" id="restartNotice" hidden>サーバーを再起動すると使われます。<button id="restartNow">今すぐ再起動</button></div>
+  </section>
+
+  <section class="card">
+    <h2>Windows</h2>
+    <div class="row"><span class="label">管理者</span><span class="value" id="adminText" style="font-family:inherit"></span>
+      <button id="adminBtn" hidden>管理者として起動し直す</button></div>
+    <div class="row"><span class="label">自動起動</span>
+      <label class="switch"><input type="checkbox" id="autostart"><span></span></label>
+      <span>ログインしたときに自動で起動する</span></div>
+  </section>
+
+  <section class="card">
+    <h2>更新</h2>
+    <div class="row"><span class="label">今の版</span><span class="value" id="curVer" style="font-family:inherit"></span></div>
+    <div class="row"><span class="label">GitHub の版</span><span class="value" id="newVer" style="font-family:inherit">確かめていません</span>
+      <button id="checkBtn">確かめる</button><button class="primary" id="updateBtn" hidden>更新する</button></div>
+    <div class="small" id="method"></div>
+    <pre class="log short" id="updateLog" hidden></pre>
+    <div class="notice" id="updateDone" hidden></div>
+  </section>
+
+  <section class="card">
+    <h2>ログ</h2>
+    <pre class="log" id="log"></pre>
+    <button id="copyLog">コピー</button>
+  </section>
+
+  <footer><button class="danger" id="quit">管理画面を終了</button></footer>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const KEY = new URLSearchParams(location.search).get("k") || "";
+const $ = (id) => document.getElementById(id);
+let st = null, cfg = null, lastSeq = 0, tokenVisible = false, busy = false, updating = false, failures = 0;
+
+async function api(path, method = "GET", body) {
+  const res = await fetch(path, {
+    method, headers: { "X-Panel-Key": KEY, "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  let data = {};
+  try { data = await res.json(); } catch (e) {}
+  if (!res.ok) throw new Error(data.error || ("エラー（" + res.status + "）"));
+  return data;
+}
+
+let toastTimer = null;
+function toast(msg, isError) {
+  const t = $("toast");
+  t.textContent = msg; t.className = "toast show" + (isError ? " error" : "");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 4000);
+}
+const fail = (e) => toast(e.message, true);
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); toast("コピーしました"); }
+  catch (e) { toast("コピーできませんでした", true); }
+}
+
+function renderStatus() {
+  if (!st) return;
+  $("ver").textContent = "版 " + st.version;
+  $("curVer").textContent = st.version;
+  $("badge").className = "badge" + (st.running ? " on" : "");
+  $("badgeText").textContent = st.running ? "動いています" : "止まっています";
+  $("toggle").textContent = st.running ? "停止" : "起動";
+  $("toggle").className = st.running ? "big" : "primary big";
+  $("toggle").disabled = busy; $("restart").disabled = busy || !st.running;
+  $("adminText").textContent = st.admin ? "管理者として動いています"
+    : "管理者ではありません。仮想ディスプレイを使うには、管理者として起動します";
+  $("adminBtn").hidden = st.admin;
+  $("autostart").checked = st.autostart;
+  $("portShow").textContent = st.port;
+  const hosts = $("hosts"); hosts.textContent = "";
+  if (!st.addresses.length) hosts.textContent = "見つかりませんでした";
+  st.addresses.forEach((a) => {
+    const line = document.createElement("div");
+    line.className = "hostline";
+    const text = document.createElement("span"); text.className = "hostaddr"; text.textContent = a; line.append(text);
+    if (a.startsWith("100.")) { const t = document.createElement("span"); t.className = "tag"; t.textContent = "Tailscale"; line.append(t); }
+    const b = document.createElement("button"); b.textContent = "コピー";
+    b.onclick = () => copyText(a); line.append(b);
+    hosts.append(line);
+  });
+}
+
+async function pollStatus() {
+  try {
+    st = await api("/api/status");
+    failures = 0; $("down").style.display = "none";
+    renderStatus();
+  } catch (e) {
+    if (++failures >= 2) $("down").style.display = "block";
+  }
+}
+
+async function runBusy(fn) {
+  busy = true; renderStatus();
+  try { st = await fn(); } catch (e) { fail(e); }
+  busy = false; renderStatus();
+}
+
+function renderToken() {
+  $("tokenShow").textContent = cfg ? (tokenVisible ? cfg.settings.token : "●●●●●●●●") : "";
+  $("tokenEye").textContent = tokenVisible ? "隠す" : "表示";
+}
+
+async function loadSettings() {
+  cfg = await api("/api/settings");
+  const sel = $("s_encoder");
+  if (!sel.options.length) cfg.encoders.forEach((e) => sel.add(new Option(e, e)));
+  for (const k of ["port", "fps", "bitrate_kbps", "max_height", "output_idx"]) {
+    const el = $("s_" + k); el.value = cfg.settings[k];
+    if (cfg.limits[k]) { el.min = cfg.limits[k][0]; el.max = cfg.limits[k][1]; }
+  }
+  sel.value = cfg.settings.encoder;
+  renderToken();
+}
+
+$("toggle").onclick = () => runBusy(() => api(st.running ? "/api/stop" : "/api/start", "POST"));
+$("restart").onclick = () => runBusy(() => api("/api/restart", "POST"));
+$("restartNow").onclick = async () => { await runBusy(() => api("/api/restart", "POST")); $("restartNotice").hidden = true; };
+
+$("save").onclick = async () => {
+  const changes = { encoder: $("s_encoder").value };
+  for (const k of ["port", "fps", "bitrate_kbps", "max_height", "output_idx"]) changes[k] = Number($("s_" + k).value);
+  try {
+    const r = await api("/api/settings", "POST", { changes });
+    cfg.settings = r.settings; toast("保存しました");
+    $("restartNotice").hidden = !r.restart_needed;
+    pollStatus();
+  } catch (e) { fail(e); }
+};
+
+$("tokenEye").onclick = () => { tokenVisible = !tokenVisible; renderToken(); };
+$("tokenCopy").onclick = () => cfg && copyText(cfg.settings.token);
+$("tokenNew").onclick = async () => {
+  if (!confirm("トークンを作り直します。iPhone のアプリにも、新しいトークンを入れ直してください。よろしいですか。")) return;
+  try {
+    const r = await api("/api/token", "POST");
+    cfg.settings.token = r.token; renderToken(); toast("トークンを作り直しました"); pollStatus();
+  } catch (e) { fail(e); }
+};
+document.querySelectorAll("[data-copy]").forEach((b) => b.onclick = () => copyText($(b.dataset.copy).textContent));
+
+$("autostart").onchange = async (ev) => {
+  const want = ev.target.checked;
+  try { await api("/api/autostart", "POST", { enabled: want }); toast(want ? "自動起動を設定しました" : "自動起動を外しました"); }
+  catch (e) { ev.target.checked = !want; fail(e); }
+};
+
+$("adminBtn").onclick = async () => {
+  if (!confirm("管理者として起動し直します。この画面は閉じて、新しい画面が開きます。よろしいですか。")) return;
+  try { await api("/api/admin", "POST"); toast("管理者として起動し直しています…"); } catch (e) { fail(e); }
+};
+
+// 更新
+let updateInfo = null;
+async function checkUpdate() {
+  $("newVer").textContent = "確かめています…";
+  try {
+    updateInfo = await api("/api/update");
+    $("curVer").textContent = updateInfo.current;
+    $("method").textContent = "更新の方式: " + (updateInfo.method === "git" ? "git" : "ZIP");
+    if (updateInfo.error) $("newVer").textContent = "確かめられませんでした（" + updateInfo.error + "）";
+    else if (updateInfo.available) $("newVer").textContent = updateInfo.latest + "（新しい版があります）";
+    else $("newVer").textContent = (updateInfo.latest || updateInfo.current) + "（今の版が最新です）";
+    $("updateBtn").hidden = !(updateInfo.available && !updateInfo.error);
+  } catch (e) { $("newVer").textContent = "確かめられませんでした"; fail(e); }
+}
+$("checkBtn").onclick = checkUpdate;
+
+$("updateBtn").onclick = async () => {
+  if (!confirm("更新します。サーバーは止まり、管理画面は起動し直します。よろしいですか。")) return;
+  try {
+    await api("/api/update", "POST");
+    updating = true; $("updateBtn").hidden = true; $("checkBtn").disabled = true;
+    $("updateLog").hidden = false; $("updateLog").textContent = "";
+    pollUpdate();
+  } catch (e) { fail(e); }
+};
+
+async function pollUpdate() {
+  let u;
+  try { u = await api("/api/update/log"); }
+  catch (e) {
+    // 更新が終わって管理画面が止まった
+    if (updating) finishUpdate(); return;
+  }
+  const el = $("updateLog");
+  el.textContent = u.lines.join("\n"); el.scrollTop = el.scrollHeight;
+  if (u.error) { updating = false; $("checkBtn").disabled = false; $("updateBtn").hidden = false; toast(u.error, true); return; }
+  if (u.done) { finishUpdate(); return; }
+  setTimeout(pollUpdate, 1000);
+}
+
+function finishUpdate() {
+  updating = false;
+  const n = $("updateDone"); n.hidden = false; n.textContent = "起動し直しています…";
+  setTimeout(() => {
+    n.textContent = "管理画面を起動し直しました。新しいウィンドウを使ってください。このウィンドウは閉じてかまいません。";
+  }, 4000);
+}
+
+// ログ
+async function pollLog() {
+  try {
+    const r = await api("/api/log?since=" + lastSeq);
+    lastSeq = r.seq;
+    if (r.lines.length) {
+      const el = $("log");
+      el.textContent += (el.textContent ? "\n" : "") + r.lines.join("\n");
+      if (el.textContent.length > 200000) el.textContent = el.textContent.slice(-150000);
+      el.scrollTop = el.scrollHeight;
+    }
+  } catch (e) {}
+}
+$("copyLog").onclick = () => copyText($("log").textContent);
+
+$("quit").onclick = async () => {
+  if (!confirm("管理画面を終了します。サーバーも止まります。よろしいですか。")) return;
+  try { await api("/api/quit", "POST"); } catch (e) { fail(e); return; }
+  $("down").style.display = "block"; $("down").textContent = "管理画面を終了しました。このウィンドウは閉じてかまいません。";
+  failures = -1000;
+};
+
+pollStatus(); loadSettings().catch(fail); checkUpdate(); pollLog();
+setInterval(pollStatus, 2000); setInterval(pollLog, 1000);
+</script>
+</body>
+</html>

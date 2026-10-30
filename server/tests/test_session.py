@@ -470,3 +470,52 @@ def test_frames_are_dropped_until_keyframe_when_sending_falls_behind(monkeypatch
         if cur != prev + 1:
             # 捨てたあとは、キーフレームから始まる
             assert key and cur % 10 == 0
+
+
+async def recv_reply(ws):
+    """ime_state（0.5秒ごとに来ることがある）を読み飛ばして、次のJSONメッセージを返す。"""
+    while True:
+        msg = await recv_json(ws)
+        if msg["t"] != "ime_state":
+            return msg
+
+
+def test_clipboard():
+    async def body(url, backend):
+        backend.clipboard = "PCの\r\n文字"
+        async with connect(url) as ws:
+            await ws.send(hello())
+            await recv_reply(ws)  # welcome
+            await ws.send(json.dumps({"t": "clip_get"}))
+            msg = await recv_reply(ws)
+            assert msg == {"t": "clip", "s": "PCの\n文字"}  # 改行は \n にそろえる
+
+            await ws.send(json.dumps({"t": "clip_set", "s": "a\nb\r\nc"}))
+            msg = await recv_reply(ws)
+            assert msg["t"] == "notice"
+            assert backend.clipboard == "a\r\nb\r\nc"  # Windowsの決まり（CRLF）にする
+
+            await ws.send(json.dumps({"t": "clip_set", "s": "x" * (protocol.MAX_CLIP_LENGTH + 1)}))
+            assert (await recv_reply(ws))["t"] == "error"
+            assert backend.clipboard == "a\r\nb\r\nc"  # 長すぎるものは入れない
+
+    asyncio.run(run_with_server(body))
+
+
+def test_clipboard_error_keeps_connection():
+    class Busy(NullInput):
+        def clip_get(self):
+            from duo_server.input_win import ClipboardError
+            raise ClipboardError("PCのクリップボードを、他のアプリが使っています")
+
+    async def body(url, backend):
+        async with connect(url) as ws:
+            await ws.send(hello())
+            await recv_reply(ws)
+            await ws.send(json.dumps({"t": "clip_get"}))
+            assert (await recv_reply(ws))["t"] == "error"
+            await ws.send(json.dumps({"t": "ping", "n": 1}))
+            while (await recv_reply(ws))["t"] != "pong":
+                pass
+
+    asyncio.run(run_with_server(body, backend=Busy((1920, 1080))))

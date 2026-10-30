@@ -13,6 +13,7 @@ FLAG_KEYFRAME = 0x01
 FLAG_AUDIO = 0x02  # 音のフレーム（立っていなければ、映像）
 
 MAX_TEXT_LENGTH = 4096
+MAX_CLIP_LENGTH = 100_000  # クリップボードの文字の上限（文字で数える）
 
 
 def pack_frame(payload: bytes, keyframe: bool, ts_ms: int) -> bytes:

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 
 from .virtual_display import VirtualDisplay, VirtualDisplayError, list_monitors
 
@@ -20,6 +21,19 @@ EXTENDED_VKS = {
     0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
     0x2D, 0x2E, 0x5B, 0x5C, 0x5D, 0x6F, 0x90, 0xA3, 0xA5,
 }
+
+
+class ClipboardError(Exception):
+    """PCのクリップボードを読み書きできなかった。"""
+
+
+def to_windows_newlines(s: str) -> str:
+    """改行を、Windowsのクリップボードの決まり（CRLF）にそろえる。"""
+    return s.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+
+
+def from_windows_newlines(s: str) -> str:
+    return s.replace("\r\n", "\n").replace("\r", "\n")
 
 
 class _BringMixin:
@@ -77,6 +91,7 @@ class NullInput(_BringMixin):
         self.virtual_enabled = False
         self.virtual_error: str | None = None  # 設定すると、virtual_on が失敗する
         self._virtual_width = 1536
+        self.clipboard = ""
 
     def screen_size(self) -> tuple[int, int]:
         return self._size
@@ -193,6 +208,13 @@ class NullInput(_BringMixin):
     def ime_state(self) -> bool | None:
         return self._ime
 
+    def clip_get(self) -> str:
+        return self.clipboard
+
+    def clip_set(self, s: str) -> None:
+        self.calls.append(("clip_set", s))
+        self.clipboard = s
+
 
 if sys.platform == "win32":
     import ctypes
@@ -265,6 +287,25 @@ if sys.platform == "win32":
     kernel32.OpenProcess.restype = wt.HANDLE
     kernel32.QueryFullProcessImageNameW.argtypes = (wt.HANDLE, wt.DWORD, wt.LPWSTR, ctypes.POINTER(wt.DWORD))
     kernel32.CloseHandle.argtypes = (wt.HANDLE,)
+    user32.OpenClipboard.argtypes = (wt.HWND,)
+    user32.GetClipboardData.argtypes = (wt.UINT,)
+    user32.GetClipboardData.restype = wt.HANDLE
+    user32.SetClipboardData.argtypes = (wt.UINT, wt.HANDLE)
+    user32.SetClipboardData.restype = wt.HANDLE
+    user32.IsClipboardFormatAvailable.argtypes = (wt.UINT,)
+    user32.CreateWindowExW.argtypes = (
+        wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        wt.HWND, wt.HMENU, wt.HINSTANCE, wt.LPVOID,
+    )
+    user32.CreateWindowExW.restype = wt.HWND
+    user32.DestroyWindow.argtypes = (wt.HWND,)
+    kernel32.GlobalAlloc.argtypes = (wt.UINT, ctypes.c_size_t)
+    kernel32.GlobalAlloc.restype = wt.HGLOBAL
+    kernel32.GlobalLock.argtypes = (wt.HGLOBAL,)
+    kernel32.GlobalLock.restype = wt.LPVOID
+    kernel32.GlobalUnlock.argtypes = (wt.HGLOBAL,)
+    kernel32.GlobalFree.argtypes = (wt.HGLOBAL,)
+    kernel32.GlobalFree.restype = wt.HGLOBAL
 
     INPUT_MOUSE, INPUT_KEYBOARD = 0, 1
     MOUSEEVENTF_MOVE = 0x0001
@@ -301,6 +342,58 @@ if sys.platform == "win32":
     SWP_NOZORDER, SWP_NOACTIVATE = 0x0004, 0x0010
     SPI_GETWORKAREA = 0x0030
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    CF_UNICODETEXT = 13
+    GMEM_MOVEABLE = 0x0002
+    HWND_MESSAGE = wt.HWND(-3)
+    CLIPBOARD_TRIES = 10  # 他のアプリが開いていることがあるので、少し待って何度か試す
+
+    def _open_clipboard(hwnd) -> None:
+        for _ in range(CLIPBOARD_TRIES):
+            if user32.OpenClipboard(hwnd):
+                return
+            time.sleep(0.05)
+        raise ClipboardError("PCのクリップボードを、他のアプリが使っています")
+
+    def _clip_get() -> str:
+        _open_clipboard(None)
+        try:
+            if not user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+                return ""
+            handle = user32.GetClipboardData(CF_UNICODETEXT)
+            if not handle:
+                return ""
+            ptr = kernel32.GlobalLock(handle)
+            if not ptr:
+                return ""
+            try:
+                return ctypes.wstring_at(ptr)
+            finally:
+                kernel32.GlobalUnlock(handle)
+        finally:
+            user32.CloseClipboard()
+
+    def _clip_set(s: str) -> None:
+        data = (s.replace("\0", "") + "\0").encode("utf-16-le")
+        # 持ち主のウィンドウがないと、SetClipboardData が失敗することがあるので、見えないウィンドウを作る
+        owner = user32.CreateWindowExW(0, "STATIC", None, 0, 0, 0, 0, 0, HWND_MESSAGE, None, None, None)
+        try:
+            _open_clipboard(owner)
+            try:
+                user32.EmptyClipboard()
+                mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+                if not mem:
+                    raise ClipboardError("PCのクリップボードに入れられませんでした（メモリ）")
+                ptr = kernel32.GlobalLock(mem)
+                ctypes.memmove(ptr, data, len(data))
+                kernel32.GlobalUnlock(mem)
+                if not user32.SetClipboardData(CF_UNICODETEXT, mem):
+                    kernel32.GlobalFree(mem)  # 渡せなかったときだけ、自分で消す
+                    raise ClipboardError("PCのクリップボードに入れられませんでした")
+            finally:
+                user32.CloseClipboard()
+        finally:
+            if owner:
+                user32.DestroyWindow(owner)
 
     def _make_dpi_aware() -> None:
         # 画面の大きさを、拡大率に左右されない実際の画素数で取る
@@ -642,6 +735,12 @@ if sys.platform == "win32":
             if not ok:
                 return None
             return bool(result.value)
+
+        def clip_get(self) -> str:
+            return _clip_get()
+
+        def clip_set(self, s: str) -> None:
+            _clip_set(s)
 
 
 def create_input():
