@@ -9,6 +9,7 @@ struct ContentView: View {
     @AppStorage("host") private var host = ""
     @AppStorage("port") private var port = "8765"
     @State private var token = ""
+    @State private var showToken = false
 
     @AppStorage("pointerMode") private var pointerMode = PointerMode.direct
     @AppStorage(KeyCaptureView.commandAsControlKey) private var commandAsControl = false
@@ -227,9 +228,27 @@ struct ContentView: View {
                     .keyboardType(.URL)
                 TextField("ポート", text: $port)
                     .keyboardType(.numberPad)
-                SecureField("トークン", text: $token)
+                HStack {
+                    // 伏せ字のままだと、打ち間違いに気づけないので、目のボタンで表示を切り替える
+                    Group {
+                        if showToken {
+                            TextField("トークン", text: $token)
+                        } else {
+                            SecureField("トークン", text: $token)
+                        }
+                    }
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .keyboardType(.asciiCapable) // 日本語のキーボードで、全角の文字が入らないようにする
+                    .font(.body.monospaced())
+                    Button {
+                        showToken.toggle()
+                    } label: {
+                        Image(systemName: showToken ? "eye.slash" : "eye")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(showToken ? "トークンを隠す" : "トークンを表示する")
+                }
             }
             Section {
                 Picker("画質", selection: $quality) {
@@ -242,6 +261,10 @@ struct ContentView: View {
             }
             Section {
                 Button(session.state == .connecting ? "接続しています…" : "接続") {
+                    // 貼り付けたときに付いてくる空白や、全角の英数字を直してから使う
+                    host = Self.cleaned(host)
+                    port = Self.cleaned(port)
+                    token = Self.cleaned(token)
                     Keychain.save("token", token)
                     session.connect(host: host, port: Int(port) ?? 8765, token: token, quality: quality)
                 }
@@ -255,6 +278,12 @@ struct ContentView: View {
             }
         }
         .scrollContentBackground(.hidden)
+    }
+
+    /// 全角の英数字と記号を半角にし、前後の空白と改行を取り除く
+    static func cleaned(_ text: String) -> String {
+        let halfWidth = text.applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? text
+        return halfWidth.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func loadToken() {
