@@ -28,7 +28,7 @@ struct OverlayKeyboard: View {
     private static let barHeight: CGFloat = 26
     private static let minWidth: CGFloat = 260
     /// キー1つの、高さと幅の比
-    private static let keyAspect: CGFloat = 1.05
+    static let keyAspect: CGFloat = 1.05
 
     var body: some View {
         GeometryReader { proxy in

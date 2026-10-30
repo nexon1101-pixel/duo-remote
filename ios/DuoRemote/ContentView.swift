@@ -36,6 +36,9 @@ struct ContentView: View {
     @State private var inputMode: InputMode = .touch
     /// 変えると、キーを受け取る部品が、もう一度入力を受け取る状態になる
     @State private var refocus = 0
+    /// Duo の開き具合と、折り目の位置
+    @State private var fold = FoldState()
+    @AppStorage("dockWhenHalfOpen") private var dockWhenHalfOpen = true
 
     var body: some View {
         ZStack {
@@ -91,6 +94,19 @@ struct ContentView: View {
             )
             .padding(CGFloat(edgeMargin))
             .ignoresSafeArea() // キーボードの分も含めて、動かさない
+            // 半開きのときは、折り目より上だけに映す
+            .frame(height: dockedFold.map { $0.minY })
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+
+            if let fold = dockedFold {
+                DockedInput()
+                    .padding(.horizontal, 10 + max(safeInsets.leading, safeInsets.trailing))
+                    .padding(.top, 8)
+                    .padding(.bottom, 8 + safeInsets.bottom)
+                    .frame(height: max(fullSize.height - fold.maxY, 0))
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
 
             // 遅れは、メニューの中に置くと、数字が変わるたびに、メニューのスクロールが戻る。画面に出し続ける
             if showLatency {
@@ -102,7 +118,7 @@ struct ContentView: View {
                     .allowsHitTesting(false)
             }
 
-            if inputMode == .overlay {
+            if inputMode == .overlay && dockedFold == nil {
                 OverlayKeyboard(session: session) {
                     if inputMode == .overlay { inputMode = .touch }
                 }
@@ -113,11 +129,14 @@ struct ContentView: View {
             }
 
             VStack(spacing: 0) {
-                HStack {
-                    Spacer()
-                    inputButton
+                // 半開きのときは、下の画面にキーボードがいつも出ているので、ボタンは要らない
+                if dockedFold == nil {
+                    HStack {
+                        Spacer()
+                        inputButton
+                    }
                 }
-                if inputMode == .software {
+                if inputMode == .software && dockedFold == nil {
                     SoftwareInputBar(refocus: refocus) {
                         // キーボードが閉じられたら、タッチだけに戻す
                         if inputMode == .software { inputMode = .touch }
@@ -127,6 +146,12 @@ struct ContentView: View {
         }
         // 画面の端までは使う。キーボードが出たときだけ、入力の欄がその上に上がる
         .ignoresSafeArea(.container)
+        .background {
+            FoldWatcher(state: $fold)
+                .ignoresSafeArea()
+        }
+        .animation(.spring(duration: 0.4), value: dockedFold)
+        .onChange(of: dockedFold) { _, _ in refitWindow() }
         .background {
             HardwareKeyView(
                 isActive: inputMode == .hardware && !showingWindows,
@@ -205,7 +230,15 @@ struct ContentView: View {
     /// 映像を出している範囲の大きさ（余白を除く）。ウィンドウや仮想画面の大きさを、これに合わせる
     private var fitSize: CGSize {
         let margin = CGFloat(edgeMargin) * 2
-        return CGSize(width: max(fullSize.width - margin, 1), height: max(fullSize.height - margin, 1))
+        // 半開きのときは、折り目より上の大きさに合わせる
+        let height = dockedFold.map { $0.minY } ?? fullSize.height
+        return CGSize(width: max(fullSize.width - margin, 1), height: max(height - margin, 1))
+    }
+
+    /// 半開きで、下の画面にキーボードを出しているときの、折り目の位置。出していなければ nil
+    private var dockedFold: CGRect? {
+        guard dockWhenHalfOpen, fold.isTabletop, let rect = fold.fold, rect.minY > 0 else { return nil }
+        return rect
     }
 
     /// この端末の、いまの画面の大きさ（実機が報告する値）。折りたたみの開閉や回転で変わる
@@ -297,6 +330,7 @@ struct ContentView: View {
                     Text("60%").tag(0.6)
                     Text("40%").tag(0.4)
                 }
+                Toggle("半開きのとき、下にキーボードを出す", isOn: $dockWhenHalfOpen)
                 Toggle("遅れを画面に出す", isOn: $showLatency)
                 Picker("画面の端の余白", selection: $edgeMargin) {
                     Text("なし").tag(0)
