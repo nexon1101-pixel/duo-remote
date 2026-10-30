@@ -58,6 +58,11 @@ final class KeyCaptureView: UIView {
 
     /// 押しているキー（スキャンコード）と、押し続けたときの繰り返し
     private var held: [Int: Task<Void, Never>] = [:]
+    /// 押したときに決めたスキャンコード（キーの番号ごと）。離すときも同じものを使う
+    private var pressed: [Int: Int] = [:]
+
+    /// Macのキーボードの command キーを、Ctrl として送るか（設定の「command を Ctrl にする」）
+    static let commandAsControlKey = "commandAsControl"
 
     /// 押し続けたとき、繰り返しが始まるまでの時間と、その間隔。
     /// PCは、送ったキーを自分では繰り返さないので、こちらで繰り返す
@@ -101,7 +106,8 @@ final class KeyCaptureView: UIView {
             case KeyMap.hidLang2: // 英数
                 session?.setIME(false)
             default:
-                if let sc = KeyMap.scanCode(hid: usage) {
+                if let sc = scanCode(hid: usage) {
+                    pressed[usage] = sc
                     keyDown(sc)
                 } else {
                     others.insert(press)
@@ -109,6 +115,14 @@ final class KeyCaptureView: UIView {
             }
         }
         if !others.isEmpty { super.pressesBegan(others, with: event) }
+    }
+
+    private func scanCode(hid usage: Int) -> Int? {
+        if UserDefaults.standard.bool(forKey: Self.commandAsControlKey) {
+            if usage == 0xE3 { return 0x1D } // 左command → 左Ctrl
+            if usage == 0xE7 { return 0xE01D } // 右command → 右Ctrl
+        }
+        return KeyMap.scanCode(hid: usage)
     }
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
@@ -129,9 +143,9 @@ final class KeyCaptureView: UIView {
                 continue
             }
             if usage == KeyMap.hidLang1 || usage == KeyMap.hidLang2 { continue }
-            if let sc = KeyMap.scanCode(hid: usage) {
+            if let sc = pressed.removeValue(forKey: usage) {
                 keyUp(sc)
-            } else {
+            } else if KeyMap.scanCode(hid: usage) == nil {
                 others.insert(press)
             }
         }
@@ -165,6 +179,7 @@ final class KeyCaptureView: UIView {
         for sc in Array(held.keys) {
             keyUp(sc)
         }
+        pressed.removeAll()
     }
 }
 
@@ -177,28 +192,33 @@ struct SoftwareInputBar: View {
     /// キーボードが閉じられたとき
     let onClose: () -> Void
 
-    /// オンのとき、次に打った英字か数字を、Ctrlと一緒に押す（Ctrl+C など）
-    @State private var ctrl = false
+    /// 押してある修飾キー（仮想キーコード）。次に押したキーか、次に打った英字・数字と一緒に押す（Ctrl+C、Shift+→ など）
+    @State private var modifiers: [Int] = []
 
     var body: some View {
         VStack(spacing: 6) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     imeButton
-                    key("Ctrl", isOn: ctrl) { ctrl.toggle() }
-                    key("Esc") { session.tapKey(vk: KeyMap.vkEscape) }
-                    key("Tab") { session.tapKey(vk: KeyMap.vkTab) }
-                    key(systemImage: "arrow.left") { session.tapKey(vk: KeyMap.vkLeft) }
-                    key(systemImage: "arrow.down") { session.tapKey(vk: KeyMap.vkDown) }
-                    key(systemImage: "arrow.up") { session.tapKey(vk: KeyMap.vkUp) }
-                    key(systemImage: "arrow.right") { session.tapKey(vk: KeyMap.vkRight) }
-                    key("BS") { session.tapKey(vk: KeyMap.vkBack) }
-                    key("Del") { session.tapKey(vk: KeyMap.vkDelete) }
-                    key("Enter") { session.tapKey(vk: KeyMap.vkReturn) }
+                    modifier("Ctrl", KeyMap.vkControl)
+                    modifier("Shift", KeyMap.vkShift)
+                    modifier("Alt", KeyMap.vkMenu)
+                    key("Win") { tap(KeyMap.vkLWin) }
+                    key("Esc") { tap(KeyMap.vkEscape) }
+                    key("Tab") { tap(KeyMap.vkTab) }
+                    key(systemImage: "arrow.left") { tap(KeyMap.vkLeft) }
+                    key(systemImage: "arrow.down") { tap(KeyMap.vkDown) }
+                    key(systemImage: "arrow.up") { tap(KeyMap.vkUp) }
+                    key(systemImage: "arrow.right") { tap(KeyMap.vkRight) }
+                    key("Home") { tap(KeyMap.vkHome) }
+                    key("End") { tap(KeyMap.vkEnd) }
+                    key("BS") { tap(KeyMap.vkBack) }
+                    key("Del") { tap(KeyMap.vkDelete) }
+                    key("Enter") { tap(KeyMap.vkReturn) }
                 }
                 .padding(.horizontal, 8)
             }
-            ComposeField(refocus: refocus, onText: send, onKey: { session.tapKey(vk: $0) }, onEnd: onClose)
+            ComposeField(refocus: refocus, onText: send, onKey: { tap($0) }, onEnd: onClose)
                 .frame(height: 36)
                 .padding(.horizontal, 8)
         }
@@ -216,16 +236,32 @@ struct SoftwareInputBar: View {
     }
 
     private func send(_ text: String) {
-        if ctrl {
-            ctrl = false
+        if !modifiers.isEmpty {
             // 英字と数字は、仮想キーコードが大文字のASCIIと同じ
             if text.count == 1, let c = text.uppercased().unicodeScalars.first,
                c.isASCII, CharacterSet.alphanumerics.contains(c) {
-                session.tapKey(vk: Int(c.value), ctrl: true)
+                tap(Int(c.value))
                 return
             }
+            modifiers = []
         }
         session.sendText(text)
+    }
+
+    /// キーを押して離す。修飾キーが押してあれば、一緒に押してから外す
+    private func tap(_ vk: Int) {
+        session.tapKey(vk: vk, modifiers: modifiers)
+        modifiers = []
+    }
+
+    private func modifier(_ title: String, _ vk: Int) -> some View {
+        key(title, isOn: modifiers.contains(vk)) {
+            if let i = modifiers.firstIndex(of: vk) {
+                modifiers.remove(at: i)
+            } else {
+                modifiers.append(vk)
+            }
+        }
     }
 
     private func key(_ title: String, isOn: Bool = false, action: @escaping () -> Void) -> some View {

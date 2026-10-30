@@ -14,7 +14,12 @@ final class RemoteSession: ObservableObject {
         case disconnected
         case connecting
         case connected
+        /// 切れたので、つなぎ直している
+        case reconnecting
     }
+
+    /// 切れたときに、つなぎ直す回数の上限
+    static let maxReconnectAttempts = 6
 
     @Published private(set) var state: State = .disconnected
     @Published private(set) var errorMessage: String?
@@ -36,6 +41,17 @@ final class RemoteSession: ObservableObject {
     private var task: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
 
+    /// つなぎ直すときに使う、接続先
+    private var target: (url: URL, token: String)?
+    private var reconnectAttempts = 0
+    private var reconnectTask: Task<Void, Never>?
+    /// サーバーに断られた（トークンが違うなど）。このときは、つなぎ直さない
+    private var rejected = false
+    /// 最後に選んだウィンドウの大きさの合わせ先。つなぎ直したときに、同じ表示に戻すため
+    private var lastFit: CGSize?
+
+    var isConnectedOrReconnecting: Bool { state == .connected || state == .reconnecting }
+
     func connect(host: String, port: Int, token: String) {
         disconnect()
         errorMessage = nil
@@ -44,16 +60,22 @@ final class RemoteSession: ObservableObject {
             errorMessage = "接続先の形式が正しくありません"
             return
         }
+        target = (url, token)
         state = .connecting
+        open()
+    }
 
-        let task = URLSession.shared.webSocketTask(with: url)
+    private func open() {
+        guard let target else { return }
+        rejected = false
+        let task = URLSession.shared.webSocketTask(with: target.url)
         task.maximumMessageSize = 16 * 1024 * 1024
         self.task = task
         task.resume()
 
         receiveTask = Task { [weak self] in
             do {
-                try await Self.send(task, ["t": "hello", "v": 1, "token": token])
+                try await Self.send(task, ["t": "hello", "v": 1, "token": target.token])
                 while !Task.isCancelled {
                     let message = try await task.receive()
                     guard let self else { return }
@@ -61,26 +83,79 @@ final class RemoteSession: ObservableObject {
                 }
             } catch {
                 guard let self, !Task.isCancelled else { return }
-                self.fail(error)
+                self.fail(task)
             }
         }
     }
 
+    /// 自分から切る。つなぎ直しもやめる
     func disconnect() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        target = nil
+        reconnectAttempts = 0
+        currentWindow = nil
+        lastFit = nil
+        close(code: .normalClosure)
+        state = .disconnected
+    }
+
+    private func close(code: URLSessionWebSocketTask.CloseCode) {
         receiveTask?.cancel()
         receiveTask = nil
-        task?.cancel(with: .normalClosure, reason: nil)
+        task?.cancel(with: code, reason: nil)
         task = nil
         renderer.reset()
         resetView()
+    }
+
+    private func fail(_ failedTask: URLSessionWebSocketTask) {
+        let wasConnecting = state == .connecting
+        // サーバーが閉じた理由。1000（正常）は、別の端末がつながったときなど。
+        // このときにつなぎ直すと、別の端末を追い出してしまうので、つなぎ直さない
+        let closedNormally = failedTask.closeCode == .normalClosure
+        let window = currentWindow
+        receiveTask = nil
+        close(code: .goingAway)
+
+        if !wasConnecting, !rejected, !closedNormally, target != nil,
+           reconnectAttempts < Self.maxReconnectAttempts {
+            currentWindow = window // つなぎ直したら、同じウィンドウの表示に戻す
+            scheduleReconnect()
+            return
+        }
+
+        if errorMessage == nil {
+            if wasConnecting {
+                errorMessage = "接続できませんでした。PCのサーバーが動いているか、アドレスとトークンを確認してください"
+            } else if closedNormally {
+                errorMessage = "PCとの接続が切れました（別の端末がつながったか、サーバーが止まりました）"
+            } else {
+                errorMessage = "接続が切れました。つなぎ直せませんでした"
+            }
+        }
+        target = nil
+        reconnectAttempts = 0
+        currentWindow = nil
         state = .disconnected
+    }
+
+    private func scheduleReconnect() {
+        state = .reconnecting
+        reconnectAttempts += 1
+        // 1, 2, 4, 8秒…と間をあける（10秒まで）
+        let delay = min(pow(2, Double(reconnectAttempts - 1)), 10)
+        reconnectTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled, self.state == .reconnecting else { return }
+            self.open()
+        }
     }
 
     private func resetView() {
         imeOn = nil
         windows = []
         isLoadingWindows = false
-        currentWindow = nil
         noticeTask?.cancel()
         notice = nil
     }
@@ -97,12 +172,12 @@ final class RemoteSession: ObservableObject {
         }
     }
 
-    /// 仮想キーコードのキーを押して離す。ctrlなら、Ctrlを押したまま押す
-    func tapKey(vk: Int, ctrl: Bool = false) {
-        if ctrl { send(["t": "key", "vk": KeyMap.vkControl, "d": "down"]) }
+    /// 仮想キーコードのキーを押して離す。modifiers（Ctrl、Shiftなど）があれば、それを押したまま押す
+    func tapKey(vk: Int, modifiers: [Int] = []) {
+        for m in modifiers { send(["t": "key", "vk": m, "d": "down"]) }
         send(["t": "key", "vk": vk, "d": "down"])
         send(["t": "key", "vk": vk, "d": "up"])
-        if ctrl { send(["t": "key", "vk": KeyMap.vkControl, "d": "up"]) }
+        for m in modifiers.reversed() { send(["t": "key", "vk": m, "d": "up"]) }
     }
 
     /// キーの位置（スキャンコード）で押す・離す。Bluetoothキーボード用
@@ -123,6 +198,7 @@ final class RemoteSession: ObservableObject {
 
     /// ウィンドウ1つだけを表示する。fitがあれば、ウィンドウの大きさをその縦横比に変える（iPhoneの画面のポイント数）
     func showWindow(_ window: RemoteWindow, fit: CGSize?) {
+        lastFit = fit
         var message: [String: Any] = ["t": "mode", "mode": "window", "id": window.id]
         if let fit, fit.width > 0, fit.height > 0 {
             message["fit_w"] = Double(fit.width)
@@ -192,7 +268,18 @@ final class RemoteSession: ObservableObject {
             if let w = json["w"] as? Int, let h = json["h"] as? Int {
                 videoSize = CGSize(width: w, height: h)
             }
+            let reconnected = state == .reconnecting
             state = .connected
+            errorMessage = nil
+            reconnectAttempts = 0
+            if reconnected {
+                show(notice: "つなぎ直しました")
+                // サーバーは画面全体から始めるので、見ていたウィンドウに戻す
+                if let window = currentWindow {
+                    currentWindow = nil
+                    showWindow(window, fit: lastFit)
+                }
+            }
         case "resize":
             if let w = json["w"] as? Int, let h = json["h"] as? Int {
                 videoSize = CGSize(width: w, height: h)
@@ -218,6 +305,8 @@ final class RemoteSession: ObservableObject {
             if state == .connected {
                 show(notice: message)
             } else {
+                // つながる前のエラーは、断られたということ（トークンが違うなど）
+                rejected = true
                 errorMessage = message
             }
         default:

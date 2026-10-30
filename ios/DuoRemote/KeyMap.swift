@@ -6,7 +6,12 @@ enum KeyMap {
     static let vkBack = 0x08
     static let vkTab = 0x09
     static let vkReturn = 0x0D
+    static let vkShift = 0x10
     static let vkControl = 0x11
+    static let vkMenu = 0x12 // Alt
+    static let vkEnd = 0x23
+    static let vkHome = 0x24
+    static let vkLWin = 0x5B
     static let vkEscape = 0x1B
     static let vkLeft = 0x25
     static let vkUp = 0x26
