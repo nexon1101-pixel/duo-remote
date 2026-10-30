@@ -7,6 +7,7 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
 from duo_server import protocol
+from duo_server import server as server_mod
 from duo_server.capture import StreamError
 from duo_server.input_win import NullInput
 from duo_server.server import Session, Settings, make_handler
@@ -253,8 +254,6 @@ def test_window_errors():
 
 
 def test_window_moved_and_closed(monkeypatch):
-    from duo_server import server as server_mod
-
     monkeypatch.setattr(server_mod, "WINDOW_POLL_SEC", 0.05)
     streams = []
 
@@ -451,7 +450,9 @@ class BurstStream:
         pass
 
 
-def test_frames_are_dropped_until_keyframe_when_sending_falls_behind():
+def test_frames_are_dropped_until_keyframe_when_sending_falls_behind(monkeypatch):
+    monkeypatch.setattr(server_mod, "RESTART_MAX", 0)  # 止まったときは、撮り直さずに、すぐ失敗にする
+
     async def go():
         ws = SlowSocket()
         session = Session(ws, Settings(token="t"), NullInput(), lambda *a: BurstStream())
