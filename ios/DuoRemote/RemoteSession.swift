@@ -27,6 +27,8 @@ final class RemoteSession: ObservableObject {
     @Published private(set) var isLoadingWindows = false
     /// 表示しているウィンドウ。nilなら画面全体
     @Published private(set) var currentWindow: RemoteWindow?
+    /// PCのIMEがオンか。サーバーが知らせてこないときはnil
+    @Published private(set) var imeOn: Bool?
     private var noticeTask: Task<Void, Never>?
 
     let renderer = H264Renderer()
@@ -75,11 +77,41 @@ final class RemoteSession: ObservableObject {
     }
 
     private func resetView() {
+        imeOn = nil
         windows = []
         isLoadingWindows = false
         currentWindow = nil
         noticeTask?.cancel()
         notice = nil
+    }
+
+    // MARK: - キーと文字
+
+    /// 確定した文字を送る。長いときは、決まりの上限（4096文字）ごとに分ける
+    func sendText(_ text: String) {
+        var rest = Substring(text)
+        while !rest.isEmpty {
+            let part = rest.prefix(4096)
+            send(["t": "text", "s": String(part)])
+            rest = rest.dropFirst(part.count)
+        }
+    }
+
+    /// 仮想キーコードのキーを押して離す。ctrlなら、Ctrlを押したまま押す
+    func tapKey(vk: Int, ctrl: Bool = false) {
+        if ctrl { send(["t": "key", "vk": KeyMap.vkControl, "d": "down"]) }
+        send(["t": "key", "vk": vk, "d": "down"])
+        send(["t": "key", "vk": vk, "d": "up"])
+        if ctrl { send(["t": "key", "vk": KeyMap.vkControl, "d": "up"]) }
+    }
+
+    /// キーの位置（スキャンコード）で押す・離す。Bluetoothキーボード用
+    func sendScan(_ sc: Int, down: Bool) {
+        send(["t": "key", "sc": sc, "d": down ? "down" : "up"])
+    }
+
+    func setIME(_ on: Bool) {
+        send(["t": "ime", "on": on])
     }
 
     // MARK: - 表示する範囲
@@ -165,6 +197,8 @@ final class RemoteSession: ObservableObject {
             if let w = json["w"] as? Int, let h = json["h"] as? Int {
                 videoSize = CGSize(width: w, height: h)
             }
+        case "ime_state":
+            imeOn = json["on"] as? Bool
         case "windows":
             let list = json["list"] as? [[String: Any]] ?? []
             windows = list.compactMap { item in

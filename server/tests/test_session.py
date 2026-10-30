@@ -134,6 +134,8 @@ def test_invalid_input_is_ignored():
             await send(t="button", b="side", d="down")
             await send(t="key", vk=0, d="down")
             await send(t="key", vk=True, d="down")
+            await send(t="key", sc=0x1E0, d="down")
+            await send(t="key", sc=0, d="down")
             await send(t="text", s=123)
             await send(t="unknown")
             await ws.send("これはJSONではありません")
@@ -273,11 +275,16 @@ def test_held_buttons_and_keys_are_released_on_disconnect():
             await send(t="key", vk=0x10, d="down")
             await send(t="key", vk=0x41, d="down")
             await send(t="key", vk=0x41, d="up")
+            await send(t="key", sc=0xE04B, d="down")  # 左矢印（拡張キー）
+            await send(t="key", sc=0x1E, d="down")
+            await send(t="key", sc=0x1E, d="up")
             await send(t="ping", n=1)
             await recv_until(ws, "pong")
         await asyncio.sleep(0.2)
-        released = backend.calls[4:]
-        assert sorted(released, key=repr) == [("button", "left", False, None, None), ("key", 0x10, False)]
+        released = backend.calls[7:]
+        assert sorted(released, key=repr) == [
+            ("button", "left", False, None, None), ("key", 0x10, False), ("scan", 0xE04B, False),
+        ]
 
     asyncio.run(run_with_server(body))
 

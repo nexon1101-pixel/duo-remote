@@ -69,6 +69,9 @@ class NullInput:
     def key(self, vk: int, down: bool) -> None:
         self.calls.append(("key", vk, down))
 
+    def key_scan(self, sc: int, down: bool) -> None:
+        self.calls.append(("scan", sc, down))
+
     def text(self, s: str) -> None:
         self.calls.append(("text", s))
 
@@ -162,6 +165,7 @@ if sys.platform == "win32":
     KEYEVENTF_EXTENDEDKEY = 0x0001
     KEYEVENTF_KEYUP = 0x0002
     KEYEVENTF_UNICODE = 0x0004
+    KEYEVENTF_SCANCODE = 0x0008
     WM_IME_CONTROL = 0x0283
     IMC_GETOPENSTATUS = 0x0005
     SM_CXSCREEN, SM_CYSCREEN = 0, 1
@@ -377,6 +381,13 @@ if sys.platform == "win32":
                 flags |= KEYEVENTF_EXTENDEDKEY
             scan = user32.MapVirtualKeyW(vk, 0)
             _send([_key(vk, scan, flags)])
+
+        def key_scan(self, sc: int, down: bool) -> None:
+            """キーの位置（スキャンコード）で押す。どの文字になるかは、PCのキー配列で決まる。"""
+            flags = KEYEVENTF_SCANCODE | (0 if down else KEYEVENTF_KEYUP)
+            if sc >> 8 == 0xE0:
+                flags |= KEYEVENTF_EXTENDEDKEY
+            _send([_key(0, sc & 0xFF, flags)])
 
         def text(self, s: str) -> None:
             units = s.encode("utf-16-le")

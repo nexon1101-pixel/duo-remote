@@ -89,10 +89,18 @@ def dispatch_input(msg: dict[str, Any], backend, held: set | None = None) -> dic
         if dx or dy:
             backend.scroll(dx, dy)
     elif t == "key":
-        vk, d = _int(msg.get("vk")), msg.get("d")
-        if vk is not None and 1 <= vk <= 254 and d in ("down", "up"):
+        vk, sc, d = _int(msg.get("vk")), _int(msg.get("sc")), msg.get("d")
+        if d not in ("down", "up"):
+            return None
+        mark = held.add if d == "down" else held.discard
+        if sc is not None:
+            # 1バイトのスキャンコードか、拡張キー（0xE0 が付くもの）
+            if 1 <= sc <= 0xFF or 0xE001 <= sc <= 0xE0FF:
+                backend.key_scan(sc, d == "down")
+                mark(("scan", sc))
+        elif vk is not None and 1 <= vk <= 254:
             backend.key(vk, d == "down")
-            (held.add if d == "down" else held.discard)(("key", vk))
+            mark(("key", vk))
     elif t == "text":
         s = msg.get("s")
         if isinstance(s, str) and s:
@@ -114,6 +122,8 @@ def release_held(backend, held: set) -> None:
         try:
             if kind == "button":
                 backend.button(value, False)
+            elif kind == "scan":
+                backend.key_scan(value, False)
             else:
                 backend.key(value, False)
         except Exception:  # 離せなくても、残りは続ける
