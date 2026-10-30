@@ -30,6 +30,8 @@ iPhone Duo から、自宅の Windows PC を操作するアプリです。PCの�
 
 サーバーが動いている間は、画面を開いたままにしておきます。閉じるとサーバーも止まります。止めるときは Ctrl+C を押します。
 
+iPhone を使う前に、PCだけでサーバーを確かめられます。サーバーを起動したまま、`server` フォルダの `check.bat` を実行すると、映像が作れているか、ウィンドウの一覧が取れるかを調べて、`[OK]` か `[NG]` で表示します（`check.bat --window` で、ウィンドウ1つだけの表示も試します）。PCを操作する Claude に確認を頼むときの手順は、[docs/pc-check.md](docs/pc-check.md) にあります。
+
 ### 2. iPhoneにアプリを入れる
 
 1. iPhone の Safari で [最新のビルド](https://github.com/nexon1101-pixel/duo-remote/releases/tag/latest) を開き、`DuoRemote.ipa` を取る
