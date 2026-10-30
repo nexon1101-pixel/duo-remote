@@ -114,7 +114,9 @@ Windows以外でも動きます。画面の取得（ddagrab）と入力（SendIn
 Macがないため、GitHub Actions でビルドします。iPhone Duo の内側画面いっぱいに表示するため、`xcode-27` のランナーで、入っている中でいちばん新しい Xcode（iOS 27.1 以降の SDK）を使います。それより前の SDK でビルドすると、内側画面では iPhone 用の枠（左右が黒）で表示されます。使った SDK は、ビルドの「使ったSDKを確かめる」に出ます。
 
 1. GitHubの「Actions」から「iOS build」を実行する（`ios/` を変更してpushしても動く）
-2. 終わったら、成果物の `DuoRemote-ipa` を取り出す
+2. 終わったら、ipa を取り出す。次のどちらかで取れる
+   - リポジトリの「Releases」の「最新のビルド」（latest）にある `DuoRemote.ipa`。ビルドのたびに上書きする。iPhoneの Safari から直接取れる（このリポジトリは非公開なので、Safari で GitHub にログインしておく）
+   - ビルドの画面の「Artifacts」にある `DuoRemote-ipa`（zip なので展開する）
 3. SideStoreで入れる
 
 無料のApple IDでは、同時に入れられるアプリが3つまでです。

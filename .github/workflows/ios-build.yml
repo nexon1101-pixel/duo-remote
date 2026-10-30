@@ -8,6 +8,10 @@ on:
       - "ios/**"
       - ".github/workflows/ios-build.yml"
 
+# ipa を「latest」のリリースに置くため、書き込みを許す
+permissions:
+  contents: write
+
 jobs:
   build:
     # iPhone Duo の内側画面いっぱいに出すには、iOS 27.1 以降の SDK でビルドする必要がある。
@@ -77,3 +81,11 @@ jobs:
           name: DuoRemote-ipa
           path: ios/DuoRemote.ipa
           if-no-files-found: error
+
+      # iPhoneの Safari から取りやすいよう、ipa を「latest」のリリースにも置く（毎回上書き）
+      - name: ipaをリリースに置く
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view latest >/dev/null 2>&1 || gh release create latest --title "最新のビルド" --notes "最新のビルドの ipa（毎回上書き）" --target "$GITHUB_SHA"
+          gh release upload latest ios/DuoRemote.ipa --clobber
