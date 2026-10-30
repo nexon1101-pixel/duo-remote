@@ -69,6 +69,7 @@ async def run(args: argparse.Namespace) -> None:
     encoder = detect_encoder(args.ffmpeg) if args.encoder == "auto" else args.encoder
 
     backend = create_input()
+    install_console_handler(backend)
 
     def stream_factory(
         s: Settings, src: tuple[int, int], region: tuple[int, int, int, int] | None, monitor: dict | None
@@ -89,6 +90,9 @@ async def run(args: argparse.Namespace) -> None:
     handler = make_handler(settings, backend, stream_factory, audio_factory)
     # 仮想ディスプレイのドライバーが入っているかを、先に調べておく（調べるのに1秒ほどかかる）
     virtual = await asyncio.to_thread(backend.virtual_available)
+    if virtual and await asyncio.to_thread(backend.virtual_cleanup_leftover):
+        # 前回、サーバーが後片付けをせずに止められると、有効のまま残る。使っていないときは無効、が決まり
+        print("前回から有効のまま残っていた仮想ディスプレイを、無効に戻しました")
     try:
         # close_timeout: 応答しない相手を閉じるときに、待つ時間（秒）
         async with serve(handler, args.host, port, max_size=1024 * 1024, close_timeout=2):
@@ -103,12 +107,52 @@ async def run(args: argparse.Namespace) -> None:
         backend.shutdown()
 
 
+LOG_PATH = Path(__file__).resolve().parent.parent / "duo_server.log"
+_console_handler = None  # コンソールの閉じる合図を受ける関数。ガベージコレクションされないよう、覚えておく
+
+
+def install_console_handler(backend) -> None:
+    """コンソールの画面を閉じたとき、ログオフ、シャットダウンのときも、後片付け（仮想ディスプレイを無効に戻す、
+    ウィンドウを元に戻す）をする。Ctrl+C は、いつもの KeyboardInput の流れで済む（ここでは扱わない）。"""
+    global _console_handler
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    handler_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
+
+    def on_event(event: int) -> int:
+        if event in (2, 5, 6):  # CTRL_CLOSE_EVENT、CTRL_LOGOFF_EVENT、CTRL_SHUTDOWN_EVENT
+            try:
+                backend.shutdown()
+            except Exception:
+                log.exception("終了の後片付けでエラーが出ました")
+            return 1
+        return 0
+
+    _console_handler = handler_type(on_event)
+    if not ctypes.windll.kernel32.SetConsoleCtrlHandler(_console_handler, 1):
+        log.warning("コンソールを閉じたときの後片付けを、設定できませんでした")
+
+
+def setup_logging(verbose: bool) -> None:
+    """画面と、ファイル（server/duo_server.log。1MBで切り替え、3つまで）に、ログを出す。"""
+    from logging.handlers import RotatingFileHandler
+
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    try:
+        handlers.append(RotatingFileHandler(LOG_PATH, maxBytes=1_000_000, backupCount=3, encoding="utf-8"))
+    except OSError:
+        pass  # 書き込めない場所でも、サーバーは動かす
+    for h in handlers:
+        h.setFormatter(formatter)
+    logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO, handlers=handlers)
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    setup_logging(args.verbose)
     try:
         asyncio.run(run(args))
     except KeyboardInterrupt:

@@ -7,6 +7,7 @@ from websockets.asyncio.server import serve
 
 from duo_server import protocol
 from duo_server import server as server_mod
+from duo_server.capture import StreamError
 from duo_server.input_win import NullInput
 from duo_server.server import Settings, make_handler
 
@@ -39,11 +40,29 @@ def make_backend(installed=True):
     return backend
 
 
-async def with_server(body, backend, streams=None):
+class DyingVideo(FakeVideo):
+    """撮り始めに、ffmpeg が止まる映像（モニターの番号が合わないときなど）。"""
+
+    async def frames(self):
+        raise StreamError("ffmpeg が終了しました（コード 4294967274）\nFailed to configure output pad on Parsed_ddagrab_0")
+        yield  # 非同期ジェネレーターにするため
+
+
+class DiesLaterVideo(FakeVideo):
+    """最初のフレームは出して、そのあと止まる映像。"""
+
+    async def frames(self):
+        yield True, AUD + b"KEY"
+        await asyncio.sleep(0.2)
+        raise StreamError("ffmpeg が終了しました（コード 1）\nDXGI_ERROR_ACCESS_LOST")
+
+
+async def with_server(body, backend, streams=None, stream_for=None):
+    """stream_for: (モニター, 何個目の映像か) -> 映像。省略すると、いつも正常な映像。"""
     streams = streams if streams is not None else []
 
     def factory(settings, src, region, monitor=None):
-        s = FakeVideo()
+        s = stream_for(monitor, len(streams)) if stream_for else FakeVideo()
         s.src, s.region, s.monitor = src, region, monitor
         streams.append(s)
         return s
@@ -241,3 +260,152 @@ def test_bring_remembers_only_the_first_position():
     backend.bring_window(101, (work[0] + 10, work[1], work[2] - 10, work[3]))  # もう一度持ってきても
     backend.restore_brought()
     assert backend.windows[101]["rect"] == (100, 50, 800, 600)  # 最初の位置に戻る
+
+
+def test_virtual_capture_is_retried_when_it_fails_at_first(monkeypatch):
+    monkeypatch.setattr(server_mod, "VIRTUAL_RETRY_SEC", 0.01)
+    backend = make_backend()
+    streams = []
+
+    def stream_for(monitor, n):
+        # 仮想モニターの、最初の2回は失敗、3回目から正常
+        return DyingVideo() if monitor and monitor["virtual"] and n < 3 else FakeVideo()
+
+    async def body(url):
+        ws, _ = await open_session(url)
+        await send(ws, t="mode", mode="desktop")
+        assert (await recv_json(ws, "mode"))["mode"] == "desktop"
+        await asyncio.sleep(0.3)
+        await send(ws, t="ping", n=3)
+        assert (await recv_json(ws, "pong"))["n"] == 3
+        await ws.close()
+
+    asyncio.run(with_server(body, backend, streams, stream_for))
+    virtual_streams = [s for s in streams if s.monitor and s.monitor["virtual"]]
+    assert len(virtual_streams) == 3  # 2回失敗して、3回目で撮れた
+    assert streams[-1] is virtual_streams[-1] and not isinstance(streams[-1], DyingVideo)
+
+
+def test_virtual_capture_falls_back_to_screen_with_reason(monkeypatch):
+    monkeypatch.setattr(server_mod, "VIRTUAL_RETRY_SEC", 0.01)
+    backend = make_backend()
+
+    def stream_for(monitor, n):
+        return DyingVideo() if monitor and monitor["virtual"] else FakeVideo()
+
+    async def body(url):
+        ws, _ = await open_session(url)
+        await send(ws, t="mode", mode="desktop")
+        error = await recv_json(ws, "error")
+        # 理由（ffmpeg のエラーの、最後の1行）が、利用者に見える
+        assert "仮想画面を映せませんでした" in error["message"] and "Failed to configure output pad" in error["message"]
+        assert "本物の画面に戻します" in error["message"]
+        assert (await recv_json(ws, "mode"))["mode"] == "screen"
+        await send(ws, t="ping", n=4)  # 接続は続いている
+        assert (await recv_json(ws, "pong"))["n"] == 4
+        assert backend.region is None
+        await ws.close()
+
+    asyncio.run(with_server(body, backend, stream_for=stream_for))
+
+
+def test_stream_that_dies_later_returns_to_screen_without_closing(monkeypatch):
+    monkeypatch.setattr(server_mod, "RESTART_DELAY_SEC", 0.01)
+    backend = make_backend()
+    streams = []
+
+    def stream_for(monitor, n):
+        return DiesLaterVideo() if monitor and monitor["virtual"] else FakeVideo()
+
+    async def body(url):
+        ws, _ = await open_session(url)
+        await send(ws, t="mode", mode="desktop")
+        await recv_json(ws, "mode")
+        error = await recv_json(ws, "error")  # 0.2秒後に、映像が止まった
+        assert "本物の画面に戻します" in error["message"] and "DXGI_ERROR_ACCESS_LOST" in error["message"]
+        await send(ws, t="ping", n=5)
+        assert (await recv_json(ws, "pong"))["n"] == 5
+        await ws.close()
+
+    asyncio.run(with_server(body, backend, streams, stream_for))
+    assert streams[-1].monitor is None  # 本物の画面を撮り直している
+
+
+def test_leftover_virtual_display_is_turned_off_at_startup():
+    backend = make_backend()
+    backend.virtual_on()  # 前回、後片付けをせずに止められて、有効のまま残った
+    assert backend.virtual_cleanup_leftover() is True
+    assert not backend.virtual_enabled
+    assert backend.virtual_cleanup_leftover() is False  # 残っていなければ、何もしない
+
+
+class AccessLostOnce(FakeVideo):
+    """画面の設定が変わって、撮影が一度無効になった映像（DXGI_ERROR_ACCESS_LOST）。"""
+
+    async def frames(self):
+        yield True, AUD + b"KEY"
+        await asyncio.sleep(0.1)
+        raise StreamError("ffmpeg が終了しました（コード 0）\nAcquireNextFrame failed: 887a0026")
+
+
+def test_capture_is_restarted_after_access_lost_without_closing(monkeypatch):
+    monkeypatch.setattr(server_mod, "RESTART_DELAY_SEC", 0.01)
+    streams = []
+
+    def stream_for(monitor, n):
+        return AccessLostOnce() if n == 0 else FakeVideo()  # 最初の1回だけ、止まる
+
+    async def body(url):
+        ws, _ = await open_session(url)  # 本物の画面を撮っている
+        await asyncio.sleep(0.5)  # 止まって、撮り直された
+        await send(ws, t="ping", n=1)
+        assert (await recv_json(ws, "pong"))["n"] == 1  # 接続は切れていない
+        await ws.close()
+
+    asyncio.run(with_server(body, make_backend(), streams, stream_for))
+    assert len(streams) == 2  # 止まった映像と、撮り直した映像
+    assert all(s.monitor is None for s in streams)  # どちらも、本物の画面
+    assert all(s.stopped for s in streams)  # 切断のあと、どちらも後片付けされた
+
+
+def test_connection_is_closed_when_the_screen_keeps_failing(monkeypatch):
+    from websockets.exceptions import ConnectionClosed
+
+    monkeypatch.setattr(server_mod, "RESTART_DELAY_SEC", 0.01)
+    monkeypatch.setattr(server_mod, "RESTART_MAX", 3)
+
+    async def body(url):
+        ws, _ = await open_session(url)
+        try:
+            while True:  # 何度撮り直しても止まるので、最後は、接続が閉じられる
+                await asyncio.wait_for(ws.recv(), 5)
+        except ConnectionClosed as e:
+            assert e.rcvd and "映像" in e.rcvd.reason
+
+    asyncio.run(with_server(body, make_backend(), stream_for=lambda monitor, n: DyingVideo()))
+
+
+def test_capture_is_paused_while_virtual_display_changes_and_resumed_after():
+    """仮想ディスプレイを出す間（画面の設定が変わる間）は、動いている撮影を、先に止める。"""
+    streams = []
+    seen = []
+
+    class SpyBackend(NullInput):
+        def virtual_on(self):
+            seen.append(streams[0].stopped)  # 画面の設定を変える時点で、本物の画面の撮影は、止まっているはず
+            return super().virtual_on()
+
+    backend = SpyBackend((1920, 1080))
+    backend.virtual_installed = True
+    backend.windows = {101: {"title": "メモ帳", "app": "notepad.exe", "rect": (100, 50, 800, 600)}}
+
+    async def body(url):
+        ws, _ = await open_session(url)
+        await send(ws, t="bring", id=101)  # 表示は、本物の画面のまま。仮想ディスプレイが出るので、一度止めて、撮り直す
+        await recv_json(ws, "brought")
+        await asyncio.sleep(0.3)
+        await ws.close()
+
+    asyncio.run(with_server(body, backend, streams))
+    assert seen == [True]
+    assert len(streams) == 2 and streams[1].monitor is None  # 本物の画面を、撮り直した

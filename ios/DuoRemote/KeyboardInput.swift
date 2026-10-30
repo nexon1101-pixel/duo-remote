@@ -60,9 +60,20 @@ final class KeyCaptureView: UIView {
     private var held: [Int: Task<Void, Never>] = [:]
     /// 押したときに決めたスキャンコード（キーの番号ごと）。離すときも同じものを使う
     private var pressed: [Int: Int] = [:]
+    /// 半角/全角として扱ったキー（離したときに、PCへ何も送らないため）
+    private var zenkakuDown = Set<Int>()
+
+    private var zenkakuAsIME: Bool {
+        UserDefaults.standard.object(forKey: Self.zenkakuKey) as? Bool ?? false
+    }
+
+    /// Shiftを押しているか（Shift+` は ~ なので、IMEの切り替えにしない）
+    private var shiftIsDown: Bool { pressed[0xE1] != nil || pressed[0xE5] != nil }
 
     /// Macのキーボードの command キーを、Ctrl として送るか（設定の「command を Ctrl にする」）
     static let commandAsControlKey = "commandAsControl"
+    /// 日本語キーボードの「半角/全角」キー（HID 0x35。USキーボードでは ` キー）を、IMEのオン・オフの切り替えとして送るか
+    static let zenkakuKey = "zenkakuAsIME"
 
     /// 押し続けたとき、繰り返しが始まるまでの時間と、その間隔。
     /// PCは、送ったキーを自分では繰り返さないので、こちらで繰り返す
@@ -105,6 +116,10 @@ final class KeyCaptureView: UIView {
                 session?.setIME(true)
             case KeyMap.hidLang2: // 英数
                 session?.setIME(false)
+            case KeyMap.hidGrave where zenkakuAsIME && !shiftIsDown:
+                // 半角/全角。PCのキー配列がJISでないと、スキャンコードでは、IMEが切り替わらないので、IMEの切り替えとして送る
+                session?.toggleIME()
+                zenkakuDown.insert(usage)
             default:
                 if let sc = scanCode(hid: usage) {
                     pressed[usage] = sc
@@ -143,6 +158,7 @@ final class KeyCaptureView: UIView {
                 continue
             }
             if usage == KeyMap.hidLang1 || usage == KeyMap.hidLang2 { continue }
+            if zenkakuDown.remove(usage) != nil { continue }
             if let sc = pressed.removeValue(forKey: usage) {
                 keyUp(sc)
             } else if KeyMap.scanCode(hid: usage) == nil {

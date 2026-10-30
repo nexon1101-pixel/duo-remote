@@ -1,5 +1,6 @@
 # サーバー
 server/config.json
+server/duo_server.log*
 __pycache__/
 *.pyc
 .venv/

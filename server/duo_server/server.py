@@ -27,6 +27,16 @@ MIN_REGION = 160
 # 通信が切れたとき、仮想ディスプレイを無効に戻し、持ってきたウィンドウを元に戻すまでの待ち時間（秒）。
 # この間につなぎ直せば、そのまま続きができる。iPhone の「切断」ボタンのときは、待たずに戻す
 RESTORE_GRACE_SEC = 120
+# 仮想ディスプレイを撮り始めるときの、やり直しの回数、最初のフレームを待つ時間、やり直す前の待ち時間（秒）。
+# 解像度を変えた直後などは、モニターの番号や位置が落ち着くまで、撮るのに失敗することがある
+VIRTUAL_START_ATTEMPTS = 3
+VIRTUAL_FIRST_FRAME_SEC = 8
+VIRTUAL_RETRY_SEC = 1.5
+# 撮影が途中で止まったとき（画面の設定が変わる、UAC の画面に切り替わる、など。DXGI_ERROR_ACCESS_LOST）の撮り直し。
+# 待ち時間は、止まった回数 × RESTART_DELAY_SEC。RESTART_WINDOW_SEC のうちに RESTART_MAX 回を超えて止まったら、あきらめる
+RESTART_DELAY_SEC = 1.0
+RESTART_MAX = 5
+RESTART_WINDOW_SEC = 30
 # 前の接続の後片付けを待つ時間の上限
 PREVIOUS_CLEANUP_SEC = 3
 # 送り待ちの映像がこれを超えたら、次のキーフレームまで映像を捨てる（遅れをためないため）
@@ -93,6 +103,13 @@ def clamp_region(
     if w < MIN_REGION or h < MIN_REGION:
         return None
     return left, top, w, h
+
+
+def _reason(exc: BaseException) -> str:
+    """エラーの文のうち、利用者に見せる1行（いちばん最後の、空でない行）。"""
+    lines = [line.strip() for line in str(exc).splitlines() if line.strip()]
+    text = lines[-1] if lines else type(exc).__name__
+    return text if len(text) <= 160 else text[:157] + "…"
 
 
 def dispatch_input(msg: dict[str, Any], backend, held: set | None = None) -> dict[str, Any] | None:
@@ -196,6 +213,11 @@ class Session:
         self.finished = asyncio.Event()
         self._stream: Stream | None = None
         self._video: asyncio.Task | None = None
+        self._first_frame = asyncio.Event()  # 今の映像の、最初のフレームが届いた
+        self._verifying = False  # 撮り始めを確かめている間は、失敗しても、接続を切らない（やり直す）
+        self._paused = False  # 画面の設定を変える間、撮影を止めている
+        self._restarts: list[float] = []  # 撮影が止まって、撮り直した時刻
+        self._recovery: asyncio.Task | None = None
         self._lock = asyncio.Lock()
         self._t0 = time.monotonic()
 
@@ -219,13 +241,14 @@ class Session:
     def start_video(self) -> None:
         stream = self._stream
         assert stream is not None
-        self._video = asyncio.create_task(self._send_video(stream))
+        self._first_frame = asyncio.Event()
+        self._video = asyncio.create_task(self._send_video(stream, self._first_frame))
         self._video.add_done_callback(self._video_done)
 
-    async def _send_video(self, stream: Stream) -> None:
+    async def _send_video(self, stream: Stream, first_frame: asyncio.Event) -> None:
         """映像を送る。ffmpegからの読み取りは別に動かし、送るのが追いつかないときは古いフレームを捨てる。"""
         queue: asyncio.Queue = asyncio.Queue()
-        reader = asyncio.create_task(self._read_frames(stream, queue))
+        reader = asyncio.create_task(self._read_frames(stream, queue, first_frame))
         try:
             while True:
                 item = await queue.get()
@@ -237,11 +260,12 @@ class Session:
             reader.cancel()
             await asyncio.gather(reader, return_exceptions=True)
 
-    async def _read_frames(self, stream: Stream, queue: asyncio.Queue) -> None:
+    async def _read_frames(self, stream: Stream, queue: asyncio.Queue, first_frame: asyncio.Event) -> None:
         dropping = False
         dropped = 0
         try:
             async for keyframe, unit in stream.frames():
+                first_frame.set()
                 ts = int((time.monotonic() - self._t0) * 1000)
                 if queue.qsize() >= MAX_QUEUED_FRAMES or self._buffered_bytes() > MAX_BUFFERED_BYTES:
                     if not dropping:
@@ -327,11 +351,82 @@ class Session:
             self.kicked.set_result(None)
 
     def _video_done(self, task: asyncio.Task) -> None:
-        if task.cancelled() or self.failed.done():
+        if task.cancelled() or self.failed.done() or self._verifying:
             return
         exc = task.exception()
-        if exc is not None:
-            self.failed.set_exception(exc)
+        if exc is None:
+            return
+        if isinstance(exc, StreamError):
+            # 撮影が止まった。画面の設定が変わると、動いている撮影は、すべて一度無効になる（DXGI_ERROR_ACCESS_LOST）。
+            # 接続を切らずに、撮り直す
+            self._recovery = asyncio.create_task(self._recover(task, exc))
+            return
+        self.failed.set_exception(exc)
+
+    async def _recover(self, task: asyncio.Task, exc: BaseException) -> None:
+        async with self._lock:
+            if self._video is not task or self.failed.done():
+                return  # もう別の映像に替わっている
+            now = time.monotonic()
+            self._restarts = [t for t in self._restarts if now - t < RESTART_WINDOW_SEC] + [now]
+            try:
+                if len(self._restarts) > RESTART_MAX:
+                    raise exc
+                log.warning("映像が止まりました。撮り直します（%d/%d回目）: %s", len(self._restarts), RESTART_MAX, _reason(exc))
+                await asyncio.sleep(RESTART_DELAY_SEC * len(self._restarts))
+                await self._switch(*self._current_target())
+            except ConnectionClosed:
+                pass
+            except StreamError as e:
+                if self.window is None and self.monitor is None:
+                    # 本物の画面も撮れない。接続を閉じる
+                    if not self.failed.done():
+                        self.failed.set_exception(e)
+                    return
+                log.error("映像が止まり続けるため、本物の画面に戻します: %s", e)
+                try:
+                    await self.send({
+                        "t": "error", "message": f"映像の取得が止まったため、本物の画面に戻します（{_reason(e)}）",
+                    })
+                    await self.send({"t": "mode", "mode": "screen"})
+                    self._restarts.clear()
+                    await self._switch(None, None)
+                except ConnectionClosed:
+                    pass
+                except Exception as e2:
+                    if not self.failed.done():
+                        self.failed.set_exception(e2)
+            except Exception as e:
+                if not self.failed.done():
+                    self.failed.set_exception(e)
+
+    def _current_target(self) -> tuple[int | None, tuple[int, int, int, int] | None, dict | None]:
+        """今の表示を、撮り直すための (ウィンドウ, 範囲, モニター)。ウィンドウの位置や、仮想モニターの番号は、調べ直す。
+        ウィンドウや仮想モニターが、なくなっていたら、本物の画面。"""
+        if self.window is not None:
+            info = self.backend.window_info(self.window)
+            if info is not None:
+                monitor, region = self._locate(info["rect"])
+                if region is not None:
+                    return self.window, region, monitor
+            return None, None, None
+        if self.monitor is not None:
+            found = self._find_virtual()
+            return (None, None, found) if found is not None else (None, None, None)
+        return None, None, None
+
+    async def _pause_video(self) -> None:
+        """画面の設定を変える間、撮影を止める（変わった瞬間に、撮影が無効になって、止まるため）。"""
+        await self.stop_stream()
+        self._paused = True
+
+    async def _resume_video(self) -> None:
+        """止めていた撮影を、今の表示で撮り直す（切り替えのほうが先に済んでいれば、何もしない）。"""
+        if not self._paused:
+            return
+        async with self._lock:
+            if self._paused:
+                await self._switch_with_fallback(*self._current_target(), "映像")
 
     async def stop_stream(self) -> None:
         if self._video is not None:
@@ -345,28 +440,84 @@ class Session:
     async def _switch(
         self, window: int | None, region: tuple[int, int, int, int] | None, monitor: dict | None = None
     ) -> None:
-        """表示する範囲を変えて、撮り直す。大きさが変わるときは、先に resize を送る。"""
-        await self.stop_stream()
-        self.window, self.region, self.monitor = window, region, monitor
-        # 入力の座標は、撮っている範囲が基準。範囲がなければ、モニター全体（主モニターなら、Noneのまま）
-        self.backend.set_region(region or (monitor["rect"] if monitor else None))
-        old = self.size
-        await self.open_stream()
-        if self.size != old:
-            await self.send({"t": "resize", "w": self.size[0], "h": self.size[1]})
-        self.start_video()
+        """表示する範囲を変えて、撮り直す。大きさが変わるときは、先に resize を送る。
+        仮想ディスプレイを撮るときは、最初のフレームが届くまで確かめ、失敗したら、モニターの情報を取り直して、やり直す。"""
+        self._paused = False
+        verify = monitor is not None and bool(monitor.get("virtual"))
+        attempts = VIRTUAL_START_ATTEMPTS if verify else 1
+        failure: BaseException | None = None
+        for attempt in range(attempts):
+            await self.stop_stream()
+            self.window, self.region, self.monitor = window, region, monitor
+            # 入力の座標は、撮っている範囲が基準。範囲がなければ、モニター全体（主モニターなら、Noneのまま）
+            self.backend.set_region(region or (monitor["rect"] if monitor else None))
+            old = self.size
+            try:
+                await self.open_stream()
+            except StreamError as e:
+                if not verify:
+                    raise
+                failure = e
+            else:
+                if self.size != old:
+                    await self.send({"t": "resize", "w": self.size[0], "h": self.size[1]})
+                self._verifying = verify
+                self.start_video()
+                if not verify:
+                    return
+                try:
+                    failure = await self._wait_first_frame()
+                finally:
+                    self._verifying = False
+                if failure is None:
+                    return
+            log.warning("仮想ディスプレイを撮れませんでした（%d/%d回目）: %s", attempt + 1, attempts, _reason(failure))
+            await self.stop_stream()
+            if attempt < attempts - 1:
+                await asyncio.sleep(VIRTUAL_RETRY_SEC)
+                monitor = self._refresh_virtual(monitor)  # 番号や位置が変わっていることがある
+        raise StreamError(str(failure))
+
+    async def _wait_first_frame(self) -> BaseException | None:
+        """今の映像の最初のフレームが届くまで待つ。届いたら None、止まった・間に合わなかったときは、その理由。"""
+        video, first = self._video, self._first_frame
+        assert video is not None
+        waiter = asyncio.create_task(first.wait())
+        try:
+            await asyncio.wait({video, waiter}, timeout=VIRTUAL_FIRST_FRAME_SEC, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            waiter.cancel()
+        if first.is_set():
+            return None
+        if video.done() and not video.cancelled() and video.exception() is not None:
+            return video.exception()
+        return StreamError(f"映像が{VIRTUAL_FIRST_FRAME_SEC}秒たっても始まりませんでした")
+
+    def _find_virtual(self) -> dict | None:
+        for m in self.backend.monitors():
+            if m.get("virtual"):
+                return m
+        return None
+
+    def _refresh_virtual(self, monitor: dict | None) -> dict | None:
+        return self._find_virtual() or monitor
+
+    async def _switch_with_fallback(
+        self, window: int | None, region: tuple[int, int, int, int] | None, monitor: dict | None, what: str
+    ) -> None:
+        """切り替える。撮れなかったときは、理由を知らせて、本物の画面に戻す（それも撮れなければ、接続を閉じる）。"""
+        try:
+            await self._switch(window, region, monitor)
+        except StreamError as e:
+            log.error("%sを映せませんでした: %s", what, e)
+            await self.send({"t": "error", "message": f"{what}を映せませんでした（{_reason(e)}）。本物の画面に戻します"})
+            await self.send({"t": "mode", "mode": "screen"})
+            await self._switch(None, None)
 
     async def _switch_to_window(
         self, wid: int, region: tuple[int, int, int, int], monitor: dict | None
     ) -> None:
-        """ウィンドウに切り替える。撮れなかったときは、画面全体に戻す（それも撮れなければ、接続を閉じる）。"""
-        try:
-            await self._switch(wid, region, monitor)
-        except StreamError as e:
-            log.error("ウィンドウを撮れませんでした: %s", e)
-            await self.send({"t": "error", "message": "このウィンドウは表示できませんでした。画面全体に戻します"})
-            await self.send({"t": "mode", "mode": "screen"})
-            await self._switch(None, None)
+        await self._switch_with_fallback(wid, region, monitor, "このウィンドウ")
 
     # --- モニターとウィンドウの位置
 
@@ -390,8 +541,11 @@ class Session:
         if not self.backend.virtual_available():
             await self.send({"t": "error", "message": "仮想ディスプレイのドライバーが入っていません"})
             return None
-        if not any(m["virtual"] for m in self.backend.monitors()):
+        present = any(m["virtual"] for m in self.backend.monitors())
+        if not present:
             await self.send({"t": "notice", "message": "仮想ディスプレイを出しています…"})
+        if (not present or (fit_w and fit_h)) and self._stream is not None:
+            await self._pause_video()  # モニターを足す・解像度を変えると、動いている撮影が止まるので、先に止める
         try:
             monitor = await asyncio.to_thread(self.backend.virtual_on)
             if fit_w and fit_h and fit_w > 0 and fit_h > 0:
@@ -409,9 +563,15 @@ class Session:
         if t == "list_windows":
             await self.send({"t": "windows", "list": await self._window_list()})
         elif t == "mode":
-            await self.set_mode(msg)
+            try:
+                await self.set_mode(msg)
+            finally:
+                await self._resume_video()
         elif t == "bring":
-            await self.bring(msg)
+            try:
+                await self.bring(msg)
+            finally:
+                await self._resume_video()
         elif t == "restore":
             restored = await asyncio.to_thread(self.backend.restore_brought)
             await self.send({"t": "notice", "message": f"ウィンドウを元の場所に戻しました（{len(restored)}個）"})
@@ -459,7 +619,7 @@ class Session:
                 return
             async with self._lock:
                 await self.send({"t": "mode", "mode": "desktop"})
-                await self._switch(None, None, monitor)
+                await self._switch_with_fallback(None, None, monitor, "仮想画面")
             return
         if mode != "window":
             await self.send({"t": "error", "message": f"知らない表示の範囲です: {mode!r}"})
@@ -549,6 +709,7 @@ def make_handler(
 
     async def run_cleanup() -> None:
         """持ってきたウィンドウを元に戻し、仮想ディスプレイを無効に戻す。"""
+        log.info("後片付けをします（ウィンドウを戻し、仮想ディスプレイを無効にします）")
         try:
             await asyncio.to_thread(backend.restore_brought)
         except Exception:

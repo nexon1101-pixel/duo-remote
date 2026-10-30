@@ -88,4 +88,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view latest >/dev/null 2>&1 || gh release create latest --title "最新のビルド" --notes "最新のビルドの ipa（毎回上書き）" --target "$GITHUB_SHA"
-          gh release upload latest ios/DuoRemote.ipa --clobber
+          # GitHub 側の一時的な失敗（HTTP 500）があるので、何度かやり直す
+          for i in 1 2 3 4 5 6; do
+            if gh release upload latest ios/DuoRemote.ipa --clobber; then
+              exit 0
+            fi
+            echo "::warning::アップロードに失敗しました（$i 回目）。やり直します"
+            sleep $((i * 15))
+          done
+          echo "::error::ipa をリリースに置けませんでした。実行結果の DuoRemote-ipa から取れます"
+          exit 1

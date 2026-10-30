@@ -20,6 +20,7 @@ enum KeyMap {
     static let vkDelete = 0x2E
 
     // 日本語キーボードの「かな」「英数」（HIDの LANG1、LANG2）。IMEのオン・オフに使う
+    static let hidGrave = 0x35 // ` ~（日本語キーボードでは、半角/全角）
     static let hidLang1 = 0x90
     static let hidLang2 = 0x91
 

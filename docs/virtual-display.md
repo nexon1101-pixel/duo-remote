@@ -127,6 +127,8 @@ ffmpeg -hide_banner -f lavfi -i "ddagrab=output_idx=1:framerate=30:draw_mouse=1"
 
    - 仮想ディスプレイを出して、そのモニターを映し、画面全体の表示に戻す。`[OK]` と `[NG]` を全部控える
    - 出す時間も出る（`出すまで ○秒`）
+   - `[NG]` が出たときは、**サーバーのログ**（`server\duo_server.log`）の、最後の80行ほどを控える（メモ帳で開くか、`Get-Content server\duo_server.log -Tail 80`）。ffmpeg のエラーが、そこに出ている
+   - サーバーは、撮り始めに失敗すると、3回までやり直す。それでも撮れないときは、接続を切らずに、本物の画面に戻して、理由を `[NG]` の行に出す
 5. 終わったら、仮想モニターが消えていること（`virtual.bat monitors`）。サーバーを管理者で動かしたまま、iPhoneを切断すると、無効に戻る
 
 ## 報告の形
@@ -149,6 +151,7 @@ ffmpeg -hide_banner -f lavfi -i "ddagrab=output_idx=1:framerate=30:draw_mouse=1"
 ## 出し入れ（手順 6）
 - off / on で、モニターが消えて、出たか。それぞれ何秒かかったか
 - check.bat --virtual の出力（そのまま）
+- `[NG]` があったときは、server\duo_server.log の最後の80行ほど（そのまま）
 
 ## そのほか気づいたこと
 ```

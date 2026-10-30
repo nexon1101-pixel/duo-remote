@@ -374,6 +374,11 @@ final class RemoteSession: ObservableObject {
         send(["t": "ime", "on": on])
     }
 
+    /// IMEのオンとオフを、入れ替える（PCが知らせてきた今の状態の、反対にする）
+    func toggleIME() {
+        setIME(!(imeOn ?? false))
+    }
+
     // MARK: - 音
 
     /// 音を鳴らすか決める。つながっていなければ覚えておき、つながったときに始める。

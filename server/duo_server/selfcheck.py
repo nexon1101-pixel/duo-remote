@@ -8,6 +8,8 @@
 - --window を付けたとき: ウィンドウ1つだけの表示に切り替えられるか（そのウィンドウが前に出る）
 - --audio を付けたとき: PCの音が届くか（PCで音を鳴らしながら実行する）
 - --virtual を付けたとき: 仮想ディスプレイを出して映せるか（サーバーを管理者として起動しておく。終わったら、無効に戻る）
+- --ime を付けたとき: IMEのオン・オフを送って、PCのIMEの状態が変わるか（--title で選んだウィンドウを前に出して試す）
+- --bring を付けたとき: ウィンドウを仮想ディスプレイに持ってきて、映して、元に戻せるか（--title で、ウィンドウを選ぶ）
 
 マウスとキーボードは動かさない。
 """
@@ -22,6 +24,7 @@ import time
 from pathlib import Path
 
 from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosed
 
 from . import protocol
 from .capture import iter_nals
@@ -105,7 +108,7 @@ async def _collect_audio(ws, seconds: float) -> tuple[int, int]:
 
 async def run_check(
     url: str, token: str, seconds: float = 3.0, try_window: bool = False, try_audio: bool = False,
-    try_virtual: bool = False,
+    try_virtual: bool = False, try_bring: bool = False, title: str | None = None, try_ime: bool = False,
 ) -> bool:
     r = Report()
     print(f"接続先: {url}")
@@ -116,6 +119,48 @@ async def run_check(
         r.bad(f"サーバーにつながりません（{e}）。start.bat でサーバーが動いているか確認してください")
         return False
 
+    try:
+        await _run_checks(ws, r, token, seconds, try_window, try_audio, try_virtual, try_bring, title, try_ime)
+    except ConnectionClosed as e:
+        reason = e.rcvd.reason if e.rcvd and e.rcvd.reason else str(e)
+        r.bad(f"サーバーが接続を閉じました: {reason}。サーバーの画面と、server\\duo_server.log を確認してください")
+
+    print()
+    print("すべて問題ありません" if r.ok else "[NG] の項目があります。上のメッセージと、サーバーの画面、server\\duo_server.log を確認してください")
+    return r.ok
+
+
+def _pick_window(windows: list[dict], title: str | None) -> dict | None:
+    """試すウィンドウを選ぶ。title があれば、タイトルにその文字を含む最初のもの。なければ、一覧の先頭。"""
+    if title:
+        return next((w for w in windows if title.lower() in w["title"].lower()), None)
+    return windows[0] if windows else None
+
+
+async def _wait_ime_state(ws, expected: bool, timeout: float = 4) -> bool:
+    """IMEの状態が expected になった知らせ（ime_state）が来るまで待つ。"""
+    deadline = time.monotonic() + timeout
+    while (left := deadline - time.monotonic()) > 0:
+        try:
+            msg = await _recv_json(ws, {"ime_state"}, timeout=left)
+        except asyncio.TimeoutError:
+            return False
+        if msg.get("on") is expected:
+            return True
+    return False
+
+
+async def _window_place(ws, wid: int) -> str | None:
+    """ウィンドウが出ている場所（main、virtual など）。一覧に見つからなければ None。"""
+    await ws.send(json.dumps({"t": "list_windows"}))
+    listed = (await _recv_json(ws, {"windows"}))["list"]
+    return next((w.get("where") for w in listed if w["id"] == wid), None)
+
+
+async def _run_checks(
+    ws, r: Report, token: str, seconds: float, try_window: bool, try_audio: bool, try_virtual: bool,
+    try_bring: bool = False, title: str | None = None, try_ime: bool = False,
+) -> None:
     async with ws:
         # 1. 接続とトークン
         await ws.send(json.dumps({"t": "hello", "v": protocol.VERSION, "token": token}))
@@ -123,10 +168,10 @@ async def run_check(
             msg = await _recv_json(ws, {"welcome", "error"})
         except asyncio.TimeoutError:
             r.bad("welcome が届きません。サーバーの画面に出ているエラーを確認してください")
-            return False
+            return
         if msg["t"] == "error":
             r.bad(f"サーバーに断られました: {msg.get('message')}")
-            return False
+            return
         r.good(f"接続できました（映像の大きさ {msg['w']}x{msg['h']}）")
         virtual_installed = bool(msg.get("virtual"))
 
@@ -167,10 +212,10 @@ async def run_check(
 
         # 5. ウィンドウ1つだけの表示
         if try_window:
-            if not windows:
-                r.bad("ウィンドウがないため、ウィンドウの表示は試せません")
+            target = _pick_window(windows, title)
+            if target is None:
+                r.bad(f"試すウィンドウが見つかりません（{'タイトルに「' + title + '」を含むもの' if title else 'ウィンドウがありません'}）")
             else:
-                target = windows[0]
                 await ws.send(json.dumps({"t": "mode", "mode": "window", "id": target["id"]}))
                 try:
                     msg = await _recv_json(ws, {"mode", "error"}, timeout=10)
@@ -228,7 +273,90 @@ async def run_check(
                 except asyncio.TimeoutError:
                     r.bad("画面全体の表示に戻した返事がありません")
 
-        # 7. 音
+        # 7. ウィンドウを仮想ディスプレイに持ってきて、映して、元に戻す
+        if try_bring:
+            target = _pick_window(windows, title)
+            if not virtual_installed:
+                r.bad("仮想ディスプレイのドライバーが見つかりません")
+            elif target is None:
+                r.bad(f"試すウィンドウが見つかりません（{'タイトルに「' + title + '」を含むもの' if title else 'ウィンドウがありません'}）")
+            else:
+                name = f"「{target['title']}」"
+                before = await _window_place(ws, target["id"])
+                await ws.send(json.dumps({"t": "bring", "id": target["id"]}))
+                try:
+                    reply = await _recv_json(ws, {"brought", "error"}, timeout=40)
+                except asyncio.TimeoutError:
+                    reply = None
+                if reply is None:
+                    r.bad(f"{name}を持ってきた返事がありません")
+                elif reply["t"] == "error":
+                    r.bad(f"{name}を仮想ディスプレイに持ってこられませんでした: {reply.get('message')}")
+                else:
+                    after = await _window_place(ws, target["id"])
+                    if after == "virtual":
+                        r.good(f"{name}を、仮想ディスプレイに持ってこられました（{before} → {after}）")
+                    else:
+                        r.bad(f"{name}を持ってきたはずですが、一覧では、まだ {after} にあります")
+                    # 仮想ディスプレイ上のウィンドウだけを映す
+                    await ws.send(json.dumps({"t": "mode", "mode": "window", "id": target["id"]}))
+                    try:
+                        shown = await _recv_json(ws, {"mode", "error"}, timeout=40)
+                        if shown["t"] == "error":
+                            r.bad(f"仮想ディスプレイ上の{name}を映せませんでした: {shown.get('message')}")
+                        else:
+                            stats = await _count_frames(ws, seconds)
+                            if stats["frames"] and stats["first_is_key"]:
+                                r.good(f"仮想ディスプレイ上の{name}だけを映せました（{stats['frames']} フレーム）")
+                            else:
+                                r.bad(f"仮想ディスプレイ上の{name}に切り替えたあと、映像が届きません")
+                    except asyncio.TimeoutError:
+                        r.bad("ウィンドウの表示に切り替えた返事がありません")
+                    await ws.send(json.dumps({"t": "restore"}))
+                    await _recv_json(ws, {"notice"}, timeout=15)
+                    restored = await _window_place(ws, target["id"])
+                    if restored == before:
+                        r.good(f"{name}を、元の場所（{restored}）に戻せました")
+                    else:
+                        r.bad(f"{name}を戻したはずですが、一覧では {restored} にあります（元は {before}）")
+                await ws.send(json.dumps({"t": "mode", "mode": "screen"}))
+                try:
+                    await _recv_json(ws, {"mode"}, timeout=10)
+                    r.good("画面全体の表示に戻せました")
+                except asyncio.TimeoutError:
+                    r.bad("画面全体の表示に戻した返事がありません")
+
+        # 8. IME（日本語入力のオン・オフ。iPhone の半角/全角キーと、IMEの切り替えボタンが、これを使う）
+        if try_ime:
+            target = _pick_window(windows, title)
+            if target is None:
+                r.bad(f"試すウィンドウが見つかりません（{'タイトルに「' + title + '」を含むもの' if title else 'ウィンドウがありません'}）")
+            else:
+                # IMEの状態は、前に出ているウィンドウのもの。試すウィンドウを、前に出す
+                await ws.send(json.dumps({"t": "mode", "mode": "window", "id": target["id"]}))
+                try:
+                    await _recv_json(ws, {"mode", "error"}, timeout=10)
+                except asyncio.TimeoutError:
+                    pass
+                await ws.send(json.dumps({"t": "ime", "on": False}))
+                await asyncio.sleep(1.2)  # 状態が、すでにオフでも、変わったことが分かるよう、一度オフにして、待つ
+                await ws.send(json.dumps({"t": "ime", "on": True}))
+                if await _wait_ime_state(ws, True):
+                    r.good("IMEをオンにできました（PCのIMEの状態が、オンになった）")
+                else:
+                    r.bad("IMEをオンにしても、PCのIMEの状態が、オンになりませんでした（IMEが日本語になっているか、確かめてください）")
+                await ws.send(json.dumps({"t": "ime", "on": False}))
+                if await _wait_ime_state(ws, False):
+                    r.good("IMEをオフにできました（PCのIMEの状態が、オフになった）")
+                else:
+                    r.bad("IMEをオフにしても、PCのIMEの状態が、オフになりませんでした")
+                await ws.send(json.dumps({"t": "mode", "mode": "screen"}))
+                try:
+                    await _recv_json(ws, {"mode"}, timeout=10)
+                except asyncio.TimeoutError:
+                    pass
+
+        # 9. 音
         if try_audio:
             await ws.send(json.dumps({"t": "audio", "on": True, "rate": 48000, "channels": 2}))
             try:
@@ -249,9 +377,6 @@ async def run_check(
                     r.good(f"音が届きました: {count} 個（約{count * 20 / 1000:.1f}秒ぶん）、最大の音の大きさ {peak}/32767")
                 await ws.send(json.dumps({"t": "audio", "on": False}))
 
-    print()
-    print("すべて問題ありません" if r.ok else "[NG] の項目があります。上のメッセージと、サーバーの画面を確認してください")
-    return r.ok
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -263,6 +388,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--window", action="store_true", help="ウィンドウ1つだけの表示も試す（一覧の先頭のウィンドウが前に出る）")
     p.add_argument("--audio", action="store_true", help="PCの音が届くかも試す（PCで音を鳴らしながら実行する）")
     p.add_argument("--virtual", action="store_true", help="仮想ディスプレイを出して映せるかも試す（サーバーを管理者として起動しておく）")
+    p.add_argument("--bring", action="store_true", help="ウィンドウを仮想ディスプレイに持ってきて、映して、元に戻せるかも試す（--title で選ぶ）")
+    p.add_argument("--ime", action="store_true", help="IMEのオン・オフを送って、PCのIMEの状態が変わるかも試す（--title で、試すウィンドウを選ぶ）")
+    p.add_argument("--title", help="--window と --bring で試すウィンドウ。タイトルに、この文字を含む最初のもの（省略すると、一覧の先頭）")
     args = p.parse_args(argv)
 
     if not args.config.exists():
@@ -270,7 +398,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
     cfg = json.loads(args.config.read_text(encoding="utf-8"))
     port = args.port or cfg.get("port", 8765)
-    ok = asyncio.run(run_check(f"ws://{args.host}:{port}/", cfg.get("token", ""), args.seconds, args.window, args.audio, args.virtual))
+    ok = asyncio.run(run_check(f"ws://{args.host}:{port}/", cfg.get("token", ""), args.seconds, args.window, args.audio, args.virtual, args.bring, args.title, args.ime))
     sys.exit(0 if ok else 1)
 
 

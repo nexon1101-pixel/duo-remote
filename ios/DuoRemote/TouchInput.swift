@@ -27,7 +27,7 @@ enum PointerMode: String, CaseIterable, Identifiable {
 /// 直接触る: タップ＝左クリック、長押し＝右クリック、1本指で動かす＝左ボタンを押したまま動かす
 /// トラックパッド: 1本指で動かす＝カーソルを動かす、タップ＝左クリック、長押ししてから動かす＝左ボタンを押したまま動かす
 @MainActor
-final class TouchInput: NSObject, UIGestureRecognizerDelegate {
+final class TouchInput: NSObject, UIGestureRecognizerDelegate, UIPointerInteractionDelegate {
     /// 2本指でこれだけ動かすと、ホイール1目盛りになる（ポイント）
     static let pointsPerWheelStep: CGFloat = 40
     /// ホイールを送る細かさ（1目盛りの何分の1か）。2の累乗にして、サーバー側の計算で端数が出ないようにする
@@ -74,6 +74,8 @@ final class TouchInput: NSObject, UIGestureRecognizerDelegate {
         let threeFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleThreeFingerTap))
         threeFingerTap.numberOfTouchesRequired = 3
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress))
+        // マウスで押し続けたときは、右クリックにしない（右クリックは、マウスの右ボタンで行う）
+        longPress.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         let drag = UIPanGestureRecognizer(target: self, action: #selector(handleDrag))
         drag.maximumNumberOfTouches = 1
         let scroll = UIPanGestureRecognizer(target: self, action: #selector(handleScroll))
@@ -85,8 +87,57 @@ final class TouchInput: NSObject, UIGestureRecognizerDelegate {
         scrollRecognizer = scroll
         pinchRecognizer = pinch
 
-        for recognizer in [tap, twoFingerTap, threeFingerTap, longPress, drag, scroll, pinch] {
+        // --- マウス（AssistiveTouch や、つないだマウス・トラックパッド）
+        // 左ボタンのクリックとドラッグは、指のタップとドラッグと同じ扱いで、すでに動く。ここでは、残りを足す
+        tap.buttonMaskRequired = .primary
+        let rightClick = UITapGestureRecognizer(target: self, action: #selector(handleRightClick))
+        rightClick.buttonMaskRequired = .secondary
+        rightClick.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        // ホイールと、トラックパッドの2本指のスクロール（指のタッチは受け取らない）
+        let pointerScroll = UIPanGestureRecognizer(target: self, action: #selector(handlePointerScroll))
+        pointerScroll.allowedTouchTypes = []
+        pointerScroll.allowedScrollTypesMask = .all
+        // ボタンを押さずに動かしたとき（カーソルが追いかける。マウスのときだけ呼ばれる）
+        let hover = UIHoverGestureRecognizer(target: self, action: #selector(handleHover))
+
+        for recognizer in [tap, twoFingerTap, threeFingerTap, longPress, drag, scroll, pinch, rightClick, pointerScroll, hover] {
             view.addGestureRecognizer(recognizer)
+        }
+        // iPhoneのカーソルは隠す（映像の中に、PCのカーソルが映るので、二重にならないように）
+        view.addInteraction(UIPointerInteraction(delegate: self))
+    }
+
+    func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
+        UIPointerStyle.hidden()
+    }
+
+    // MARK: - マウス
+
+    @objc private func handleRightClick(_ recognizer: UITapGestureRecognizer) {
+        guard recognizer.state == .ended else { return }
+        lastTap = nil
+        guard let p = normalized(recognizer.location(in: view), clamp: false) else { return }
+        click("right", at: p)
+    }
+
+    @objc private func handleHover(_ recognizer: UIHoverGestureRecognizer) {
+        switch recognizer.state {
+        case .began, .changed:
+            moveMouse(to: recognizer.location(in: view))
+        default:
+            break
+        }
+    }
+
+    @objc private func handlePointerScroll(_ recognizer: UIPanGestureRecognizer) {
+        switch recognizer.state {
+        case .began:
+            stopInertia()
+            scrollSent = .zero
+        case .changed:
+            scroll(total: recognizer.translation(in: view))
+        default:
+            break
         }
     }
 
