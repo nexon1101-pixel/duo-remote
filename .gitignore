@@ -1,0 +1,16 @@
+# サーバー
+server/config.json
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# iOS（xcodegenで毎回作る）
+ios/*.xcodeproj
+build/
+DerivedData/
+xcuserdata/
+*.ipa
+
+# その他
+.DS_Store

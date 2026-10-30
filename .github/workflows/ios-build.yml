@@ -1,0 +1,54 @@
+name: iOS build
+
+# 署名なしのipaを作る。SideStoreが、入れるときに署名し直す。
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-build.yml"
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcodeを選ぶ
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest
+
+      - name: XcodeGenを入れる
+        run: brew install xcodegen
+
+      - name: プロジェクトを作る
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: ビルドする
+        working-directory: ios
+        run: |
+          xcodebuild \
+            -project DuoRemote.xcodeproj \
+            -scheme DuoRemote \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: ipaにまとめる
+        working-directory: ios
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/DuoRemote.app Payload/
+          zip -qr DuoRemote.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DuoRemote-ipa
+          path: ios/DuoRemote.ipa
+          if-no-files-found: error
