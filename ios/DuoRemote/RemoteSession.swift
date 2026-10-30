@@ -5,6 +5,24 @@ struct RemoteWindow: Identifiable, Equatable {
     let id: Int
     let title: String
     let app: String
+    /// 出ている場所: main（本物の主モニター）、virtual（仮想画面）、other、none
+    var place: String = "main"
+}
+
+/// 今、何を映しているか
+enum ViewMode: Equatable {
+    /// 本物の主モニター全体
+    case screen
+    /// 仮想画面（仮想ディスプレイ）全体
+    case desktop
+    /// ウィンドウ1つだけ
+    case window
+}
+
+/// つなぎ直したときに、同じ表示に戻すため、最後に頼んだ表示を覚えておく
+private enum DisplayRequest {
+    case desktop(fit: CGSize?)
+    case window(RemoteWindow, fit: CGSize?, toVirtual: Bool)
 }
 
 /// 映像の画質。外（4G/5G）では低くすると、遅れがたまりにくい。
@@ -61,6 +79,9 @@ final class RemoteSession: ObservableObject {
     @Published private(set) var isLoadingWindows = false
     /// 表示しているウィンドウ。nilなら画面全体
     @Published private(set) var currentWindow: RemoteWindow?
+    @Published private(set) var viewMode: ViewMode = .screen
+    /// PCに、仮想ディスプレイのドライバーが入っている
+    @Published private(set) var virtualAvailable = false
     /// PCのIMEがオンか。サーバーが知らせてこないときはnil
     @Published private(set) var imeOn: Bool?
     /// 往復の時間（ミリ秒）。ping を送ってから pong が来るまで
@@ -87,7 +108,7 @@ final class RemoteSession: ObservableObject {
     /// サーバーに断られた（トークンが違うなど）。このときは、つなぎ直さない
     private var rejected = false
     /// 最後に選んだウィンドウの大きさの合わせ先。つなぎ直したときに、同じ表示に戻すため
-    private var lastFit: CGSize?
+    private var lastDisplay: DisplayRequest?
     private var quality = VideoQuality.high
     /// アプリが裏に回ったので、接続を閉じている。前に戻ったら、つなぎ直す
     private var suspended = false
@@ -246,7 +267,8 @@ final class RemoteSession: ObservableObject {
         reconnectAttempts = 0
         suspended = false
         currentWindow = nil
-        lastFit = nil
+        viewMode = .screen
+        lastDisplay = nil
         close(code: .normalClosure)
         state = .disconnected
     }
@@ -298,6 +320,8 @@ final class RemoteSession: ObservableObject {
         target = nil
         reconnectAttempts = 0
         currentWindow = nil
+        viewMode = .screen
+        lastDisplay = nil
         state = .disconnected
     }
 
@@ -382,19 +406,56 @@ final class RemoteSession: ObservableObject {
         send(["t": "list_windows"])
     }
 
-    /// ウィンドウ1つだけを表示する。fitがあれば、ウィンドウの大きさをその縦横比に変える（iPhoneの画面のポイント数）
-    func showWindow(_ window: RemoteWindow, fit: CGSize?) {
-        lastFit = fit
+    /// ウィンドウ1つだけを表示する。fitがあれば、ウィンドウの大きさをその縦横比に変える（iPhoneの画面のポイント数）。
+    /// toVirtual が true なら、ウィンドウを仮想画面に移して、そこで映す（fit は、仮想画面の縦横比を決めるのに使う）
+    func showWindow(_ window: RemoteWindow, fit: CGSize?, toVirtual: Bool = false) {
+        lastDisplay = .window(window, fit: fit, toVirtual: toVirtual)
         var message: [String: Any] = ["t": "mode", "mode": "window", "id": window.id]
-        if let fit, fit.width > 0, fit.height > 0 {
-            message["fit_w"] = Double(fit.width)
-            message["fit_h"] = Double(fit.height)
-        }
+        addFit(fit, to: &message)
+        if toVirtual { message["to_virtual"] = true }
+        send(message)
+    }
+
+    /// 仮想画面（仮想ディスプレイ）全体を表示する。fit の縦横比に近い解像度にする
+    func showDesktop(fit: CGSize?) {
+        lastDisplay = .desktop(fit: fit)
+        var message: [String: Any] = ["t": "mode", "mode": "desktop"]
+        addFit(fit, to: &message)
         send(message)
     }
 
     func showScreen() {
+        lastDisplay = nil
         send(["t": "mode", "mode": "screen"])
+    }
+
+    /// ウィンドウを、仮想画面に持ってくる（表示は、そのまま）。切断すると、元の位置に戻る
+    func bringWindow(_ window: RemoteWindow) {
+        send(["t": "bring", "id": window.id])
+    }
+
+    /// 持ってきたウィンドウを、すべて元の位置に戻す
+    func restoreWindows() {
+        send(["t": "restore"])
+    }
+
+    /// 画面の大きさが変わったとき（回した、Duoを開閉した）、今の表示を、新しい大きさに合わせ直す
+    func refreshDisplay(fit: CGSize) {
+        switch lastDisplay {
+        case .desktop?:
+            showDesktop(fit: fit)
+        case .window(let window, let oldFit, let toVirtual)?:
+            if oldFit != nil { showWindow(window, fit: fit, toVirtual: toVirtual) }
+        case nil:
+            break
+        }
+    }
+
+    private func addFit(_ fit: CGSize?, to message: inout [String: Any]) {
+        if let fit, fit.width > 0, fit.height > 0 {
+            message["fit_w"] = Double(fit.width)
+            message["fit_h"] = Double(fit.height)
+        }
     }
 
     private func show(notice text: String) {
@@ -427,6 +488,7 @@ final class RemoteSession: ObservableObject {
             if let w = json["w"] as? Int, let h = json["h"] as? Int {
                 videoSize = CGSize(width: w, height: h)
             }
+            virtualAvailable = json["virtual"] as? Bool ?? false
             let reconnected = state == .reconnecting
             state = .connected
             errorMessage = nil
@@ -437,10 +499,14 @@ final class RemoteSession: ObservableObject {
             if audioWanted { requestAudio() }
             if reconnected {
                 show(notice: "つなぎ直しました")
-                // サーバーは画面全体から始めるので、見ていたウィンドウに戻す
-                if let window = currentWindow {
-                    currentWindow = nil
-                    showWindow(window, fit: lastFit)
+                // サーバーは本物の画面全体から始めるので、見ていた表示（仮想画面、ウィンドウ）に戻す
+                switch lastDisplay {
+                case .desktop(let fit)?:
+                    showDesktop(fit: fit)
+                case .window(let window, let fit, let toVirtual)?:
+                    showWindow(window, fit: fit, toVirtual: toVirtual)
+                case nil:
+                    break
                 }
             }
         case "resize":
@@ -472,16 +538,35 @@ final class RemoteSession: ObservableObject {
             let list = json["list"] as? [[String: Any]] ?? []
             windows = list.compactMap { item in
                 guard let id = item["id"] as? Int else { return nil }
-                return RemoteWindow(id: id, title: item["title"] as? String ?? "", app: item["app"] as? String ?? "")
+                return RemoteWindow(
+                    id: id,
+                    title: item["title"] as? String ?? "",
+                    app: item["app"] as? String ?? "",
+                    place: item["where"] as? String ?? "main"
+                )
             }
             isLoadingWindows = false
         case "mode":
-            if json["mode"] as? String == "window", let id = json["id"] as? Int {
-                let title = json["title"] as? String ?? ""
-                currentWindow = windows.first { $0.id == id } ?? RemoteWindow(id: id, title: title, app: "")
-            } else {
+            switch json["mode"] as? String {
+            case "window":
+                if let id = json["id"] as? Int {
+                    let title = json["title"] as? String ?? ""
+                    currentWindow = windows.first { $0.id == id } ?? RemoteWindow(id: id, title: title, app: "")
+                    viewMode = .window
+                }
+            case "desktop":
                 currentWindow = nil
+                viewMode = .desktop
+            default:
+                currentWindow = nil
+                viewMode = .screen
             }
+        case "notice":
+            if let message = json["message"] as? String { show(notice: message) }
+        case "brought":
+            let title = json["title"] as? String ?? "ウィンドウ"
+            show(notice: "「\(title)」を仮想画面に持ってきました")
+            requestWindows() // 一覧の「出ている場所」を、読み直す
         case "error":
             let message = (json["message"] as? String) ?? "サーバーからエラーが返りました"
             if state == .connected {

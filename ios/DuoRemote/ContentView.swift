@@ -13,7 +13,6 @@ struct ContentView: View {
 
     @AppStorage("pointerMode") private var pointerMode = PointerMode.direct
     @AppStorage(KeyCaptureView.commandAsControlKey) private var commandAsControl = false
-    @AppStorage("fitWindow") private var fitWindow = true
     @AppStorage("quality") private var quality = VideoQuality.high
     @AppStorage("audioOn") private var audioOn = false
     @AppStorage("audioMix") private var audioMix = false
@@ -174,8 +173,8 @@ struct ContentView: View {
         refitTask?.cancel()
         refitTask = Task {
             try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled, fitWindow, let window = session.currentWindow else { return }
-            session.showWindow(window, fit: fullSize)
+            guard !Task.isCancelled else { return }
+            session.refreshDisplay(fit: fullSize)
         }
     }
 
@@ -205,6 +204,8 @@ struct ContentView: View {
         Menu {
             if let window = session.currentWindow {
                 Text("表示中: \(window.title)")
+            } else if session.viewMode == .desktop {
+                Text("表示中: 仮想画面")
             }
             if let ms = session.latencyMs {
                 Text("遅れ: \(ms)ms")
@@ -236,8 +237,16 @@ struct ContentView: View {
                 session.requestWindows()
                 showingWindows = true
             }
-            if session.currentWindow != nil {
-                Button("画面全体を表示", systemImage: "display") { session.showScreen() }
+            if session.virtualAvailable {
+                Button("仮想画面を表示", systemImage: "rectangle.on.rectangle") {
+                    session.showDesktop(fit: fullSize)
+                }
+                Button("持ってきたウィンドウを元に戻す", systemImage: "arrow.uturn.backward") {
+                    session.restoreWindows()
+                }
+            }
+            if session.viewMode != .screen {
+                Button("本物の画面を表示", systemImage: "display") { session.showScreen() }
             }
             Button("切断", systemImage: "xmark.circle", role: .destructive) { session.disconnect() }
         } label: {
