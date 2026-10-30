@@ -50,7 +50,7 @@ class SineAudio:
 
 
 async def check_against_server(
-    token, try_window, try_audio=False, audio_factory=None, virtual=None, bring=False, title=None
+    token, try_window, try_audio=False, audio_factory=None, virtual=None, bring=False, title=None, ime=False
 ):
     backend = NullInput((1920, 1080))
     backend.virtual_installed = bool(virtual)
@@ -60,7 +60,7 @@ async def check_against_server(
         port = server.sockets[0].getsockname()[1]
         return await run_check(
             f"ws://127.0.0.1:{port}/", token, seconds=0.5, try_window=try_window, try_audio=try_audio,
-            try_virtual=virtual is not None and not bring, try_bring=bring, title=title,
+            try_virtual=virtual is not None and not bring, try_bring=bring, title=title, try_ime=ime,
         )
 
 
@@ -142,3 +142,9 @@ def test_selfcheck_picks_window_by_title(capsys):
 def test_selfcheck_bring_without_driver(capsys):
     assert not asyncio.run(check_against_server("secret", False, virtual=False, bring=True))
     assert "ドライバーが見つかりません" in capsys.readouterr().out
+
+
+def test_selfcheck_ime_toggle(capsys):
+    assert asyncio.run(check_against_server("secret", False, title="メモ", ime=True))
+    out = capsys.readouterr().out
+    assert "IMEをオンにできました" in out and "IMEをオフにできました" in out and "[NG]" not in out
