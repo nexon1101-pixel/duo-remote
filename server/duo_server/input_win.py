@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 import sys
 
+from .virtual_display import VirtualDisplay, VirtualDisplayError, list_monitors
+
 log = logging.getLogger(__name__)
 
 VK_IME_ON = 0x16
@@ -20,7 +22,46 @@ EXTENDED_VKS = {
 }
 
 
-class NullInput:
+class _BringMixin:
+    """ウィンドウを仮想モニターに持ってきて、あとで元の位置に戻す。
+    持ってくる前の位置は、持ってくるたびに上書きせず、最初の1回だけ覚える。"""
+
+    _brought: dict
+
+    def bring_window(self, wid: int, rect: tuple[int, int, int, int]) -> bool:
+        """ウィンドウを rect（x, y, 幅, 高さ。デスクトップ上の位置）に移す。"""
+        if wid not in self._brought:
+            placement = self.window_placement(wid)
+            if placement is None:
+                return False
+            self._brought[wid] = placement
+        return self.place_window(wid, rect)
+
+    def restore_brought(self) -> list[int]:
+        """持ってきたウィンドウを、すべて元の位置に戻す。戻したウィンドウの番号を返す。"""
+        restored = []
+        for wid, placement in list(self._brought.items()):
+            try:
+                self.restore_window(wid, placement)
+                restored.append(wid)
+            except Exception:  # 閉じられたウィンドウなど。ほかは続ける
+                log.exception("ウィンドウを元に戻せませんでした: %s", wid)
+        self._brought.clear()
+        return restored
+
+    def brought_windows(self) -> list[int]:
+        return list(self._brought)
+
+    def shutdown(self) -> None:
+        """サーバーを止めるとき。持ってきたウィンドウを戻し、仮想ディスプレイを無効に戻す。"""
+        self.restore_brought()
+        try:
+            self.virtual_off()
+        except VirtualDisplayError as e:
+            log.warning("仮想ディスプレイを無効に戻せませんでした: %s", e)
+
+
+class NullInput(_BringMixin):
     """Windows以外・テスト用。呼ばれた内容を記録するだけ。"""
 
     def __init__(self, size: tuple[int, int] = (1920, 1080)) -> None:
@@ -30,6 +71,12 @@ class NullInput:
         self.region: tuple[int, int, int, int] | None = None
         # テストで使うウィンドウ。id -> {"title", "app", "rect": (x, y, 幅, 高さ), "minimized"}
         self.windows: dict[int, dict] = {}
+        self._brought: dict = {}
+        # 仮想ディスプレイ。installed が True のとき、virtual_on で、主モニターの右に仮想モニターが出る
+        self.virtual_installed = False
+        self.virtual_enabled = False
+        self.virtual_error: str | None = None  # 設定すると、virtual_on が失敗する
+        self._virtual_width = 1536
 
     def screen_size(self) -> tuple[int, int]:
         return self._size
@@ -37,8 +84,63 @@ class NullInput:
     def set_region(self, region: tuple[int, int, int, int] | None) -> None:
         self.region = region
 
+    def monitors(self) -> list[dict]:
+        w, h = self._size
+        found = [{
+            "name": "\\\\.\\DISPLAY1", "rect": (0, 0, w, h), "work": (0, 0, w, h - 40),
+            "primary": True, "virtual": False, "adapter": 0, "output": 0, "description": "",
+        }]
+        if self.virtual_enabled:
+            vw = self._virtual_width
+            found.append({
+                "name": "\\\\.\\DISPLAY2", "rect": (w, 0, vw, 1080), "work": (w, 0, vw, 1040),
+                "primary": False, "virtual": True, "adapter": 0, "output": 1, "description": "Virtual Display Driver",
+            })
+        return found
+
+    def virtual_available(self) -> bool:
+        return self.virtual_installed
+
+    def virtual_on(self) -> dict:
+        self.calls.append(("virtual_on",))
+        if not self.virtual_installed:
+            raise VirtualDisplayError("仮想ディスプレイのドライバーが見つかりません")
+        if self.virtual_error:
+            raise VirtualDisplayError(self.virtual_error)
+        self.virtual_enabled = True
+        return self.monitors()[-1]
+
+    def virtual_off(self) -> None:
+        if self.virtual_enabled:
+            self.calls.append(("virtual_off",))
+        self.virtual_enabled = False
+
+    def virtual_set_aspect(self, aspect: float) -> dict:
+        self.calls.append(("virtual_aspect", round(aspect, 3)))
+        self._virtual_width = round(1080 * aspect / 2) * 2
+        return self.monitors()[-1]
+
+    def window_placement(self, wid: int) -> dict | None:
+        w = self.windows.get(wid)
+        return None if w is None else {"rect": w["rect"], "minimized": w.get("minimized", False)}
+
+    def place_window(self, wid: int, rect: tuple[int, int, int, int]) -> bool:
+        self.calls.append(("place", wid, rect))
+        if wid not in self.windows:
+            return False
+        self.windows[wid]["rect"] = rect
+        return True
+
+    def restore_window(self, wid: int, placement: dict) -> None:
+        self.calls.append(("restore", wid))
+        if wid in self.windows:
+            self.windows[wid]["rect"] = placement["rect"]
+
     def list_windows(self) -> list[dict]:
-        return [{"id": i, "title": w["title"], "app": w.get("app", "")} for i, w in self.windows.items()]
+        return [
+            {"id": i, "title": w["title"], "app": w.get("app", ""), "rect": w["rect"]}
+            for i, w in self.windows.items()
+        ]
 
     def window_info(self, wid: int) -> dict | None:
         w = self.windows.get(wid)
@@ -53,7 +155,7 @@ class NullInput:
             w["minimized"] = False
         return w is not None
 
-    def fit_window(self, wid: int, w: float, h: float) -> bool:
+    def fit_window(self, wid: int, w: float, h: float, area: tuple[int, int, int, int] | None = None) -> bool:
         self.calls.append(("fit", wid, w, h))
         return wid in self.windows
 
@@ -268,12 +370,88 @@ if sys.platform == "win32":
         user32.GetClassNameW(hwnd, cls, 64)
         return cls.value not in DESKTOP_CLASSES
 
-    class WinInput:
+    class WINDOWPLACEMENT(ctypes.Structure):
+        _fields_ = [
+            ("length", wt.UINT), ("flags", wt.UINT), ("showCmd", wt.UINT),
+            ("ptMinPosition", wt.POINT), ("ptMaxPosition", wt.POINT), ("rcNormalPosition", wt.RECT),
+        ]
+
+    user32.GetWindowPlacement.argtypes = (wt.HWND, ctypes.POINTER(WINDOWPLACEMENT))
+    user32.SetWindowPlacement.argtypes = (wt.HWND, ctypes.POINTER(WINDOWPLACEMENT))
+
+    def _set_visible_rect(wid: int, x: int, y: int, w: int, h: int) -> bool:
+        """ウィンドウの、見えている範囲を (x, y, 幅, 高さ) にする。
+        SetWindowPos の大きさには、見えない枠も含まれるので、その分を足す。"""
+        outer = wt.RECT()
+        visible = _visible_rect(wid)
+        if visible is None or not user32.GetWindowRect(wid, ctypes.byref(outer)):
+            return False
+        vx, vy, vw, vh = visible
+        pad_l, pad_t = vx - outer.left, vy - outer.top
+        pad_r, pad_b = outer.right - (vx + vw), outer.bottom - (vy + vh)
+        return bool(user32.SetWindowPos(
+            wid, None, x - pad_l, y - pad_t, w + pad_l + pad_r, h + pad_t + pad_b, SWP_NOZORDER | SWP_NOACTIVATE,
+        ))
+
+    class WinInput(_BringMixin):
         """主モニターを対象にした入力。set_region で範囲を決めると、座標はその範囲が基準になる。"""
 
         def __init__(self) -> None:
             _make_dpi_aware()
             self.region: tuple[int, int, int, int] | None = None
+            self._brought: dict = {}
+            self._vd = VirtualDisplay()
+            self._virtual_installed: bool | None = None  # 調べた結果を覚えておく（調べるのに1秒ほどかかる）
+
+        # --- モニターと、仮想ディスプレイ
+
+        def monitors(self) -> list[dict]:
+            return list_monitors(self._vd.patterns)
+
+        def virtual_available(self) -> bool:
+            if self._virtual_installed is None:
+                try:
+                    self._virtual_installed = self._vd.device() is not None
+                except Exception as e:  # PowerShell が使えないなど。仮想ディスプレイなしとして続ける
+                    log.warning("仮想ディスプレイのドライバーを調べられませんでした: %s", e)
+                    self._virtual_installed = False
+            return self._virtual_installed
+
+        def virtual_on(self) -> dict:
+            return self._vd.on()
+
+        def virtual_off(self) -> None:
+            self._vd.off()
+
+        def virtual_set_aspect(self, aspect: float) -> dict:
+            self._vd.set_resolution(aspect)
+            monitor = self._vd.monitor()
+            if monitor is None:
+                raise VirtualDisplayError("仮想モニターが出ていません")
+            return monitor
+
+        # --- ウィンドウの位置（仮想モニターに持ってきて、戻す）
+
+        def window_placement(self, wid: int) -> dict | None:
+            if not user32.IsWindow(wid):
+                return None
+            wp = WINDOWPLACEMENT()
+            wp.length = ctypes.sizeof(WINDOWPLACEMENT)
+            if not user32.GetWindowPlacement(wid, ctypes.byref(wp)):
+                return None
+            return {"wp": wp}
+
+        def place_window(self, wid: int, rect: tuple[int, int, int, int]) -> bool:
+            if not user32.IsWindow(wid):
+                return False
+            if user32.IsIconic(wid) or user32.IsZoomed(wid):
+                user32.ShowWindow(wid, SW_RESTORE)
+            x, y, w, h = rect
+            return _set_visible_rect(wid, x, y, w, h)
+
+        def restore_window(self, wid: int, placement: dict) -> None:
+            if user32.IsWindow(wid):
+                user32.SetWindowPlacement(wid, ctypes.byref(placement["wp"]))
 
         def screen_size(self) -> tuple[int, int]:
             return user32.GetSystemMetrics(SM_CXSCREEN), user32.GetSystemMetrics(SM_CYSCREEN)
@@ -313,7 +491,12 @@ if sys.platform == "win32":
 
             user32.EnumWindows(collect, 0)
             # EnumWindowsは手前のウィンドウから順に返すので、その順のまま並べる
-            return [{"id": h, "title": _window_title(h), "app": _app_name(h)} for h in found]
+            result = []
+            for h in found:
+                rect = _visible_rect(h)
+                if rect is not None:
+                    result.append({"id": h, "title": _window_title(h), "app": _app_name(h), "rect": rect})
+            return result
 
         def window_info(self, wid: int) -> dict | None:
             if not user32.IsWindow(wid):
@@ -335,10 +518,10 @@ if sys.platform == "win32":
             _send([_key(VK_MENU, 0, 0), _key(VK_MENU, 0, KEYEVENTF_KEYUP)])
             return bool(user32.SetForegroundWindow(wid))
 
-        def fit_window(self, wid: int, w: float, h: float) -> bool:
+        def fit_window(self, wid: int, w: float, h: float, area: tuple[int, int, int, int] | None = None) -> bool:
             """ウィンドウの大きさを、w x h（iPhoneの画面のポイント数）に合わせる。
             1ポイントをWindowsの1論理画素（拡大率をかけた画素）にするので、文字はPCで見るのと同じくらいの大きさになる。
-            作業領域に入らないときは、縦横比を保って縮める。"""
+            area（x, y, 幅, 高さ）の中に収める。省略すると、主モニターの作業領域。入らないときは、縦横比を保って縮める。"""
             if not user32.IsWindow(wid) or w <= 0 or h <= 0:
                 return False
             if user32.IsIconic(wid) or user32.IsZoomed(wid):
@@ -348,27 +531,16 @@ if sys.platform == "win32":
             if get_dpi is not None:
                 get_dpi.argtypes = (wt.HWND,)
                 scale = (get_dpi(wid) or 96) / 96
-            work = wt.RECT()
-            user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(work), 0)
-            ww, wh = work.right - work.left, work.bottom - work.top
+            if area is None:
+                work = wt.RECT()
+                user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(work), 0)
+                area = (work.left, work.top, work.right - work.left, work.bottom - work.top)
+            ax, ay, ww, wh = area
             tw, th = w * scale, h * scale
             shrink = min(1.0, ww / tw, wh / th)
             tw, th = int(tw * shrink), int(th * shrink)
-
-            # SetWindowPosの大きさには、見えない枠も含まれる。その分を足す
-            outer = wt.RECT()
-            visible = _visible_rect(wid)
-            if visible is None or not user32.GetWindowRect(wid, ctypes.byref(outer)):
-                return False
-            vx, vy, vw, vh = visible
-            pad_l, pad_t = vx - outer.left, vy - outer.top
-            pad_r, pad_b = outer.right - (vx + vw), outer.bottom - (vy + vh)
             # 作業領域の中央に置く
-            x = work.left + (ww - tw) // 2 - pad_l
-            y = work.top + (wh - th) // 2 - pad_t
-            return bool(user32.SetWindowPos(
-                wid, None, x, y, tw + pad_l + pad_r, th + pad_t + pad_b, SWP_NOZORDER | SWP_NOACTIVATE,
-            ))
+            return _set_visible_rect(wid, ax + (ww - tw) // 2, ay + (wh - th) // 2, tw, th)
 
         def _move_input(self, x: float, y: float) -> INPUT:
             ax, ay = self._absolute(x, y)

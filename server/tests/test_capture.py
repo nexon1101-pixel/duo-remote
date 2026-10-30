@@ -5,6 +5,7 @@ import pytest
 from duo_server.capture import (
     AccessUnitSplitter,
     build_ffmpeg_cmd,
+    capture_target,
     is_keyframe,
     output_size,
 )
@@ -108,3 +109,15 @@ def test_splitter_with_real_x264_output():
 
     types = [t for _, t in iter_nals(units[0])]
     assert types[:3] == [9, 7, 8] and 5 in types
+
+
+def test_capture_target():
+    primary_window = (100, 50, 800, 600)
+    assert capture_target(None, None) == (0, None)
+    assert capture_target(None, primary_window, default_output=2) == (2, primary_window)
+    virtual = {"output": 1, "rect": (3840, 0, 1536, 1080)}
+    assert capture_target(virtual, None) == (1, None)  # モニター全体
+    # 仮想モニター上のウィンドウ: そのモニターの左上が基準になる
+    assert capture_target(virtual, (3940, 40, 800, 600)) == (1, (100, 40, 800, 600))
+    # 番号が分からないモニターは、主モニターの番号で撮る
+    assert capture_target({"output": None, "rect": (0, 0, 1, 1)}, None, default_output=3) == (3, None)

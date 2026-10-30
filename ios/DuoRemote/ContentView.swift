@@ -13,8 +13,9 @@ struct ContentView: View {
 
     @AppStorage("pointerMode") private var pointerMode = PointerMode.direct
     @AppStorage(KeyCaptureView.commandAsControlKey) private var commandAsControl = false
-    @AppStorage("fitWindow") private var fitWindow = true
     @AppStorage("quality") private var quality = VideoQuality.high
+    @AppStorage("audioOn") private var audioOn = false
+    @AppStorage("audioMix") private var audioMix = false
 
     @Environment(\.scenePhase) private var scenePhase
     /// ノッチや Dynamic Island、ホームの線の分の余白。映像は端まで出すので、上に置くボタンはこの分だけ内側に寄せる
@@ -51,7 +52,14 @@ struct ContentView: View {
             default: break
             }
         }
-        .onChange(of: quality) { _, newValue in session.setQuality(newValue) }
+        .onChange(of: quality) { _, newValue in
+            session.setQuality(newValue)
+            // 画質で、音の形も変わる（低画質は、24000Hz のモノラル）。つなぎ直しのあと、あらためて頼まれる
+        }
+        .onChange(of: audioOn) { _, _ in session.setAudio(audioOn, mixWithOthers: audioMix) }
+        .onChange(of: audioMix) { _, _ in session.setAudio(audioOn, mixWithOthers: audioMix) }
+        // 音を始められなかったら、スイッチをオフに戻す
+        .onChange(of: session.audioFailures) { _, _ in audioOn = false }
     }
 
     private func updateIdleTimer() {
@@ -148,14 +156,25 @@ struct ContentView: View {
         }
     }
 
+    /// この端末の、いまの画面の大きさ（実機が報告する値）。折りたたみの開閉や回転で変わる
+    private var screenDescription: String {
+        _ = fullSize // 大きさが変わったら、作り直す
+        let screen = UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.screen }.first
+        guard let screen else { return "画面: 不明" }
+        let pt = screen.bounds.size
+        let px = screen.nativeBounds.size
+        return "画面: \(Int(pt.width))×\(Int(pt.height))pt（\(Int(px.width))×\(Int(px.height))px、\(String(format: "%.2f", screen.nativeScale))倍）"
+    }
+
     /// 回したり、Duoを閉じたり開いたりして画面の大きさが変わったら、ウィンドウの大きさを合わせ直す。
     /// 変わっている途中で何度も送らないよう、少し待ってから送る
     private func refitWindow() {
         refitTask?.cancel()
         refitTask = Task {
             try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled, fitWindow, let window = session.currentWindow else { return }
-            session.showWindow(window, fit: fullSize)
+            guard !Task.isCancelled else { return }
+            session.refreshDisplay(fit: fullSize)
         }
     }
 
@@ -185,10 +204,15 @@ struct ContentView: View {
         Menu {
             if let window = session.currentWindow {
                 Text("表示中: \(window.title)")
+            } else if session.viewMode == .desktop {
+                Text("表示中: 仮想画面")
             }
             if let ms = session.latencyMs {
                 Text("遅れ: \(ms)ms")
             }
+            Text(screenDescription)
+            Toggle("PCの音を鳴らす", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
+            Toggle("他のアプリの音と混ぜる", systemImage: "speaker.badge.exclamationmark", isOn: $audioMix)
             Picker("入力", selection: $inputMode) {
                 ForEach(InputMode.allCases) { mode in
                     Label(mode.label, systemImage: mode.systemImage).tag(mode)
@@ -213,8 +237,16 @@ struct ContentView: View {
                 session.requestWindows()
                 showingWindows = true
             }
-            if session.currentWindow != nil {
-                Button("画面全体を表示", systemImage: "display") { session.showScreen() }
+            if session.virtualAvailable {
+                Button("仮想画面を表示", systemImage: "rectangle.on.rectangle") {
+                    session.showDesktop(fit: fullSize)
+                }
+                Button("持ってきたウィンドウを元に戻す", systemImage: "arrow.uturn.backward") {
+                    session.restoreWindows()
+                }
+            }
+            if session.viewMode != .screen {
+                Button("本物の画面を表示", systemImage: "display") { session.showScreen() }
             }
             Button("切断", systemImage: "xmark.circle", role: .destructive) { session.disconnect() }
         } label: {
@@ -275,6 +307,7 @@ struct ContentView: View {
                     port = Self.cleaned(port)
                     token = Self.cleaned(token)
                     Keychain.save("token", token)
+                    session.setAudio(audioOn, mixWithOthers: audioMix)
                     session.connect(host: host, port: Int(port) ?? 8765, token: token, quality: quality)
                 }
                 .disabled(host.isEmpty || token.isEmpty || session.state == .connecting)

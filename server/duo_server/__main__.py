@@ -12,9 +12,12 @@ from pathlib import Path
 from websockets.asyncio.server import serve
 
 from . import __version__
-from .capture import FfmpegStream, build_ffmpeg_cmd, detect_encoder
+from .audio import AudioStream
+from .capture import FfmpegStream, build_ffmpeg_cmd, capture_target, detect_encoder
 from .input_win import create_input
 from .server import Settings, make_handler
+
+log = logging.getLogger(__name__)
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "config.json"
 
@@ -67,21 +70,37 @@ async def run(args: argparse.Namespace) -> None:
 
     backend = create_input()
 
-    def stream_factory(s: Settings, src: tuple[int, int], region: tuple[int, int, int, int] | None) -> FfmpegStream:
+    def stream_factory(
+        s: Settings, src: tuple[int, int], region: tuple[int, int, int, int] | None, monitor: dict | None
+    ) -> FfmpegStream:
+        # 主モニターは --output-idx、そのほか（仮想ディスプレイなど）は、調べた DXGI の番号
+        if monitor is not None and monitor.get("adapter") not in (None, 0):
+            log.warning("このモニターは、別のグラフィックアダプター（%s）にあります", monitor["adapter"])
+        output_idx, relative = capture_target(monitor, region, args.output_idx)
         cmd = build_ffmpeg_cmd(
             ffmpeg=args.ffmpeg, fps=s.fps, bitrate_kbps=s.bitrate_kbps, encoder=encoder,
-            max_height=s.max_height, src_height=src[1], region=region, output_idx=args.output_idx,
+            max_height=s.max_height, src_height=src[1], region=relative, output_idx=output_idx,
         )
         return FfmpegStream(cmd)
 
-    handler = make_handler(settings, backend, stream_factory)
-    # close_timeout: 応答しない相手を閉じるときに、待つ時間（秒）
-    async with serve(handler, args.host, port, max_size=1024 * 1024, close_timeout=2):
-        print(f"duo_server {__version__} を起動しました: {args.host}:{port}（エンコーダー: {encoder}）")
-        if created or args.show_token:
-            print(f"トークン: {settings.token}")
-            print(f"（{args.config} に保存してあります。他の人に見せないでください）")
-        await asyncio.Future()
+    def audio_factory(rate: int, channels: int) -> AudioStream:
+        return AudioStream(args.ffmpeg, rate, channels)
+
+    handler = make_handler(settings, backend, stream_factory, audio_factory)
+    # 仮想ディスプレイのドライバーが入っているかを、先に調べておく（調べるのに1秒ほどかかる）
+    virtual = await asyncio.to_thread(backend.virtual_available)
+    try:
+        # close_timeout: 応答しない相手を閉じるときに、待つ時間（秒）
+        async with serve(handler, args.host, port, max_size=1024 * 1024, close_timeout=2):
+            print(f"duo_server {__version__} を起動しました: {args.host}:{port}（エンコーダー: {encoder}）")
+            print(f"仮想ディスプレイ: {'使えます' if virtual else 'ドライバーが入っていません'}")
+            if created or args.show_token:
+                print(f"トークン: {settings.token}")
+                print(f"（{args.config} に保存してあります。他の人に見せないでください）")
+            await asyncio.Future()
+    finally:
+        # 持ってきたウィンドウを元に戻し、仮想ディスプレイを無効に戻す
+        backend.shutdown()
 
 
 def main(argv: list[str] | None = None) -> None:

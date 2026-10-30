@@ -5,6 +5,24 @@ struct RemoteWindow: Identifiable, Equatable {
     let id: Int
     let title: String
     let app: String
+    /// 出ている場所: main（本物の主モニター）、virtual（仮想画面）、other、none
+    var place: String = "main"
+}
+
+/// 今、何を映しているか
+enum ViewMode: Equatable {
+    /// 本物の主モニター全体
+    case screen
+    /// 仮想画面（仮想ディスプレイ）全体
+    case desktop
+    /// ウィンドウ1つだけ
+    case window
+}
+
+/// つなぎ直したときに、同じ表示に戻すため、最後に頼んだ表示を覚えておく
+private enum DisplayRequest {
+    case desktop(fit: CGSize?)
+    case window(RemoteWindow, fit: CGSize?, toVirtual: Bool)
 }
 
 /// 映像の画質。外（4G/5G）では低くすると、遅れがたまりにくい。
@@ -61,6 +79,9 @@ final class RemoteSession: ObservableObject {
     @Published private(set) var isLoadingWindows = false
     /// 表示しているウィンドウ。nilなら画面全体
     @Published private(set) var currentWindow: RemoteWindow?
+    @Published private(set) var viewMode: ViewMode = .screen
+    /// PCに、仮想ディスプレイのドライバーが入っている
+    @Published private(set) var virtualAvailable = false
     /// PCのIMEがオンか。サーバーが知らせてこないときはnil
     @Published private(set) var imeOn: Bool?
     /// 往復の時間（ミリ秒）。ping を送ってから pong が来るまで
@@ -68,6 +89,14 @@ final class RemoteSession: ObservableObject {
     private var noticeTask: Task<Void, Never>?
 
     let renderer = H264Renderer()
+    let audio = AudioPlayer()
+    /// サーバーが、PCの音を送っている
+    @Published private(set) var audioOn = false
+    /// 音を始められなかった回数。画面側が、スイッチを戻すために見る
+    @Published private(set) var audioFailures = 0
+    /// 音を鳴らしたいか（画面のスイッチ）と、他のアプリの音と混ぜるか
+    private var audioWanted = false
+    private var audioMix = false
 
     private var task: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
@@ -79,7 +108,7 @@ final class RemoteSession: ObservableObject {
     /// サーバーに断られた（トークンが違うなど）。このときは、つなぎ直さない
     private var rejected = false
     /// 最後に選んだウィンドウの大きさの合わせ先。つなぎ直したときに、同じ表示に戻すため
-    private var lastFit: CGSize?
+    private var lastDisplay: DisplayRequest?
     private var quality = VideoQuality.high
     /// アプリが裏に回ったので、接続を閉じている。前に戻ったら、つなぎ直す
     private var suspended = false
@@ -93,6 +122,17 @@ final class RemoteSession: ObservableObject {
     private var pendingPings: [Int: Date] = [:]
 
     var isConnectedOrReconnecting: Bool { state == .connected || state == .reconnecting }
+
+    init() {
+        audio.onFailure = { [weak self] message in
+            Task { @MainActor in
+                guard let self else { return }
+                self.audioOn = false
+                self.audioFailures += 1
+                self.show(notice: "音: \(message)")
+            }
+        }
+    }
 
     func connect(host: String, port: Int, token: String, quality: VideoQuality) {
         disconnect()
@@ -123,13 +163,14 @@ final class RemoteSession: ObservableObject {
 
         // 受け取りは、画面を描くスレッド（メインスレッド）とは別で動かす。
         // 映像はそのままデコーダーに渡し、制御メッセージだけをメインスレッドに渡す
+        let player = self.audio
         receiveTask = Task.detached { [weak self] in
             do {
                 try await task.send(.string(String(decoding: helloData, as: UTF8.self)))
                 while !Task.isCancelled {
                     switch try await task.receive() {
                     case .data(let data):
-                        Self.enqueueVideo(data, to: renderer)
+                        Self.handleBinary(data, video: renderer, audio: player)
                     case .string(let text):
                         await self?.handleControl(text, from: task)
                     @unknown default:
@@ -151,12 +192,18 @@ final class RemoteSession: ObservableObject {
         }
     }
 
-    /// 映像のフレーム（先頭: フラグ(1) + タイムスタンプ(4) + H.264）をデコーダーに渡す
-    private nonisolated static func enqueueVideo(_ data: Data, to renderer: H264Renderer) {
-        guard data.count > 5 else { return }
+    /// バイナリのフレーム（先頭: フラグ(1) + タイムスタンプ(4) + 中身）を、映像か音に振り分ける。
+    /// フラグの bit1 が立っていれば音（PCM）、立っていなければ映像（H.264）
+    private nonisolated static func handleBinary(_ data: Data, video: H264Renderer, audio: AudioPlayer) {
+        guard data.count > 5, let flags = data.first else { return }
+        let body = data.dropFirst(5)
+        if flags & 0x02 != 0 {
+            audio.enqueue(Data(body))
+            return
+        }
         let start = data.startIndex
         let timestamp = data[(start + 1)..<(start + 5)].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
-        renderer.enqueue(accessUnit: data.dropFirst(5), timestampMs: timestamp)
+        video.enqueue(accessUnit: body, timestampMs: timestamp)
     }
 
     /// 接続中は ping を送り、pong が来なくなったら、切れたとみなしてつなぎ直す
@@ -220,7 +267,8 @@ final class RemoteSession: ObservableObject {
         reconnectAttempts = 0
         suspended = false
         currentWindow = nil
-        lastFit = nil
+        viewMode = .screen
+        lastDisplay = nil
         close(code: .normalClosure)
         state = .disconnected
     }
@@ -237,6 +285,8 @@ final class RemoteSession: ObservableObject {
         task?.cancel(with: code, reason: nil)
         task = nil
         renderer.reset()
+        audio.stop()
+        audioOn = false
         resetView()
     }
 
@@ -270,6 +320,8 @@ final class RemoteSession: ObservableObject {
         target = nil
         reconnectAttempts = 0
         currentWindow = nil
+        viewMode = .screen
+        lastDisplay = nil
         state = .disconnected
     }
 
@@ -322,6 +374,31 @@ final class RemoteSession: ObservableObject {
         send(["t": "ime", "on": on])
     }
 
+    // MARK: - 音
+
+    /// 音を鳴らすか決める。つながっていなければ覚えておき、つながったときに始める。
+    /// mixWithOthers がオフのとき、音を鳴らす間は、他のアプリの音（YouTube など）が止まる
+    func setAudio(_ on: Bool, mixWithOthers: Bool) {
+        audioWanted = on
+        audioMix = mixWithOthers
+        if !on {
+            audio.stop()
+            audioOn = false
+        }
+        guard state == .connected else { return }
+        requestAudio()
+    }
+
+    private func requestAudio() {
+        if audioWanted {
+            // 低画質のときは、音も軽くする（24000Hz、モノラル）
+            let low = quality == .low
+            send(["t": "audio", "on": true, "rate": low ? 24000 : 48000, "channels": low ? 1 : 2])
+        } else {
+            send(["t": "audio", "on": false])
+        }
+    }
+
     // MARK: - 表示する範囲
 
     func requestWindows() {
@@ -329,19 +406,56 @@ final class RemoteSession: ObservableObject {
         send(["t": "list_windows"])
     }
 
-    /// ウィンドウ1つだけを表示する。fitがあれば、ウィンドウの大きさをその縦横比に変える（iPhoneの画面のポイント数）
-    func showWindow(_ window: RemoteWindow, fit: CGSize?) {
-        lastFit = fit
+    /// ウィンドウ1つだけを表示する。fitがあれば、ウィンドウの大きさをその縦横比に変える（iPhoneの画面のポイント数）。
+    /// toVirtual が true なら、ウィンドウを仮想画面に移して、そこで映す（fit は、仮想画面の縦横比を決めるのに使う）
+    func showWindow(_ window: RemoteWindow, fit: CGSize?, toVirtual: Bool = false) {
+        lastDisplay = .window(window, fit: fit, toVirtual: toVirtual)
         var message: [String: Any] = ["t": "mode", "mode": "window", "id": window.id]
-        if let fit, fit.width > 0, fit.height > 0 {
-            message["fit_w"] = Double(fit.width)
-            message["fit_h"] = Double(fit.height)
-        }
+        addFit(fit, to: &message)
+        if toVirtual { message["to_virtual"] = true }
+        send(message)
+    }
+
+    /// 仮想画面（仮想ディスプレイ）全体を表示する。fit の縦横比に近い解像度にする
+    func showDesktop(fit: CGSize?) {
+        lastDisplay = .desktop(fit: fit)
+        var message: [String: Any] = ["t": "mode", "mode": "desktop"]
+        addFit(fit, to: &message)
         send(message)
     }
 
     func showScreen() {
+        lastDisplay = nil
         send(["t": "mode", "mode": "screen"])
+    }
+
+    /// ウィンドウを、仮想画面に持ってくる（表示は、そのまま）。切断すると、元の位置に戻る
+    func bringWindow(_ window: RemoteWindow) {
+        send(["t": "bring", "id": window.id])
+    }
+
+    /// 持ってきたウィンドウを、すべて元の位置に戻す
+    func restoreWindows() {
+        send(["t": "restore"])
+    }
+
+    /// 画面の大きさが変わったとき（回した、Duoを開閉した）、今の表示を、新しい大きさに合わせ直す
+    func refreshDisplay(fit: CGSize) {
+        switch lastDisplay {
+        case .desktop?:
+            showDesktop(fit: fit)
+        case .window(let window, let oldFit, let toVirtual)?:
+            if oldFit != nil { showWindow(window, fit: fit, toVirtual: toVirtual) }
+        case nil:
+            break
+        }
+    }
+
+    private func addFit(_ fit: CGSize?, to message: inout [String: Any]) {
+        if let fit, fit.width > 0, fit.height > 0 {
+            message["fit_w"] = Double(fit.width)
+            message["fit_h"] = Double(fit.height)
+        }
     }
 
     private func show(notice text: String) {
@@ -374,6 +488,7 @@ final class RemoteSession: ObservableObject {
             if let w = json["w"] as? Int, let h = json["h"] as? Int {
                 videoSize = CGSize(width: w, height: h)
             }
+            virtualAvailable = json["virtual"] as? Bool ?? false
             let reconnected = state == .reconnecting
             state = .connected
             errorMessage = nil
@@ -381,12 +496,17 @@ final class RemoteSession: ObservableObject {
             connectWatchdog?.cancel()
             connectWatchdog = nil
             startHeartbeat(for: source)
+            if audioWanted { requestAudio() }
             if reconnected {
                 show(notice: "つなぎ直しました")
-                // サーバーは画面全体から始めるので、見ていたウィンドウに戻す
-                if let window = currentWindow {
-                    currentWindow = nil
-                    showWindow(window, fit: lastFit)
+                // サーバーは本物の画面全体から始めるので、見ていた表示（仮想画面、ウィンドウ）に戻す
+                switch lastDisplay {
+                case .desktop(let fit)?:
+                    showDesktop(fit: fit)
+                case .window(let window, let fit, let toVirtual)?:
+                    showWindow(window, fit: fit, toVirtual: toVirtual)
+                case nil:
+                    break
                 }
             }
         case "resize":
@@ -399,22 +519,54 @@ final class RemoteSession: ObservableObject {
                 // これより前の ping は、返事が来なかったものとして忘れる
                 pendingPings = pendingPings.filter { $0.key > n }
             }
+        case "audio_state":
+            if json["on"] as? Bool == true, audioWanted,
+               let rate = json["rate"] as? Int, let channels = json["channels"] as? Int {
+                audio.start(rate: rate, channels: channels, mixWithOthers: audioMix)
+                audioOn = true
+            } else {
+                audio.stop()
+                audioOn = false
+                if audioWanted, let reason = json["reason"] as? String {
+                    audioFailures += 1
+                    show(notice: "音: \(reason)")
+                }
+            }
         case "ime_state":
             imeOn = json["on"] as? Bool
         case "windows":
             let list = json["list"] as? [[String: Any]] ?? []
             windows = list.compactMap { item in
                 guard let id = item["id"] as? Int else { return nil }
-                return RemoteWindow(id: id, title: item["title"] as? String ?? "", app: item["app"] as? String ?? "")
+                return RemoteWindow(
+                    id: id,
+                    title: item["title"] as? String ?? "",
+                    app: item["app"] as? String ?? "",
+                    place: item["where"] as? String ?? "main"
+                )
             }
             isLoadingWindows = false
         case "mode":
-            if json["mode"] as? String == "window", let id = json["id"] as? Int {
-                let title = json["title"] as? String ?? ""
-                currentWindow = windows.first { $0.id == id } ?? RemoteWindow(id: id, title: title, app: "")
-            } else {
+            switch json["mode"] as? String {
+            case "window":
+                if let id = json["id"] as? Int {
+                    let title = json["title"] as? String ?? ""
+                    currentWindow = windows.first { $0.id == id } ?? RemoteWindow(id: id, title: title, app: "")
+                    viewMode = .window
+                }
+            case "desktop":
                 currentWindow = nil
+                viewMode = .desktop
+            default:
+                currentWindow = nil
+                viewMode = .screen
             }
+        case "notice":
+            if let message = json["message"] as? String { show(notice: message) }
+        case "brought":
+            let title = json["title"] as? String ?? "ウィンドウ"
+            show(notice: "「\(title)」を仮想画面に持ってきました")
+            requestWindows() // 一覧の「出ている場所」を、読み直す
         case "error":
             let message = (json["message"] as? String) ?? "サーバーからエラーが返りました"
             if state == .connected {
