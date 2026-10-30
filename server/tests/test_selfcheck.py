@@ -49,7 +49,9 @@ class SineAudio:
         pass
 
 
-async def check_against_server(token, try_window, try_audio=False, audio_factory=None, virtual=None):
+async def check_against_server(
+    token, try_window, try_audio=False, audio_factory=None, virtual=None, bring=False, title=None
+):
     backend = NullInput((1920, 1080))
     backend.virtual_installed = bool(virtual)
     backend.windows = {7: {"title": "メモ帳", "app": "notepad.exe", "rect": (0, 0, 800, 600)}}
@@ -58,7 +60,7 @@ async def check_against_server(token, try_window, try_audio=False, audio_factory
         port = server.sockets[0].getsockname()[1]
         return await run_check(
             f"ws://127.0.0.1:{port}/", token, seconds=0.5, try_window=try_window, try_audio=try_audio,
-            try_virtual=virtual is not None,
+            try_virtual=virtual is not None and not bring, try_bring=bring, title=title,
         )
 
 
@@ -121,3 +123,22 @@ def test_selfcheck_reports_server_closing_the_connection(capsys):
     assert not asyncio.run(go())
     out = capsys.readouterr().out
     assert "サーバーが接続を閉じました" in out and "映像の取得が止まりました" in out and "duo_server.log" in out
+
+
+def test_selfcheck_bring_window_to_virtual_and_back(capsys):
+    assert asyncio.run(check_against_server("secret", False, virtual=True, bring=True))
+    out = capsys.readouterr().out
+    assert "仮想ディスプレイに持ってこられました（main → virtual）" in out
+    assert "だけを映せました" in out and "元の場所（main）に戻せました" in out and "[NG]" not in out
+
+
+def test_selfcheck_picks_window_by_title(capsys):
+    assert asyncio.run(check_against_server("secret", True, title="メモ"))
+    assert "「メモ帳」だけの表示に切り替えられました" in capsys.readouterr().out
+    assert not asyncio.run(check_against_server("secret", True, title="存在しない窓"))
+    assert "試すウィンドウが見つかりません" in capsys.readouterr().out
+
+
+def test_selfcheck_bring_without_driver(capsys):
+    assert not asyncio.run(check_against_server("secret", False, virtual=False, bring=True))
+    assert "ドライバーが見つかりません" in capsys.readouterr().out
