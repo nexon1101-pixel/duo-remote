@@ -64,7 +64,7 @@ final class KeyCaptureView: UIView {
     private var zenkakuDown = Set<Int>()
 
     private var zenkakuAsIME: Bool {
-        UserDefaults.standard.object(forKey: Self.zenkakuKey) as? Bool ?? true
+        UserDefaults.standard.object(forKey: Self.zenkakuKey) as? Bool ?? false
     }
 
     /// Shiftを押しているか（Shift+` は ~ なので、IMEの切り替えにしない）

@@ -709,6 +709,7 @@ def make_handler(
 
     async def run_cleanup() -> None:
         """持ってきたウィンドウを元に戻し、仮想ディスプレイを無効に戻す。"""
+        log.info("後片付けをします（ウィンドウを戻し、仮想ディスプレイを無効にします）")
         try:
             await asyncio.to_thread(backend.restore_brought)
         except Exception:

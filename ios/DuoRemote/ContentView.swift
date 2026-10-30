@@ -19,7 +19,7 @@ struct ContentView: View {
     /// 画面の端の余白（ポイント）。Duo の角が丸く、映像の角が削れるときに、広げる
     @AppStorage("edgeMargin") private var edgeMargin = 0
     @AppStorage("showLatency") private var showLatency = true
-    @AppStorage(KeyCaptureView.zenkakuKey) private var zenkakuAsIME = true
+    @AppStorage(KeyCaptureView.zenkakuKey) private var zenkakuAsIME = false
 
     @Environment(\.scenePhase) private var scenePhase
     /// ノッチや Dynamic Island、ホームの線の分の余白。映像は端まで出すので、上に置くボタンはこの分だけ内側に寄せる
