@@ -57,6 +57,14 @@ final class RemoteSession: ObservableObject {
         state = .disconnected
     }
 
+    /// 入力などの制御メッセージを送る。呼んだ順にサーバーへ届く。
+    /// 送れなかった場合は、受信の側で切断として扱われるので、ここでは何もしない。
+    func send(_ object: [String: Any]) {
+        guard state == .connected, let task,
+              let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        task.send(.string(String(decoding: data, as: UTF8.self))) { _ in }
+    }
+
     private func fail(_ error: Error) {
         let wasConnecting = state == .connecting
         if errorMessage == nil {

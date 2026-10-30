@@ -13,7 +13,7 @@ struct ContentView: View {
             Color.black.ignoresSafeArea()
             switch session.state {
             case .connected:
-                VideoView(renderer: session.renderer)
+                VideoView(renderer: session.renderer, videoSize: session.videoSize, send: session.send)
                     .ignoresSafeArea()
                     .overlay(alignment: .topTrailing) {
                         Button("切断") { session.disconnect() }
