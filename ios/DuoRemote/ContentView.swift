@@ -148,6 +148,17 @@ struct ContentView: View {
         }
     }
 
+    /// この端末の、いまの画面の大きさ（実機が報告する値）。折りたたみの開閉や回転で変わる
+    private var screenDescription: String {
+        _ = fullSize // 大きさが変わったら、作り直す
+        let screen = UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.screen }.first
+        guard let screen else { return "画面: 不明" }
+        let pt = screen.bounds.size
+        let px = screen.nativeBounds.size
+        return "画面: \(Int(pt.width))×\(Int(pt.height))pt（\(Int(px.width))×\(Int(px.height))px、\(String(format: "%.2f", screen.nativeScale))倍）"
+    }
+
     /// 回したり、Duoを閉じたり開いたりして画面の大きさが変わったら、ウィンドウの大きさを合わせ直す。
     /// 変わっている途中で何度も送らないよう、少し待ってから送る
     private func refitWindow() {
@@ -189,6 +200,7 @@ struct ContentView: View {
             if let ms = session.latencyMs {
                 Text("遅れ: \(ms)ms")
             }
+            Text(screenDescription)
             Picker("入力", selection: $inputMode) {
                 ForEach(InputMode.allCases) { mode in
                     Label(mode.label, systemImage: mode.systemImage).tag(mode)

@@ -21,6 +21,15 @@ def test_choose_mode_nearest_aspect():
     assert vd.choose_mode(MODES, 16 / 9) == (1920, 1080, 60)  # 2560x1440 も 16:9 だが、高さが 1080 に近いほう
 
 
+def test_presets_fit_iphone_duo_screens():
+    """iPhone Duo の内側 1878x2670px、外側 1398x2034px の縦横比に、ほぼ合う解像度を選べる。"""
+    modes = [(w, vd.TARGET_HEIGHT, 60) for w in vd.PRESET_WIDTHS]
+    for width_px, height_px in ((1878, 2670), (1398, 2034)):
+        for aspect in (width_px / height_px, height_px / width_px):  # 縦持ちと横持ち
+            w, h, _ = vd.choose_mode(modes, aspect)
+            assert abs(w / h - aspect) / aspect < 0.01  # 1%以内
+
+
 def test_choose_mode_prefers_height_then_refresh_rate():
     modes = [(1920, 1080, 144), (1920, 1080, 60), (3840, 2160, 60)]
     assert vd.choose_mode(modes, 16 / 9) == (1920, 1080, 60)
