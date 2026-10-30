@@ -39,6 +39,10 @@ struct ContentView: View {
     /// Duo の開き具合と、折り目の位置
     @State private var fold = FoldState()
     @AppStorage("dockWhenHalfOpen") private var dockWhenHalfOpen = true
+    @AppStorage(DockedInput.showKeysKey) private var dockShowKeys = true
+    @AppStorage(DockedInput.showPadKey) private var dockShowPad = true
+    /// アプリのキーボードを、普通の iPhone のキーボードのように下端に固定する
+    @AppStorage("overlayKeyboardAtBottom") private var keyboardAtBottom = false
 
     var body: some View {
         ZStack {
@@ -118,10 +122,12 @@ struct ContentView: View {
                     .allowsHitTesting(false)
             }
 
-            if inputMode == .overlay && dockedFold == nil {
-                OverlayKeyboard(session: session) {
+            if inputMode == .overlay && halfOpenFold == nil && !keyboardAtBottom {
+                OverlayKeyboard(session: session, onClose: {
                     if inputMode == .overlay { inputMode = .touch }
-                }
+                }, onDock: {
+                    keyboardAtBottom = true
+                })
                 .padding(.top, safeInsets.top)
                 .padding(.leading, safeInsets.leading)
                 .padding(.trailing, safeInsets.trailing)
@@ -129,20 +135,38 @@ struct ContentView: View {
             }
 
             VStack(spacing: 0) {
-                // 半開きのときは、下の画面にキーボードがいつも出ているので、ボタンは要らない
-                if dockedFold == nil {
+                if halfOpenFold != nil {
+                    // 半開きで、キーボードもトラックパッドもしまったときは、出し直すボタンだけを置く
+                    if dockedFold == nil {
+                        DockedInputRestoreButton()
+                            .padding(.bottom, 12 + safeInsets.bottom)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                } else {
                     HStack {
                         Spacer()
                         inputButton
                     }
-                }
-                if inputMode == .software && dockedFold == nil {
-                    SoftwareInputBar(refocus: refocus) {
-                        // キーボードが閉じられたら、タッチだけに戻す
-                        if inputMode == .software { inputMode = .touch }
+                    if inputMode == .software {
+                        SoftwareInputBar(refocus: refocus) {
+                            // キーボードが閉じられたら、タッチだけに戻す
+                            if inputMode == .software { inputMode = .touch }
+                        }
+                    }
+                    if inputMode == .overlay && keyboardAtBottom {
+                        BottomKeyboard(
+                            session: session,
+                            width: fullSize.width,
+                            maxKeysHeight: fullSize.height * 0.45,
+                            bottomInset: safeInsets.bottom,
+                            onUndock: { keyboardAtBottom = false }
+                        )
+                        .transition(.move(edge: .bottom))
                     }
                 }
             }
+            .animation(.spring(duration: 0.35), value: inputMode)
+            .animation(.spring(duration: 0.35), value: keyboardAtBottom)
         }
         // 画面の端までは使う。キーボードが出たときだけ、入力の欄がその上に上がる
         .ignoresSafeArea(.container)
@@ -235,10 +259,17 @@ struct ContentView: View {
         return CGSize(width: max(fullSize.width - margin, 1), height: max(height - margin, 1))
     }
 
-    /// 半開きで、下の画面にキーボードを出しているときの、折り目の位置。出していなければ nil
-    private var dockedFold: CGRect? {
+    /// 半開きで、下の画面を入力に使うときの、折り目の位置。そうでなければ nil
+    private var halfOpenFold: CGRect? {
         guard dockWhenHalfOpen, fold.isTabletop, let rect = fold.fold, rect.minY > 0 else { return nil }
         return rect
+    }
+
+    /// 半開きで、下の画面にキーボードかトラックパッドを出しているときの、折り目の位置。
+    /// 両方しまっていれば nil（映像を画面いっぱいに出す）
+    private var dockedFold: CGRect? {
+        guard dockShowKeys || dockShowPad else { return nil }
+        return halfOpenFold
     }
 
     /// この端末の、いまの画面の大きさ（実機が報告する値）。折りたたみの開閉や回転で変わる
@@ -291,7 +322,7 @@ struct ContentView: View {
         .padding(12)
         .padding(.trailing, safeInsets.trailing)
         // iPhoneのキーボードが出ているときは、映像がキーボードの上で終わるので、ホームの線の分は要らない
-        .padding(.bottom, inputMode == .software ? 0 : safeInsets.bottom)
+        .padding(.bottom, inputMode == .software || (inputMode == .overlay && keyboardAtBottom) ? 0 : safeInsets.bottom)
     }
 
     private var menu: some View {
@@ -330,6 +361,7 @@ struct ContentView: View {
                     Text("60%").tag(0.6)
                     Text("40%").tag(0.4)
                 }
+                Toggle("アプリのキーボードを下端に固定する", isOn: $keyboardAtBottom)
                 Toggle("半開きのとき、下にキーボードを出す", isOn: $dockWhenHalfOpen)
                 Toggle("遅れを画面に出す", isOn: $showLatency)
                 Picker("画面の端の余白", selection: $edgeMargin) {

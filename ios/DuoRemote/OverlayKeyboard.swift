@@ -9,6 +9,8 @@ struct OverlayKeyboard: View {
     let session: RemoteSession
     /// 閉じるボタンを押したとき
     var onClose: () -> Void
+    /// 下端に固定するボタンを押したとき
+    var onDock: () -> Void = {}
 
     static let layoutKey = "overlayKeyboardLayout"
     static let opacityKey = "overlayKeyboardOpacity"
@@ -62,6 +64,14 @@ struct OverlayKeyboard: View {
                     .background(Color.white.opacity(0.15), in: Circle())
                     .frame(width: 40, height: Self.barHeight)
             }
+            Button(action: onDock) {
+                Image(systemName: "arrow.down.to.line.compact")
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: 22, height: 22)
+                    .background(Color.white.opacity(0.15), in: Circle())
+                    .frame(width: 32, height: Self.barHeight)
+            }
+            .accessibilityLabel("下端に固定する")
             Spacer()
             // 引いて動かせることが分かるように、シートと同じつまみを出す
             Capsule()
@@ -124,6 +134,58 @@ struct OverlayKeyboard: View {
             x: clamp(CGFloat(savedX) * area.width, width / 2, area.width),
             y: clamp(CGFloat(savedY) * area.height, height / 2, area.height)
         )
+    }
+}
+
+// MARK: - 下端に固定
+
+/// 普通の iPhone のキーボードのように、画面の下に横いっぱいで出すアプリのキーボード。
+/// 広い画面では、背が高くなりすぎないよう、高さの上限に合わせて幅を狭め、真ん中に置く
+struct BottomKeyboard: View {
+    let session: RemoteSession
+    /// 置ける幅
+    let width: CGFloat
+    /// 高さの上限（帯と、下の余白を除く）
+    let maxKeysHeight: CGFloat
+    /// ホームの線の分の余白
+    let bottomInset: CGFloat
+    /// 浮かせるボタンを押したとき
+    var onUndock: () -> Void
+
+    @AppStorage(OverlayKeyboard.layoutKey) private var layout = OverlayKeyboardLayout.us
+    @AppStorage(OverlayKeyboard.opacityKey) private var opacity = 0.8
+
+    private static let barHeight: CGFloat = 28
+
+    var body: some View {
+        let ratio = OverlayKeyboard.keyAspect * CGFloat(layout.rows.count) / OverlayKeyboardLayout.rowWidth
+        let keysWidth = max(min(width - 12, maxKeysHeight / ratio), 1)
+        let keysHeight = keysWidth * ratio
+
+        VStack(spacing: 0) {
+            HStack {
+                Text(layout.label)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.6))
+                Spacer()
+                Button(action: onUndock) {
+                    Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 22, height: 22)
+                        .background(Color.white.opacity(0.15), in: Circle())
+                }
+                .accessibilityLabel("浮かせて、動かせるようにする")
+            }
+            .padding(.horizontal, 14)
+            .frame(height: Self.barHeight)
+            OverlayKeysView(session: session, layout: layout)
+                .frame(width: keysWidth, height: keysHeight)
+        }
+        .padding(.bottom, 6 + bottomInset)
+        .frame(maxWidth: .infinity)
+        .glass(in: UnevenRoundedRectangle(topLeadingRadius: 22, topTrailingRadius: 22, style: .continuous))
+        .opacity(opacity)
     }
 }
 
