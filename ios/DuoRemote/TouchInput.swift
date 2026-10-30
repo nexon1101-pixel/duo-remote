@@ -49,7 +49,8 @@ final class TouchInput: NSObject, UIGestureRecognizerDelegate {
     private var dragging = false
     private var lastDragTranslation = CGPoint.zero
     private var lastPressLocation = CGPoint.zero
-    /// トラックパッドのときのカーソルの位置（映像の中の位置。左上0、右下1）
+    /// カーソルの位置の目安（映像の中の位置。左上0、右下1）。拡大中にカーソルを画面の中に入れるためだけに使う。
+    /// PCには、相対の動き（move_rel）を送るので、実際の位置とずれていても、カーソルは飛ばない
     private var cursor = CGPoint(x: 0.5, y: 0.5)
 
     private enum TwoFinger { case undecided, scroll, zoom }
@@ -121,7 +122,7 @@ final class TouchInput: NSObject, UIGestureRecognizerDelegate {
     @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
         guard recognizer.state == .ended else { return }
         if mode == .trackpad {
-            click("left", at: cursor)
+            click("left", at: nil) // 今のカーソルの位置で押す
             return
         }
         var location = recognizer.location(in: view)
@@ -150,7 +151,7 @@ final class TouchInput: NSObject, UIGestureRecognizerDelegate {
         lastTap = nil
         haptics.impactOccurred()
         if mode == .trackpad {
-            click(button, at: cursor)
+            click(button, at: nil)
         } else if let p = normalized(recognizer.location(in: view), clamp: false) {
             click(button, at: p)
         }
@@ -169,7 +170,7 @@ final class TouchInput: NSObject, UIGestureRecognizerDelegate {
             haptics.impactOccurred()
             lastPressLocation = location
             dragging = true
-            sendButton("left", down: true, at: cursor)
+            sendButton("left", down: true, at: nil)
         case (.trackpad, .changed):
             moveCursor(by: CGPoint(x: location.x - lastPressLocation.x, y: location.y - lastPressLocation.y))
             lastPressLocation = location
@@ -231,9 +232,13 @@ final class TouchInput: NSObject, UIGestureRecognizerDelegate {
         guard let view else { return }
         let rect = view.videoRect
         guard rect.width > 0, rect.height > 0 else { return }
-        cursor.x = min(max(cursor.x + delta.x * Self.trackpadSpeed / rect.width, 0), 1)
-        cursor.y = min(max(cursor.y + delta.y * Self.trackpadSpeed / rect.height, 0), 1)
-        send(["t": "move", "x": Double(cursor.x), "y": Double(cursor.y)])
+        // 表示している範囲の幅・高さを1とした割合で送る
+        let dx = delta.x * Self.trackpadSpeed / rect.width
+        let dy = delta.y * Self.trackpadSpeed / rect.height
+        guard dx != 0 || dy != 0 else { return }
+        send(["t": "move_rel", "dx": Double(dx), "dy": Double(dy)])
+        cursor.x = min(max(cursor.x + dx, 0), 1)
+        cursor.y = min(max(cursor.y + dy, 0), 1)
         // 拡大しているときは、カーソルが画面の外に出ないよう映像を動かす
         view.reveal(CGPoint(x: rect.minX + cursor.x * rect.width, y: rect.minY + cursor.y * rect.height))
     }
@@ -346,7 +351,7 @@ final class TouchInput: NSObject, UIGestureRecognizerDelegate {
 
     // MARK: - 送信
 
-    private func click(_ button: String, at p: CGPoint) {
+    private func click(_ button: String, at p: CGPoint?) {
         sendButton(button, down: true, at: p)
         sendButton(button, down: false, at: nil)
     }
@@ -354,6 +359,7 @@ final class TouchInput: NSObject, UIGestureRecognizerDelegate {
     private func sendButton(_ button: String, down: Bool, at p: CGPoint?) {
         var message: [String: Any] = ["t": "button", "b": button, "d": down ? "down" : "up"]
         if let p {
+            cursor = p
             message["x"] = Double(p.x)
             message["y"] = Double(p.y)
         }
@@ -362,6 +368,7 @@ final class TouchInput: NSObject, UIGestureRecognizerDelegate {
 
     private func moveMouse(to location: CGPoint) {
         guard let p = normalized(location, clamp: true) else { return }
+        cursor = p
         send(["t": "move", "x": Double(p.x), "y": Double(p.y)])
     }
 }

@@ -1,5 +1,6 @@
 import GameController
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @EnvironmentObject private var session: RemoteSession
@@ -12,6 +13,11 @@ struct ContentView: View {
     @AppStorage("pointerMode") private var pointerMode = PointerMode.direct
     @AppStorage(KeyCaptureView.commandAsControlKey) private var commandAsControl = false
     @AppStorage("fitWindow") private var fitWindow = true
+    @AppStorage("quality") private var quality = VideoQuality.high
+
+    @Environment(\.scenePhase) private var scenePhase
+    /// ノッチや Dynamic Island、ホームの線の分の余白。映像は端まで出すので、上に置くボタンはこの分だけ内側に寄せる
+    @State private var safeInsets = EdgeInsets()
 
     @State private var showingWindows = false
     /// 画面全体の大きさ（ポイント。キーボードが出ていても変わらない）。ウィンドウの大きさを合わせるときに使う
@@ -30,7 +36,25 @@ struct ContentView: View {
                 connectForm
             }
         }
-        .onAppear(perform: loadToken)
+        .onAppear {
+            loadToken()
+            updateIdleTimer()
+        }
+        // 接続中は、触らなくても画面がロックされないようにする
+        .onChange(of: session.state) { _, _ in updateIdleTimer() }
+        // 裏に回ったら接続を閉じ、戻ったらつなぎ直す
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .background: session.enterBackground()
+            case .active: session.becomeActive()
+            default: break
+            }
+        }
+        .onChange(of: quality) { _, newValue in session.setQuality(newValue) }
+    }
+
+    private func updateIdleTimer() {
+        UIApplication.shared.isIdleTimerDisabled = session.isConnectedOrReconnecting
     }
 
     private var connectedView: some View {
@@ -62,11 +86,15 @@ struct ContentView: View {
         .background {
             GeometryReader { proxy in
                 Color.clear
-                    .onAppear { fullSize = proxy.size }
+                    .onAppear {
+                        fullSize = proxy.size
+                        safeInsets = proxy.safeAreaInsets
+                    }
                     .onChange(of: proxy.size) { _, size in
                         fullSize = size
                         refitWindow()
                     }
+                    .onChange(of: proxy.safeAreaInsets) { _, insets in safeInsets = insets }
             }
             .ignoresSafeArea()
         }
@@ -78,7 +106,7 @@ struct ContentView: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
                     .background(.regularMaterial, in: Capsule())
-                    .padding(.top, 8)
+                    .padding(.top, 8 + safeInsets.top)
                     .padding(.horizontal, 60)
                     .transition(.opacity)
             }
@@ -138,12 +166,18 @@ struct ContentView: View {
             .background(.black.opacity(0.5), in: Capsule())
         }
         .padding(12)
+        .padding(.trailing, safeInsets.trailing)
+        // iPhoneのキーボードが出ているときは、映像がキーボードの上で終わるので、ホームの線の分は要らない
+        .padding(.bottom, inputMode == .software ? 0 : safeInsets.bottom)
     }
 
     private var menu: some View {
         Menu {
             if let window = session.currentWindow {
                 Text("表示中: \(window.title)")
+            }
+            if let ms = session.latencyMs {
+                Text("遅れ: \(ms)ms")
             }
             Picker("入力", selection: $inputMode) {
                 ForEach(InputMode.allCases) { mode in
@@ -159,6 +193,11 @@ struct ContentView: View {
                 }
                 .pickerStyle(.inline)
                 Toggle("command を Ctrl にする", isOn: $commandAsControl)
+                Picker("画質", selection: $quality) {
+                    ForEach(VideoQuality.allCases) { q in
+                        Text(q.label).tag(q)
+                    }
+                }
             }
             Button("ウィンドウを選ぶ", systemImage: "macwindow") {
                 session.requestWindows()
@@ -175,6 +214,8 @@ struct ContentView: View {
                 .foregroundStyle(.white, .black.opacity(0.5))
                 .padding(12)
         }
+        .padding(.top, safeInsets.top)
+        .padding(.trailing, safeInsets.trailing)
     }
 
     private var connectForm: some View {
@@ -191,11 +232,23 @@ struct ContentView: View {
                     .autocorrectionDisabled()
             }
             Section {
+                Picker("画質", selection: $quality) {
+                    ForEach(VideoQuality.allCases) { q in
+                        Text(q.label).tag(q)
+                    }
+                }
+            } footer: {
+                Text("外（4G/5G）からつなぐときは、低くすると遅れがたまりにくくなります")
+            }
+            Section {
                 Button(session.state == .connecting ? "接続しています…" : "接続") {
                     Keychain.save("token", token)
-                    session.connect(host: host, port: Int(port) ?? 8765, token: token)
+                    session.connect(host: host, port: Int(port) ?? 8765, token: token, quality: quality)
                 }
                 .disabled(host.isEmpty || token.isEmpty || session.state == .connecting)
+                if session.state == .connecting {
+                    Button("やめる", role: .cancel) { session.disconnect() }
+                }
                 if let message = session.errorMessage {
                     Text(message).foregroundStyle(.red)
                 }

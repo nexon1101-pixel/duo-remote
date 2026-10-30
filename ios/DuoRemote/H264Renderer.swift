@@ -4,9 +4,11 @@ import UIKit
 
 /// H.264（Annex B形式）の1フレームを受け取り、AVSampleBufferDisplayLayerに表示する。
 /// デコードは、レイヤー側（VideoToolbox）が行う。
-final class H264Renderer {
+/// enqueue は受信のスレッドから、reset はメインスレッドから呼ばれるので、状態はロックで守る。
+final class H264Renderer: @unchecked Sendable {
     let layer = AVSampleBufferDisplayLayer()
 
+    private let lock = NSLock()
     private var formatDescription: CMVideoFormatDescription?
     private var sps: Data?
     private var pps: Data?
@@ -17,35 +19,45 @@ final class H264Renderer {
     }
 
     func reset() {
-        sps = nil
-        pps = nil
-        formatDescription = nil
+        forgetParameterSets()
         DispatchQueue.main.async { [layer = self.layer] in
             layer.flushAndRemoveImage()
         }
     }
 
+    /// SPS と PPS を忘れる。次のキーフレーム（SPS と PPS が付いている）が来るまで、表示しない
+    private func forgetParameterSets() {
+        lock.lock()
+        sps = nil
+        pps = nil
+        formatDescription = nil
+        lock.unlock()
+    }
+
     func enqueue(accessUnit: Data, timestampMs: UInt32) {
         var slices: [Data] = []
+        var newSPS: Data?
+        var newPPS: Data?
         for nal in Self.splitNALs(accessUnit) {
             guard let header = nal.first else { continue }
             switch header & 0x1F {
-            case 7: // SPS
-                if sps != nal { sps = nal; formatDescription = nil }
-            case 8: // PPS
-                if pps != nal { pps = nal; formatDescription = nil }
-            case 1, 5: // 映像本体（通常、キーフレーム）
-                slices.append(nal)
-            default:
-                break // AUD、SEIなどは使わない
+            case 7: newSPS = nal // SPS
+            case 8: newPPS = nal // PPS
+            case 1, 5: slices.append(nal) // 映像本体（通常、キーフレーム）
+            default: break // AUD、SEIなどは使わない
             }
         }
         guard !slices.isEmpty else { return }
 
+        lock.lock()
+        if let newSPS, newSPS != sps { sps = newSPS; formatDescription = nil }
+        if let newPPS, newPPS != pps { pps = newPPS; formatDescription = nil }
         if formatDescription == nil, let sps, let pps {
             formatDescription = Self.makeFormatDescription(sps: sps, pps: pps)
         }
-        guard let formatDescription else { return } // 最初のキーフレームが来るまで待つ
+        let format = formatDescription
+        lock.unlock()
+        guard let format else { return } // 最初のキーフレームが来るまで待つ
 
         // Annex B → AVCC（4バイトの長さ + NAL）
         var avcc = Data()
@@ -54,13 +66,17 @@ final class H264Renderer {
             avcc.append(Data(bytes: &length, count: 4))
             avcc.append(nal)
         }
-        guard let sample = Self.makeSampleBuffer(avcc, format: formatDescription, timestampMs: timestampMs) else {
+        guard let sample = Self.makeSampleBuffer(avcc, format: format, timestampMs: timestampMs) else {
             return
         }
 
-        DispatchQueue.main.async { [layer = self.layer] in
-            if layer.status == .failed {
+        DispatchQueue.main.async { [weak self, layer = self.layer] in
+            // アプリが裏に回ると、iOS はデコーダーを止める。戻ったときは flush しないと何も映らない。
+            // flush したあとは、キーフレームから入れ直す必要があるので、このフレームは捨てて次のキーフレームを待つ
+            if layer.requiresFlushToResumeDecoding || layer.status == .failed {
                 layer.flush()
+                self?.forgetParameterSets()
+                return
             }
             layer.enqueue(sample)
         }
@@ -69,29 +85,35 @@ final class H264Renderer {
     // MARK: - 変換
 
     /// 開始コード（00 00 01 / 00 00 00 01）でNALに切り分ける。
+    /// 配列にコピーせず、Data の中身を直接見る。
     static func splitNALs(_ data: Data) -> [Data] {
-        let bytes = [UInt8](data)
-        let n = bytes.count
-        var nals: [Data] = []
-        var start = -1
-        var i = 0
-        while i + 2 < n {
-            if bytes[i] == 0, bytes[i + 1] == 0, bytes[i + 2] == 1 {
-                if start >= 0 {
-                    var end = i
-                    if end > start, bytes[end - 1] == 0 { end -= 1 } // 4バイトの開始コードの先頭の0
-                    nals.append(Data(bytes[start..<end]))
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> [Data] in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            let n = bytes.count
+            var ranges: [Range<Int>] = []
+            var start = -1
+            var i = 0
+            while i + 2 < n {
+                if bytes[i] == 0, bytes[i + 1] == 0, bytes[i + 2] == 1 {
+                    if start >= 0 {
+                        var end = i
+                        if end > start, bytes[end - 1] == 0 { end -= 1 } // 4バイトの開始コードの先頭の0
+                        ranges.append(start..<end)
+                    }
+                    start = i + 3
+                    i += 3
+                } else if bytes[i + 2] > 1 {
+                    i += 3 // 3バイト目が0でも1でもなければ、ここから始まる開始コードはない
+                } else {
+                    i += 1
                 }
-                start = i + 3
-                i += 3
-            } else {
-                i += 1
             }
+            if start >= 0, start < n {
+                ranges.append(start..<n)
+            }
+            let base = data.startIndex
+            return ranges.map { data.subdata(in: (base + $0.lowerBound)..<(base + $0.upperBound)) }
         }
-        if start >= 0, start < n {
-            nals.append(Data(bytes[start..<n]))
-        }
-        return nals
     }
 
     private static func makeFormatDescription(sps: Data, pps: Data) -> CMVideoFormatDescription? {
