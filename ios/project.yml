@@ -18,7 +18,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.duoremote.app
-        # iPhone Duo の内側画面で、iPhone用の枠（互換表示）にならないよう、iPadも入れる（DuoFlickと同じ）
+        # iPhone Duo の内側画面で、iPhone用の枠（互換表示）にならないよう、iPadも入れる
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
     info:

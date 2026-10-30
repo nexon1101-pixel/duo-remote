@@ -5,7 +5,7 @@ import UIKit
 enum InputMode: String, CaseIterable, Identifiable {
     /// タッチでのマウス操作だけ
     case touch
-    /// iPhoneのキーボード（DuoFlickなど）。iPhone側で変換まで済ませ、確定した文字を送る
+    /// iPhoneのキーボード。iPhone側で変換まで済ませ、確定した文字を送る
     case software
     /// Bluetoothキーボード。キーをそのまま送り、日本語の変換はPCのIMEで行う
     case hardware
