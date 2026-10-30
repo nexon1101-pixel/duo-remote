@@ -56,10 +56,10 @@ async def run(args: argparse.Namespace) -> None:
 
     backend = create_input()
 
-    def stream_factory(s: Settings, src: tuple[int, int]) -> FfmpegStream:
+    def stream_factory(s: Settings, src: tuple[int, int], region: tuple[int, int, int, int] | None) -> FfmpegStream:
         cmd = build_ffmpeg_cmd(
             ffmpeg=args.ffmpeg, fps=s.fps, bitrate_kbps=s.bitrate_kbps, encoder=encoder,
-            max_height=s.max_height, src_height=src[1],
+            max_height=s.max_height, src_height=src[1], region=region,
         )
         return FfmpegStream(cmd)
 

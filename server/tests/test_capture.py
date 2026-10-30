@@ -55,6 +55,14 @@ def test_ffmpeg_cmd_nvenc_no_scale_stays_on_gpu():
     assert "h264_nvenc" in cmd and "-aud" in cmd
 
 
+def test_ffmpeg_cmd_region():
+    cmd = build_ffmpeg_cmd(encoder="h264_nvenc", region=(100, 50, 800, 600), src_height=600)
+    graph = cmd[cmd.index("-i") + 1]
+    assert ":offset_x=100:offset_y=50:video_size=800x600" in graph
+    full = build_ffmpeg_cmd(encoder="h264_nvenc")
+    assert "offset_x" not in full[full.index("-i") + 1]
+
+
 def test_ffmpeg_cmd_scale_and_x264():
     cmd = build_ffmpeg_cmd(encoder="libx264", max_height=720, src_height=1440)
     graph = cmd[cmd.index("-i") + 1]

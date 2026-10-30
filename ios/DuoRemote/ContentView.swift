@@ -8,21 +8,67 @@ struct ContentView: View {
     @AppStorage("port") private var port = "8765"
     @AppStorage("token") private var token = ""
 
+    @State private var showingWindows = false
+    /// 映像を出している範囲の大きさ（ポイント）。ウィンドウの大きさを合わせるときに使う
+    @State private var screenSize: CGSize = .zero
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             switch session.state {
             case .connected:
-                VideoView(renderer: session.renderer, videoSize: session.videoSize, send: session.send)
-                    .ignoresSafeArea()
-                    .overlay(alignment: .topTrailing) {
-                        Button("切断") { session.disconnect() }
-                            .buttonStyle(.borderedProminent)
-                            .padding()
-                    }
+                connectedView
             default:
                 connectForm
             }
+        }
+    }
+
+    private var connectedView: some View {
+        GeometryReader { proxy in
+            VideoView(renderer: session.renderer, videoSize: session.videoSize, send: session.send)
+                .onAppear { screenSize = proxy.size }
+                .onChange(of: proxy.size) { _, size in screenSize = size }
+        }
+        .ignoresSafeArea()
+        .overlay(alignment: .topTrailing) { menu }
+        .overlay(alignment: .top) {
+            if let notice = session.notice {
+                Text(notice)
+                    .font(.callout)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.top, 8)
+                    .padding(.horizontal, 60)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.default, value: session.notice)
+        .sheet(isPresented: $showingWindows) {
+            WindowPicker(fitSize: screenSize)
+        }
+    }
+
+    private var menu: some View {
+        Menu {
+            if let window = session.currentWindow {
+                Text("表示中: \(window.title)")
+            }
+            Button("ウィンドウを選ぶ", systemImage: "macwindow") {
+                session.requestWindows()
+                showingWindows = true
+            }
+            if session.currentWindow != nil {
+                Button("画面全体を表示", systemImage: "display") { session.showScreen() }
+            }
+            Button("切断", systemImage: "xmark.circle", role: .destructive) { session.disconnect() }
+        } label: {
+            Image(systemName: "ellipsis.circle.fill")
+                .font(.title)
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(.white, .black.opacity(0.5))
+                .padding(12)
         }
     }
 

@@ -1,5 +1,12 @@
 import Foundation
 
+/// PCのウィンドウ（一覧の1行）。
+struct RemoteWindow: Identifiable, Equatable {
+    let id: Int
+    let title: String
+    let app: String
+}
+
 /// サーバーとのWebSocket接続。通信の取り決めは docs/protocol.md を参照。
 @MainActor
 final class RemoteSession: ObservableObject {
@@ -12,6 +19,15 @@ final class RemoteSession: ObservableObject {
     @Published private(set) var state: State = .disconnected
     @Published private(set) var errorMessage: String?
     @Published private(set) var videoSize: CGSize = .zero
+
+    /// 接続中に出すお知らせ（サーバーからのエラーなど）。数秒で消す
+    @Published private(set) var notice: String?
+    /// PCのウィンドウの一覧。requestWindows() で読み直す
+    @Published private(set) var windows: [RemoteWindow] = []
+    @Published private(set) var isLoadingWindows = false
+    /// 表示しているウィンドウ。nilなら画面全体
+    @Published private(set) var currentWindow: RemoteWindow?
+    private var noticeTask: Task<Void, Never>?
 
     let renderer = H264Renderer()
 
@@ -54,7 +70,47 @@ final class RemoteSession: ObservableObject {
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         renderer.reset()
+        resetView()
         state = .disconnected
+    }
+
+    private func resetView() {
+        windows = []
+        isLoadingWindows = false
+        currentWindow = nil
+        noticeTask?.cancel()
+        notice = nil
+    }
+
+    // MARK: - 表示する範囲
+
+    func requestWindows() {
+        isLoadingWindows = true
+        send(["t": "list_windows"])
+    }
+
+    /// ウィンドウ1つだけを表示する。fitがあれば、ウィンドウの大きさをその縦横比に変える（iPhoneの画面のポイント数）
+    func showWindow(_ window: RemoteWindow, fit: CGSize?) {
+        var message: [String: Any] = ["t": "mode", "mode": "window", "id": window.id]
+        if let fit, fit.width > 0, fit.height > 0 {
+            message["fit_w"] = Double(fit.width)
+            message["fit_h"] = Double(fit.height)
+        }
+        send(message)
+    }
+
+    func showScreen() {
+        send(["t": "mode", "mode": "screen"])
+    }
+
+    private func show(notice text: String) {
+        notice = text
+        noticeTask?.cancel()
+        noticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            self?.notice = nil
+        }
     }
 
     /// 入力などの制御メッセージを送る。呼んだ順にサーバーへ届く。
@@ -76,6 +132,7 @@ final class RemoteSession: ObservableObject {
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         renderer.reset()
+        resetView()
         state = .disconnected
     }
 
@@ -108,8 +165,27 @@ final class RemoteSession: ObservableObject {
             if let w = json["w"] as? Int, let h = json["h"] as? Int {
                 videoSize = CGSize(width: w, height: h)
             }
+        case "windows":
+            let list = json["list"] as? [[String: Any]] ?? []
+            windows = list.compactMap { item in
+                guard let id = item["id"] as? Int else { return nil }
+                return RemoteWindow(id: id, title: item["title"] as? String ?? "", app: item["app"] as? String ?? "")
+            }
+            isLoadingWindows = false
+        case "mode":
+            if json["mode"] as? String == "window", let id = json["id"] as? Int {
+                let title = json["title"] as? String ?? ""
+                currentWindow = windows.first { $0.id == id } ?? RemoteWindow(id: id, title: title, app: "")
+            } else {
+                currentWindow = nil
+            }
         case "error":
-            errorMessage = (json["message"] as? String) ?? "サーバーからエラーが返りました"
+            let message = (json["message"] as? String) ?? "サーバーからエラーが返りました"
+            if state == .connected {
+                show(notice: message)
+            } else {
+                errorMessage = message
+            }
         default:
             break
         }

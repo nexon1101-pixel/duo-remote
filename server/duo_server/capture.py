@@ -78,10 +78,15 @@ def build_ffmpeg_cmd(
     output_idx: int = 0,
     max_height: int = 0,
     src_height: int = 0,
+    region: tuple[int, int, int, int] | None = None,
 ) -> list[str]:
-    """画面全体を撮ってH.264にするffmpegのコマンドを作る。"""
+    """画面を撮ってH.264にするffmpegのコマンドを作る。
+    regionは撮る範囲（モニターの左上からの x, y, 幅, 高さ。画素）。Noneなら画面全体。"""
     gop = max(fps * 2, 1)
     grab = f"ddagrab=output_idx={output_idx}:framerate={fps}:draw_mouse=1"
+    if region is not None:
+        x, y, w, h = region
+        grab += f":offset_x={x}:offset_y={y}:video_size={w}x{h}"
     scale = bool(max_height and src_height and src_height > max_height)
 
     if encoder == "h264_nvenc":

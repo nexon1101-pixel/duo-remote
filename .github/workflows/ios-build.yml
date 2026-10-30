@@ -10,14 +10,21 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    # iPhone Duo の内側画面いっぱいに出すには、iOS 27.1 以降の SDK でビルドする必要がある。
+    # それより前の SDK では、内側画面で iPhone 用の枠（左右が黒）になる。Xcode 27 は xcode-27 のランナーにある
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v4
 
-      - name: Xcodeを選ぶ
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest
+      - name: Xcodeを選ぶ（入っている中でいちばん新しいもの）
+        run: |
+          ls -d /Applications/Xcode*.app
+          best=$(ls -d /Applications/Xcode_[0-9]*.app | sort -V | tail -1)
+          test -n "$best" || { echo "::error::Xcode が見つかりません"; exit 1; }
+          echo "using $best"
+          sudo xcode-select -s "$best/Contents/Developer"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i ios
 
       - name: XcodeGenを入れる
         run: brew install xcodegen
@@ -29,16 +36,34 @@ jobs:
       - name: ビルドする
         working-directory: ios
         run: |
+          set -o pipefail
           xcodebuild \
             -project DuoRemote.xcodeproj \
             -scheme DuoRemote \
             -configuration Release \
             -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build
+            build 2>&1 | tee build.log || {
+              # 失敗したとき、エラーの行を注釈に出す
+              grep -E "error:" build.log | sort -u | head -15 | while IFS= read -r l; do echo "::error::${l:0:400}"; done
+              exit 1
+            }
+
+      - name: 使ったSDKを確かめる
+        working-directory: ios
+        run: |
+          PLIST=build/Build/Products/Release-iphoneos/DuoRemote.app/Info.plist
+          sdk=$(plutil -extract DTSDKName raw "$PLIST")
+          echo "DTSDKName: $sdk / DTXcode: $(plutil -extract DTXcode raw "$PLIST")"
+          # iphoneos27.1 より前なら、Duo の内側画面いっぱいには出ない
+          ver=${sdk#iphoneos}
+          if [ "$(printf '%s\n' 27.1 "$ver" | sort -V | head -1)" != "27.1" ]; then
+            echo "::warning::SDK が $sdk です。Duo の内側画面いっぱいに出すには iphoneos27.1 以降が要ります"
+          fi
 
       - name: ipaにまとめる
         working-directory: ios

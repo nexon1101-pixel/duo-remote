@@ -35,8 +35,9 @@ async def run_with_server(body, backend=None, streams=None):
     backend = backend or NullInput((1920, 1080))
     streams = streams if streams is not None else []
 
-    def factory(settings, src):
+    def factory(settings, src, region):
         s = FakeStream()
+        s.src, s.region = src, region
         streams.append(s)
         return s
 
@@ -144,16 +145,150 @@ def test_invalid_input_is_ignored():
     asyncio.run(run_with_server(body))
 
 
-def test_window_mode_is_not_supported_yet():
+async def recv_until(ws, t):
+    """種類が t のメッセージが来るまで読み、それを返す。"""
+    while True:
+        msg = await recv_json(ws)
+        if msg["t"] == t:
+            return msg
+
+
+def make_backend():
+    backend = NullInput((1920, 1080))
+    backend.windows = {
+        101: {"title": "メモ帳", "app": "notepad.exe", "rect": (100, 50, 801, 601)},
+        202: {"title": "外のモニター", "app": "a.exe", "rect": (2000, 0, 800, 600)},
+    }
+    return backend
+
+
+def test_list_windows():
     async def body(url, backend):
         async with connect(url) as ws:
             await ws.send(hello())
-            assert (await recv_json(ws))["t"] == "welcome"
-            await ws.send(json.dumps({"t": "mode", "mode": "window", "window": "メモ帳"}))
-            while (await recv_json(ws))["t"] != "error":
-                pass
+            await recv_until(ws, "welcome")
+            await ws.send(json.dumps({"t": "list_windows"}))
+            msg = await recv_until(ws, "windows")
+            assert msg["list"][0] == {"id": 101, "title": "メモ帳", "app": "notepad.exe"}
+            assert len(msg["list"]) == 2
+
+    asyncio.run(run_with_server(body, backend=make_backend()))
+
+
+def test_window_mode_crops_and_maps_input():
+    streams = []
+
+    async def body(url, backend):
+        async with connect(url) as ws:
+            await ws.send(hello())
+            await recv_until(ws, "welcome")
+            await ws.send(json.dumps({"t": "mode", "mode": "window", "id": 101, "fit_w": 669, "fit_h": 951}))
+            mode = await recv_until(ws, "mode")
+            assert mode == {"t": "mode", "mode": "window", "id": 101, "title": "メモ帳"}
+            assert await recv_until(ws, "resize") == {"t": "resize", "w": 800, "h": 600}
+            # 撮り直した映像が、resizeの後に届く
+            key, _, payload = protocol.unpack_frame(await ws.recv())
+            assert key and payload.endswith(b"KEY")
+
+            await ws.send(json.dumps({"t": "mode", "mode": "screen"}))
+            assert (await recv_until(ws, "mode"))["mode"] == "screen"
+            assert await recv_until(ws, "resize") == {"t": "resize", "w": 1920, "h": 1080}
+        await asyncio.sleep(0.2)
+
+        assert ("fit", 101, 669, 951) in backend.calls and ("focus", 101) in backend.calls
+        assert [s.region for s in streams] == [None, (100, 50, 800, 600), None]
+        assert all(s.stopped for s in streams)
+
+    asyncio.run(run_with_server(body, backend=make_backend(), streams=streams))
+
+
+def test_window_region_is_used_for_input():
+    async def body(url, backend):
+        async with connect(url) as ws:
+            await ws.send(hello())
+            await recv_until(ws, "welcome")
+            await ws.send(json.dumps({"t": "mode", "mode": "window", "id": 101}))
+            await recv_until(ws, "resize")
+            assert backend.region == (100, 50, 800, 600)
+        await asyncio.sleep(0.1)
+        assert backend.region is None  # 切断したら画面全体に戻す
+
+    asyncio.run(run_with_server(body, backend=make_backend()))
+
+
+def test_window_errors():
+    async def body(url, backend):
+        async with connect(url) as ws:
+            await ws.send(hello())
+            await recv_until(ws, "welcome")
+            for msg in (
+                {"t": "mode", "mode": "window", "id": 999},  # ない
+                {"t": "mode", "mode": "window", "id": "101"},  # 形が違う
+                {"t": "mode", "mode": "window", "id": 202},  # 主モニターの外
+                {"t": "mode", "mode": "other"},
+            ):
+                await ws.send(json.dumps(msg))
+                assert (await recv_until(ws, "error"))["message"]
+
+    asyncio.run(run_with_server(body, backend=make_backend()))
+
+
+def test_window_moved_and_closed(monkeypatch):
+    from duo_server import server as server_mod
+
+    monkeypatch.setattr(server_mod, "WINDOW_POLL_SEC", 0.05)
+    streams = []
+
+    async def body(url, backend):
+        async with connect(url) as ws:
+            await ws.send(hello())
+            await recv_until(ws, "welcome")
+            await ws.send(json.dumps({"t": "mode", "mode": "window", "id": 101}))
+            await recv_until(ws, "resize")
+
+            backend.windows[101]["rect"] = (0, 0, 1000, 700)
+            assert await recv_until(ws, "resize") == {"t": "resize", "w": 1000, "h": 700}
+
+            backend.windows[101]["minimized"] = True  # 最小化の間は撮り直さない
+            await asyncio.sleep(0.3)
+            backend.windows[101]["minimized"] = False
+
+            del backend.windows[101]
+            assert "閉じられた" in (await recv_until(ws, "error"))["message"]
+            assert (await recv_until(ws, "mode"))["mode"] == "screen"
+            assert await recv_until(ws, "resize") == {"t": "resize", "w": 1920, "h": 1080}
+
+        assert [s.region for s in streams] == [None, (100, 50, 800, 600), (0, 0, 1000, 700), None]
+
+    asyncio.run(run_with_server(body, backend=make_backend(), streams=streams))
+
+
+def test_held_buttons_and_keys_are_released_on_disconnect():
+    async def body(url, backend):
+        async with connect(url) as ws:
+            await ws.send(hello())
+            await recv_until(ws, "welcome")
+            send = lambda **m: ws.send(json.dumps(m))
+            await send(t="button", b="left", d="down", x=0.5, y=0.5)
+            await send(t="key", vk=0x10, d="down")
+            await send(t="key", vk=0x41, d="down")
+            await send(t="key", vk=0x41, d="up")
+            await send(t="ping", n=1)
+            await recv_until(ws, "pong")
+        await asyncio.sleep(0.2)
+        released = backend.calls[4:]
+        assert sorted(released, key=repr) == [("button", "left", False, None, None), ("key", 0x10, False)]
 
     asyncio.run(run_with_server(body))
+
+
+def test_clamp_region():
+    from duo_server.server import clamp_region
+
+    assert clamp_region((100, 50, 801, 601), (1920, 1080)) == (100, 50, 800, 600)
+    assert clamp_region((-8, -8, 1936, 1096), (1920, 1080)) == (0, 0, 1920, 1080)  # 最大化
+    assert clamp_region((2000, 0, 800, 600), (1920, 1080)) is None
+    assert clamp_region((1900, 0, 800, 600), (1920, 1080)) is None  # はみ出して、小さすぎる
 
 
 def test_new_client_replaces_old_and_stream_is_stopped():
