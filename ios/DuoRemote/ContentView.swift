@@ -16,6 +16,10 @@ struct ContentView: View {
     @AppStorage("quality") private var quality = VideoQuality.high
     @AppStorage("audioOn") private var audioOn = false
     @AppStorage("audioMix") private var audioMix = false
+    /// 画面の端の余白（ポイント）。Duo の角が丸く、映像の角が削れるときに、広げる
+    @AppStorage("edgeMargin") private var edgeMargin = 0
+    @AppStorage("showLatency") private var showLatency = true
+    @AppStorage(KeyCaptureView.zenkakuKey) private var zenkakuAsIME = true
 
     @Environment(\.scenePhase) private var scenePhase
     /// ノッチや Dynamic Island、ホームの線の分の余白。映像は端まで出すので、上に置くボタンはこの分だけ内側に寄せる
@@ -56,6 +60,7 @@ struct ContentView: View {
             session.setQuality(newValue)
             // 画質で、音の形も変わる（低画質は、24000Hz のモノラル）。つなぎ直しのあと、あらためて頼まれる
         }
+        .onChange(of: edgeMargin) { _, _ in refitWindow() }
         .onChange(of: audioOn) { _, _ in session.setAudio(audioOn, mixWithOthers: audioMix) }
         .onChange(of: audioMix) { _, _ in session.setAudio(audioOn, mixWithOthers: audioMix) }
         // 音を始められなかったら、スイッチをオフに戻す
@@ -76,7 +81,18 @@ struct ContentView: View {
                 pointerMode: pointerMode,
                 send: session.send
             )
+            .padding(CGFloat(edgeMargin))
             .ignoresSafeArea() // キーボードの分も含めて、動かさない
+
+            // 遅れは、メニューの中に置くと、数字が変わるたびに、メニューのスクロールが戻る。画面に出し続ける
+            if showLatency {
+                LatencyBadge()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(8)
+                    .padding(.top, safeInsets.top)
+                    .padding(.leading, safeInsets.leading)
+                    .allowsHitTesting(false)
+            }
 
             VStack(spacing: 0) {
                 HStack {
@@ -143,7 +159,7 @@ struct ContentView: View {
         }
         .animation(.default, value: session.notice)
         .sheet(isPresented: $showingWindows, onDismiss: { refocus += 1 }) {
-            WindowPicker(fitSize: fullSize)
+            WindowPicker(fitSize: fitSize)
         }
         .onAppear {
             inputMode = GCKeyboard.coalesced != nil ? .hardware : .touch
@@ -154,6 +170,12 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .GCKeyboardDidDisconnect)) { _ in
             if inputMode == .hardware { inputMode = .touch }
         }
+    }
+
+    /// 映像を出している範囲の大きさ（余白を除く）。ウィンドウや仮想画面の大きさを、これに合わせる
+    private var fitSize: CGSize {
+        let margin = CGFloat(edgeMargin) * 2
+        return CGSize(width: max(fullSize.width - margin, 1), height: max(fullSize.height - margin, 1))
     }
 
     /// この端末の、いまの画面の大きさ（実機が報告する値）。折りたたみの開閉や回転で変わる
@@ -174,7 +196,7 @@ struct ContentView: View {
         refitTask = Task {
             try? await Task.sleep(for: .milliseconds(600))
             guard !Task.isCancelled else { return }
-            session.refreshDisplay(fit: fullSize)
+            session.refreshDisplay(fit: fitSize)
         }
     }
 
@@ -207,9 +229,6 @@ struct ContentView: View {
             } else if session.viewMode == .desktop {
                 Text("表示中: 仮想画面")
             }
-            if let ms = session.latencyMs {
-                Text("遅れ: \(ms)ms")
-            }
             Text(screenDescription)
             Toggle("PCの音を鳴らす", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
             Toggle("他のアプリの音と混ぜる", systemImage: "speaker.badge.exclamationmark", isOn: $audioMix)
@@ -227,6 +246,14 @@ struct ContentView: View {
                 }
                 .pickerStyle(.inline)
                 Toggle("command を Ctrl にする", isOn: $commandAsControl)
+                Toggle("半角/全角キーで IME を切り替える", isOn: $zenkakuAsIME)
+                Toggle("遅れを画面に出す", isOn: $showLatency)
+                Picker("画面の端の余白", selection: $edgeMargin) {
+                    Text("なし").tag(0)
+                    Text("小（10）").tag(10)
+                    Text("中（20）").tag(20)
+                    Text("大（30）").tag(30)
+                }
                 Picker("画質", selection: $quality) {
                     ForEach(VideoQuality.allCases) { q in
                         Text(q.label).tag(q)
@@ -239,7 +266,7 @@ struct ContentView: View {
             }
             if session.virtualAvailable {
                 Button("仮想画面を表示", systemImage: "rectangle.on.rectangle") {
-                    session.showDesktop(fit: fullSize)
+                    session.showDesktop(fit: fitSize)
                 }
                 Button("持ってきたウィンドウを元に戻す", systemImage: "arrow.uturn.backward") {
                     session.restoreWindows()
@@ -336,6 +363,23 @@ struct ContentView: View {
             token = old
             Keychain.save("token", old)
             UserDefaults.standard.removeObject(forKey: "token")
+        }
+    }
+}
+
+
+/// 画面の隅に出し続ける、PCとの往復の時間。この部品だけが、数字の変化を見る
+struct LatencyBadge: View {
+    @EnvironmentObject private var session: RemoteSession
+
+    var body: some View {
+        if let ms = session.latencyMs {
+            Text("\(ms)ms")
+                .font(.caption2.monospacedDigit())
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .foregroundStyle(.white.opacity(0.85))
+                .background(.black.opacity(0.35), in: Capsule())
         }
     }
 }
