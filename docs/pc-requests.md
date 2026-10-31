@@ -416,7 +416,7 @@ git で取ったこのリポジトリは、今が最新なので、更新は試�
    git pull
    ```
 
-   `server\duo_server\__init__.py` が `__version__ = "0.14.0"` であること
+   `server\duo_server\__init__.py` が `__version__ = "0.14.0"` 以降（0.14.1 など）であること
 3. ffmpeg の版と、gfxcapture があるかを調べる。出力を控える
 
    ```bat
