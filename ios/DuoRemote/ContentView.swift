@@ -41,6 +41,7 @@ struct ContentView: View {
 
     @State private var showingWindows = false
     @State private var showingMonitors = false
+    @State private var showingSettings = false
     /// 写真・ファイルの選択画面を出すか、と、PC のクリップボードにも入れるか
     @State private var showingPhotoPicker = false
     @State private var showingFileImporter = false
@@ -196,12 +197,16 @@ struct ContentView: View {
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 } else {
-                    HStack(spacing: 0) {
+                    HStack(spacing: UIMetrics.spacing) {
                         Spacer()
                         windowsButton(compact: false)
                         trackpadButton
                         inputButton
                     }
+                    .padding(UIMetrics.edgePadding)
+                    .padding(.trailing, safeInsets.trailing)
+                    // iPhoneのキーボードが出ているときは、映像がキーボードの上で終わるので、ホームの線の分は要らない
+                    .padding(.bottom, inputMode == .software || bottomKeys || bottomPad ? 0 : safeInsets.bottom)
                     if inputMode == .software {
                         SoftwareInputBar(refocus: refocus) {
                             // キーボードが閉じられたら、タッチだけに戻す
@@ -216,7 +221,8 @@ struct ContentView: View {
                             padHeight: min(max(fullSize.height * 0.18, 110), 170),
                             maxKeysHeight: fullSize.height * (bottomPad ? 0.35 : 0.45),
                             bottomInset: safeInsets.bottom,
-                            onUndock: { keyboardAtBottom = false }
+                            onUndock: { keyboardAtBottom = false },
+                            onUndockPad: { padAtBottom = false }
                         )
                         .transition(.move(edge: .bottom))
                     }
@@ -300,6 +306,9 @@ struct ContentView: View {
         .sheet(isPresented: $showingMonitors, onDismiss: { refocus += 1 }) {
             MonitorPicker()
         }
+        .sheet(isPresented: $showingSettings, onDismiss: { refocus += 1 }) {
+            SettingsView(qualityChoice: qualityChoice, autoChoice: Self.autoChoice, info: settingsInfo)
+        }
         .fileSendPickers(
             photosShown: $showingPhotoPicker,
             filesShown: $showingFileImporter,
@@ -363,26 +372,35 @@ struct ContentView: View {
         }
     }
 
-    /// ウィンドウの一覧を開くボタン。切り替えは何度もするので、メニューの奥ではなく、すぐ押せる所に置く
+    /// ウィンドウの切り替えのボタン。一覧を開くボタンと、1つ前のウィンドウに戻るボタン（戻れるときだけ出る）。
+    /// 切り替えは何度もするので、メニューの奥ではなく、すぐ押せる所に置く。
     /// compact: 半開きの下の画面の帯に置く、背の低い形
     @ViewBuilder
     private func windowsButton(compact: Bool) -> some View {
         let tint: Color = session.viewMode == .window || session.viewMode == .desktop ? .accentColor : .white
-        Button {
-            session.requestWindows()
-            showingWindows = true
-        } label: {
-            Image(systemName: "macwindow.on.rectangle")
-                .font(.body.weight(.semibold))
-                .padding(.horizontal, 14)
-                .padding(.vertical, compact ? 0 : 10)
-                .frame(height: compact ? 34 : nil)
-                .foregroundStyle(tint)
-                .glass(in: Capsule(), interactive: true)
+        HStack(spacing: UIMetrics.spacing) {
+            if let previous = session.previousWindow, previous.id != session.currentWindow?.id {
+                Button {
+                    WindowPicker.open(previous, session: session, fitSize: fitSize)
+                } label: {
+                    Image(systemName: "arrow.triangle.swap")
+                        .modifier(BarButtonLabel(tint: .white, compact: compact))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("前のウィンドウに切り替え: \(previous.title)")
+                .transition(.scale.combined(with: .opacity))
+            }
+            Button {
+                session.requestWindows()
+                showingWindows = true
+            } label: {
+                Image(systemName: "macwindow.on.rectangle")
+                    .modifier(BarButtonLabel(tint: tint, compact: compact))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("ウィンドウを選択")
         }
-        .buttonStyle(.plain)
-        .padding(.vertical, compact ? 0 : 12)
-        .accessibilityLabel("ウィンドウを選択")
+        .animation(.spring(duration: 0.3), value: session.previousWindow?.id)
     }
 
     /// トラックパッドを出す・しまうボタン（重ねて出す形）
@@ -391,13 +409,9 @@ struct ContentView: View {
             showTrackpad.toggle()
         } label: {
             Image(systemName: "rectangle.and.hand.point.up.left")
-                .font(.body.weight(.semibold))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .foregroundStyle(showTrackpad ? Color.accentColor : .white)
-                .glass(in: Capsule(), interactive: true)
+                .modifier(BarButtonLabel(tint: showTrackpad ? Color.accentColor : .white))
         }
-        .padding(.vertical, 12)
+        .buttonStyle(.plain)
         .accessibilityLabel(showTrackpad ? "トラックパッドを隠す" : "トラックパッドを表示")
     }
 
@@ -420,16 +434,9 @@ struct ContentView: View {
                         .background(on ? Color.accentColor : Color.white.opacity(0.2), in: Circle())
                 }
             }
-            .font(.body.weight(.semibold))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .foregroundStyle(.white)
-            .glass(in: Capsule(), interactive: true)
+            .modifier(BarButtonLabel(tint: .white))
         }
-        .padding(12)
-        .padding(.trailing, safeInsets.trailing)
-        // iPhoneのキーボードが出ているときは、映像がキーボードの上で終わるので、ホームの線の分は要らない
-        .padding(.bottom, inputMode == .software || bottomKeys || bottomPad ? 0 : safeInsets.bottom)
+        .buttonStyle(.plain)
     }
 
     private static let autoChoice = "auto"
@@ -451,84 +458,62 @@ struct ContentView: View {
         )
     }
 
-    /// 右上の「…」のメニュー。compact のときは、半開きの下の画面の帯に置く、小さな丸いボタンにする
+    /// 設定の画面に出す、今の状態
+    private var settingsInfo: [(label: String, value: String)] {
+        var rows: [(label: String, value: String)] = []
+        if let window = session.currentWindow {
+            rows.append(("表示中", window.title))
+        } else if session.viewMode == .desktop {
+            rows.append(("表示中", "仮想画面"))
+        } else if session.viewMode == .monitor, let monitor = session.currentMonitor {
+            rows.append(("表示中", monitor.name))
+        }
+        if let active = session.activeHost {
+            rows.append(("接続先", hostDescription(active)))
+        }
+        rows.append(("画面", screenDescription.replacingOccurrences(of: "画面: ", with: "")))
+        rows.append(("映像", (session.codec == "hevc" ? "H.265" : "H.264")
+                     + (session.autoLevel.map { "（自動: \($0.shortLabel)）" } ?? "")))
+        return rows
+    }
+
+    /// 右上の「…」のメニュー。よく使うものだけを置く。設定は、専用の画面（SettingsView）に分けた。
+    /// compact のときは、半開きの下の画面の帯に置く、小さな丸いボタンにする
     private func menu(compact: Bool = false) -> some View {
         Menu {
-            if let window = session.currentWindow {
-                Text("表示中: \(window.title)")
-            } else if session.viewMode == .desktop {
-                Text("表示中: 仮想画面")
-            } else if session.viewMode == .monitor, let monitor = session.currentMonitor {
-                Text("表示中: \(monitor.name)")
+            Button("ウィンドウを選択", systemImage: "macwindow") {
+                session.requestWindows()
+                showingWindows = true
             }
-            if let active = session.activeHost {
-                Text("接続先: \(hostDescription(active))")
+            Button("モニターを選択", systemImage: "display.2") {
+                session.requestMonitors()
+                showingMonitors = true
             }
-            Text(screenDescription)
-            Text("映像: \(session.codec == "hevc" ? "H.265" : "H.264")"
-                 + (session.autoLevel.map { "、画質: 自動（\($0.shortLabel)）" } ?? ""))
-            Toggle("PC の音声を再生", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
-            Toggle("他のアプリの音声と同時に再生", systemImage: "speaker.badge.exclamationmark", isOn: $audioMix)
-            Picker("入力", selection: $inputMode) {
-                ForEach(InputMode.allCases) { mode in
-                    Label(mode.label, systemImage: mode.systemImage).tag(mode)
+            if session.virtualAvailable {
+                Button("仮想画面を表示", systemImage: "rectangle.on.rectangle") {
+                    session.showDesktop(fit: fitSize)
+                }
+                Button("移動したウィンドウを元に戻す", systemImage: "arrow.uturn.backward") {
+                    session.restoreWindows()
                 }
             }
-            .pickerStyle(.inline)
-            Menu("設定", systemImage: "slider.horizontal.3") {
-                Picker("タッチ操作", selection: $pointerMode) {
-                    ForEach(PointerMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
+            if session.viewMode != .screen {
+                Button("メイン画面を表示", systemImage: "display") { session.showScreen() }
+            }
+            Divider()
+            Toggle("PC の音声を再生", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
+            Menu("入力方法", systemImage: "keyboard") {
+                Picker("入力方法", selection: $inputMode) {
+                    ForEach(InputMode.allCases) { mode in
+                        Label(mode.label, systemImage: mode.systemImage).tag(mode)
                     }
                 }
                 .pickerStyle(.inline)
-                Toggle("Command キーを Ctrl として使う", isOn: $commandAsControl)
-                Toggle("半角/全角キーで IME を切り替える", isOn: $zenkakuAsIME)
-                Picker("キーボード配列", selection: $overlayLayout) {
-                    ForEach(OverlayKeyboardLayout.allCases) { layout in
-                        Text(layout.label).tag(layout)
-                    }
-                }
-                Toggle("トラックパッドを表示", isOn: $showTrackpad)
-                Picker("ピンチ操作", selection: $trackpadPinch) {
-                    Text("映像を拡大・縮小").tag("video")
-                    Text("PC 側で拡大・縮小（Ctrl+ホイール）").tag("pc")
-                }
-                Picker("不透明度", selection: $overlayOpacity) {
-                    Text("100%").tag(1.0)
-                    Text("80%").tag(0.8)
-                    Text("60%").tag(0.6)
-                    Text("40%").tag(0.4)
-                }
-                Toggle("キーを色分け", isOn: $colorKeys)
-                Picker("キーボードの位置", selection: $keyboardAtBottom) {
-                    Text("フロート").tag(false)
-                    Text("下部に固定").tag(true)
-                }
-                Picker("トラックパッドの位置", selection: $padAtBottom) {
-                    Text("フロート").tag(false)
-                    Text("下部に固定").tag(true)
-                }
-                Toggle("半開き時に下の画面へキーボードを表示", isOn: $dockWhenHalfOpen)
-                Toggle("H.265 を使用（次回接続から）", isOn: $useHEVC)
-                Toggle("遅延を表示", isOn: $showLatency)
-                Picker("画面の余白", selection: $edgeMargin) {
-                    Text("なし").tag(0)
-                    Text("小（10）").tag(10)
-                    Text("中（20）").tag(20)
-                    Text("大（30）").tag(30)
-                }
-                Picker("画質（変更すると再接続します）", selection: qualityChoice) {
-                    Text("自動").tag(Self.autoChoice)
-                    ForEach(VideoQuality.allCases) { q in
-                        Text(q.label).tag(q.rawValue)
-                    }
-                }
             }
             Menu("ショートカット", systemImage: "command") {
                 ShortcutMenuItems(session: session)
             }
-            Menu("クリップボード", systemImage: "doc.on.clipboard") {
+            Menu("クリップボードとファイル", systemImage: "doc.on.clipboard") {
                 Button("iPhone → PC", systemImage: "arrow.up.doc") { session.sendClipboard() }
                 Button("PC → iPhone", systemImage: "arrow.down.doc") { session.requestClipboard() }
                 Divider()
@@ -549,33 +534,16 @@ struct ContentView: View {
                     showingFileImporter = true
                 }
             }
-            Button("ウィンドウを選択", systemImage: "macwindow") {
-                session.requestWindows()
-                showingWindows = true
-            }
-            Button("モニターを選択", systemImage: "display.2") {
-                session.requestMonitors()
-                showingMonitors = true
-            }
-            if session.virtualAvailable {
-                Button("仮想画面を表示", systemImage: "rectangle.on.rectangle") {
-                    session.showDesktop(fit: fitSize)
-                }
-                Button("移動したウィンドウを元に戻す", systemImage: "arrow.uturn.backward") {
-                    session.restoreWindows()
-                }
-            }
-            if session.viewMode != .screen {
-                Button("メイン画面を表示", systemImage: "display") { session.showScreen() }
-            }
+            Divider()
+            Button("設定", systemImage: "slider.horizontal.3") { showingSettings = true }
             Button("切断", systemImage: "xmark.circle", role: .destructive) { session.disconnect() }
         } label: {
             if compact {
-                Image(systemName: "ellipsis").glassCircle(size: 34)
+                Image(systemName: "ellipsis").glassCircle(size: UIMetrics.compactButtonHeight)
             } else {
                 Image(systemName: "ellipsis")
-                    .glassCircle(size: 44)
-                    .padding(12)
+                    .glassCircle(size: UIMetrics.buttonHeight)
+                    .padding(UIMetrics.edgePadding)
             }
         }
         .padding(.top, compact ? 0 : safeInsets.top)
@@ -822,5 +790,22 @@ private struct LatencyBadgeContent: View {
             .foregroundStyle(.white.opacity(0.9))
             .glass(in: Capsule())
         }
+    }
+}
+
+/// 右下の丸いボタン（ウィンドウ、トラックパッド、キーボード）の見た目をそろえる。高さ 44、最低の幅 52
+struct BarButtonLabel: ViewModifier {
+    var tint: Color
+    /// 半開きの下の画面の帯に置く、背の低い形（高さ 34）
+    var compact = false
+
+    func body(content: Content) -> some View {
+        content
+            .font(.body.weight(.semibold))
+            .padding(.horizontal, compact ? 14 : 16)
+            .frame(minWidth: compact ? 0 : 52, minHeight: compact ? UIMetrics.compactButtonHeight : UIMetrics.buttonHeight)
+            .foregroundStyle(tint)
+            .glass(in: Capsule(), interactive: true)
+            .contentShape(Capsule())
     }
 }

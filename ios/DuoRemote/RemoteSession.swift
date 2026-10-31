@@ -109,6 +109,10 @@ final class RemoteSession: ObservableObject {
     @Published private(set) var windowThumbMissing: Set<Int> = []
     /// 表示しているウィンドウ。nilなら画面全体
     @Published private(set) var currentWindow: RemoteWindow?
+    /// 1つ前に映していたウィンドウ。「前のウィンドウに戻る」ボタンで使う（アプリを閉じるまで覚える）
+    @Published private(set) var previousWindow: RemoteWindow?
+    /// ウィンドウを映した順（新しいものが先頭）。一覧を、最近使った順に並べるのに使う
+    @Published private(set) var recentWindowIDs: [Int] = []
     @Published private(set) var viewMode: ViewMode = .screen
     /// PCのモニターの一覧。requestMonitors() で読み直す（MonitorPicker.swift）
     @Published var monitors: [RemoteMonitor] = []
@@ -755,6 +759,9 @@ final class RemoteSession: ObservableObject {
             // 消えたウィンドウの絵は、捨てる
             let alive = Set(windows.map(\.id))
             windowThumbs = windowThumbs.filter { alive.contains($0.key) }
+            // 閉じたウィンドウには、戻れない
+            if let previous = previousWindow, !alive.contains(previous.id) { previousWindow = nil }
+            recentWindowIDs = recentWindowIDs.filter { alive.contains($0) }
             windowThumbMissing.formIntersection(alive)
         case "window_thumb":
             guard let id = json["id"] as? Int else { break }
@@ -771,7 +778,10 @@ final class RemoteSession: ObservableObject {
             case "window":
                 if let id = json["id"] as? Int {
                     let title = json["title"] as? String ?? ""
-                    currentWindow = windows.first { $0.id == id } ?? RemoteWindow(id: id, title: title, app: "")
+                    let next = windows.first { $0.id == id } ?? RemoteWindow(id: id, title: title, app: "")
+                    if let old = currentWindow, old.id != next.id { previousWindow = old }
+                    currentWindow = next
+                    recentWindowIDs = Array(([id] + recentWindowIDs.filter { $0 != id }).prefix(30))
                     currentMonitor = nil
                     viewMode = .window
                 }

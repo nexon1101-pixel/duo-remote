@@ -22,7 +22,7 @@ struct DockedInput: View {
     static let showPadKey = "dockShowPad"
 
     private static let spacing: CGFloat = 8
-    private static let toolbarHeight: CGFloat = 34
+    private static let toolbarHeight: CGFloat = UIMetrics.compactButtonHeight
     /// キーボードの周りの余白（上下左右の 6 ずつ）
     private static let panelInset: CGFloat = 12
     /// 縦に並べるとき、トラックパッドに残したい高さの下限（ポイント）
@@ -92,7 +92,7 @@ struct DockedInput: View {
 
     /// 上の帯。キーボードとトラックパッドの出し入れ、IME の切り替え、メニュー、全部しまうボタン
     private var toolbar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: UIMetrics.spacing) {
             toggle(systemImage: "keyboard", isOn: $showKeys, label: "キーボード")
             toggle(systemImage: "rectangle.and.hand.point.up.left", isOn: $showPad, label: "トラックパッド")
             Spacer()

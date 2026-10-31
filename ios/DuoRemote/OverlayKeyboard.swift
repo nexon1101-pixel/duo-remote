@@ -15,6 +15,7 @@ struct OverlayKeyboard: View {
     static let layoutKey = "overlayKeyboardLayout"
     static let opacityKey = "overlayKeyboardOpacity"
     static let colorKeysKey = "overlayKeyboardColorKeys"
+    static let hapticsKey = "overlayKeyboardHaptics"
 
     @AppStorage(Self.layoutKey) private var layout = OverlayKeyboardLayout.us
     @AppStorage(Self.opacityKey) private var opacity = 0.8
@@ -28,7 +29,7 @@ struct OverlayKeyboard: View {
     @State private var dragStart: CGPoint?
     @State private var resizeStart: CGFloat?
 
-    private static let barHeight: CGFloat = 26
+    private static let barHeight: CGFloat = UIMetrics.barHeight
     private static let minWidth: CGFloat = 260
     /// キー1つの、高さと幅の比
     static let keyAspect: CGFloat = 1.05
@@ -58,21 +59,8 @@ struct OverlayKeyboard: View {
     /// 上の帯。引くと動く。閉じるボタンと、大きさを変えるつまみ
     private func bar(width: CGFloat, height: CGFloat, area: CGSize) -> some View {
         HStack(spacing: 0) {
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .bold))
-                    .frame(width: 22, height: 22)
-                    .background(Color.white.opacity(0.15), in: Circle())
-                    .frame(width: 40, height: Self.barHeight)
-            }
-            Button(action: onDock) {
-                Image(systemName: "arrow.down.to.line.compact")
-                    .font(.system(size: 11, weight: .bold))
-                    .frame(width: 22, height: 22)
-                    .background(Color.white.opacity(0.15), in: Circle())
-                    .frame(width: 32, height: Self.barHeight)
-            }
-            .accessibilityLabel("下部に固定")
+            BarIconButton(systemImage: "xmark", label: "キーボードを閉じる", action: onClose)
+            BarIconButton(systemImage: "arrow.down.to.line.compact", label: "下部に固定", action: onDock)
             Spacer()
             // 引いて動かせることが分かるように、シートと同じつまみを出す
             Capsule()
@@ -84,10 +72,10 @@ struct OverlayKeyboard: View {
                 .padding(.leading, 6)
             Spacer()
             Image(systemName: "arrow.left.and.right")
-                .font(.system(size: 11, weight: .bold))
-                .frame(width: 22, height: 22)
+                .font(.system(size: 12, weight: .bold))
+                .frame(width: UIMetrics.barIconSize, height: UIMetrics.barIconSize)
                 .background(Color.white.opacity(0.15), in: Circle())
-                .frame(width: 44, height: Self.barHeight)
+                .frame(width: UIMetrics.barIconHitWidth, height: Self.barHeight)
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(coordinateSpace: .global)
@@ -165,11 +153,13 @@ struct BottomKeyboard: View {
     let bottomInset: CGFloat
     /// 浮かせるボタンを押したとき
     var onUndock: () -> Void
+    /// トラックパッドを浮かせるボタンを押したとき
+    var onUndockPad: () -> Void = {}
 
     @AppStorage(OverlayKeyboard.layoutKey) private var layout = OverlayKeyboardLayout.us
     @AppStorage(OverlayKeyboard.opacityKey) private var opacity = 0.8
 
-    private static let barHeight: CGFloat = 28
+    private static let barHeight: CGFloat = UIMetrics.barHeight
 
     var body: some View {
         // キーの縦横の比（横幅1に対する高さ）
@@ -182,14 +172,7 @@ struct BottomKeyboard: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.6))
                 Spacer()
-                Button(action: onUndock) {
-                    Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 22, height: 22)
-                        .background(Color.white.opacity(0.15), in: Circle())
-                }
-                .accessibilityLabel("フローティング表示")
+                BarIconButton(systemImage: "arrow.up.and.down.and.arrow.left.and.right", label: "フロートにする", action: onUndock)
             }
             .padding(.horizontal, 14)
             .frame(height: Self.barHeight)
@@ -209,6 +192,10 @@ struct BottomKeyboard: View {
             if showPad {
                 TrackpadPad(send: session.send, zones: .sides)
                     .frame(height: padHeight)
+                    .overlay(alignment: .topTrailing) {
+                        // 浮かせて、動かせるようにするボタン
+                        BarIconButton(systemImage: "arrow.up.and.down.and.arrow.left.and.right", label: "トラックパッドをフロートにする", action: onUndockPad)
+                    }
                     .padding(.horizontal, 6)
                     .padding(.top, showKeys ? 6 : 8)
             }
@@ -229,6 +216,8 @@ struct OverlayKeysView: UIViewRepresentable {
     @EnvironmentObject private var observed: RemoteSession
     /// キーの色分け（設定で切り替える）
     @AppStorage(OverlayKeyboard.colorKeysKey) private var colorKeys = true
+    /// キーを押したときの振動（設定で切り替える）
+    @AppStorage(OverlayKeyboard.hapticsKey) private var haptics = true
 
     func makeUIView(context: Context) -> OverlayKeysUIView {
         let view = OverlayKeysUIView()
@@ -236,6 +225,7 @@ struct OverlayKeysView: UIViewRepresentable {
         view.layout = layout
         view.imeOn = observed.imeOn
         view.colorKeys = colorKeys
+        view.hapticsOn = haptics
         return view
     }
 
@@ -243,6 +233,7 @@ struct OverlayKeysView: UIViewRepresentable {
         uiView.session = session
         uiView.imeOn = observed.imeOn
         uiView.colorKeys = colorKeys
+        uiView.hapticsOn = haptics
         if uiView.layout != layout {
             uiView.layout = layout
         }
@@ -266,6 +257,8 @@ final class OverlayKeysUIView: UIView {
     var imeOn: Bool? {
         didSet { if imeOn != oldValue { setNeedsDisplay() } }
     }
+    /// true のとき、キーを押すと振動する
+    var hapticsOn = true
     /// true のとき、キーの色分け
     var colorKeys = true {
         didSet { if colorKeys != oldValue { setNeedsDisplay() } }
@@ -454,7 +447,7 @@ final class OverlayKeysUIView: UIView {
             let id = ObjectIdentifier(touch)
             touchKeys[id] = pos
             let key = layout.rows[pos.row][pos.col]
-            haptic.impactOccurred()
+            if hapticsOn { haptic.impactOccurred() }
             if key.ime {
                 session?.toggleIME()
             } else if let m = key.modifier {
