@@ -157,7 +157,7 @@ def _apply_zip(log: Callable[[str], None], root: Path, timeout: float) -> None:
         raise UpdateError("ダウンロードしたファイルを ZIP として開けませんでした") from e
 
     with zf, tempfile.TemporaryDirectory(prefix="duo-update-") as tmp:
-        # 先に全部の名前を確かめる。危ないものが1つでもあれば、何も書かない
+        # 先に全部の名前を確認する。危ないものが1つでもあれば、何も書かない
         entries: list[tuple[zipfile.ZipInfo, str]] = []
         for info in zf.infolist():
             if _unsafe_name(info.filename):

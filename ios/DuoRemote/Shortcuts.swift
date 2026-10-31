@@ -2,7 +2,7 @@ import SwiftUI
 
 /// よく使うキーの組み合わせ。仮想キーコード（vk）で、修飾キーを押したまま押して離す。
 /// Win+L（ロック）は入れない。ロックすると、iPhoneからは解除できないため。
-/// Alt+F4 は、よく使うので、押す前の確かめはしない。
+/// Alt+F4 は、よく使うので、押す前の確認はしない。
 struct Shortcut: Identifiable {
     let id: String
     let name: String
