@@ -17,3 +17,6 @@ xcuserdata/
 
 # その他
 .DS_Store
+
+# Claude Code の作業用の写し（worktree）
+.claude/worktrees/

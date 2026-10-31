@@ -13,7 +13,9 @@ from websockets.asyncio.server import serve
 
 from . import __version__
 from .audio import AudioStream
-from .capture import FfmpegStream, build_ffmpeg_cmd, capture_target, detect_encoder, detect_window_capture
+from .capture import (
+    FfmpegStream, build_ffmpeg_cmd, capture_target, detect_encoder, detect_hevc, detect_window_capture,
+)
 from .input_win import create_input
 from .server import Settings, make_handler
 
@@ -75,6 +77,7 @@ async def run(args: argparse.Namespace) -> None:
     )
     port = args.port or cfg.get("port", 8765)
     encoder = detect_encoder(args.ffmpeg) if args.encoder == "auto" else args.encoder
+    settings.hevc_available = encoder == "h264_nvenc" and detect_hevc(args.ffmpeg)
     if args.window_capture == "auto":
         settings.window_capture = sys.platform == "win32" and detect_window_capture(args.ffmpeg)
     else:
@@ -90,21 +93,21 @@ async def run(args: argparse.Namespace) -> None:
         if window is not None:
             cmd = build_ffmpeg_cmd(
                 ffmpeg=args.ffmpeg, fps=s.fps, bitrate_kbps=s.bitrate_kbps, encoder=encoder,
-                max_height=s.max_height, src_height=src[1], window=window,
+                max_height=s.max_height, src_height=src[1], window=window, codec=s.codec,
             )
-            return FfmpegStream(cmd)
+            return FfmpegStream(cmd, s.codec)
         # 主モニターは --output-idx、そのほか（仮想ディスプレイなど）は、調べた DXGI の番号
         if monitor is not None and monitor.get("adapter") not in (None, 0):
             log.warning("このモニターは、別のグラフィックアダプター（%s）にあります", monitor["adapter"])
         output_idx, relative = capture_target(monitor, region, args.output_idx)
         cmd = build_ffmpeg_cmd(
             ffmpeg=args.ffmpeg, fps=s.fps, bitrate_kbps=s.bitrate_kbps, encoder=encoder,
-            max_height=s.max_height, src_height=src[1], region=relative, output_idx=output_idx,
+            max_height=s.max_height, src_height=src[1], region=relative, output_idx=output_idx, codec=s.codec,
         )
-        return FfmpegStream(cmd)
+        return FfmpegStream(cmd, s.codec)
 
-    def audio_factory(rate: int, channels: int) -> AudioStream:
-        return AudioStream(args.ffmpeg, rate, channels)
+    def audio_factory(rate: int, channels: int, codec: str = "pcm") -> AudioStream:
+        return AudioStream(args.ffmpeg, rate, channels, codec=codec)
 
     handler = make_handler(settings, backend, stream_factory, audio_factory)
     # 仮想ディスプレイのドライバーが入っているかを、先に調べておく（調べるのに1秒ほどかかる）
@@ -115,7 +118,7 @@ async def run(args: argparse.Namespace) -> None:
     try:
         # close_timeout: 応答しない相手を閉じるときに、待つ時間（秒）
         async with serve(handler, args.host, port, max_size=1024 * 1024, close_timeout=2):
-            print(f"duo_server {__version__} を起動しました: {args.host}:{port}（エンコーダー: {encoder}）")
+            print(f"duo_server {__version__} を起動しました: {args.host}:{port}（エンコーダー: {encoder}{'、H.265 も使えます' if settings.hevc_available else ''}）")
             print(f"仮想ディスプレイ: {'使えます' if virtual else 'ドライバーが入っていません'}")
             print(
                 "ウィンドウの表示: "

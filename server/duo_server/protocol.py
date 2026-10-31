@@ -11,6 +11,7 @@ VERSION = 1
 FRAME_HEADER = struct.Struct(">BI")
 FLAG_KEYFRAME = 0x01
 FLAG_AUDIO = 0x02  # 音のフレーム（立っていなければ、映像）
+FLAG_FILE = 0x04  # ファイルの中身のフレーム（先頭4バイトの後ろは、タイムスタンプではなく、ファイルの id）
 
 MAX_TEXT_LENGTH = 4096
 MAX_CLIP_LENGTH = 100_000  # クリップボードの文字の上限（文字で数える）
@@ -27,6 +28,22 @@ def pack_audio(payload: bytes, ts_ms: int) -> bytes:
 
 def is_audio(data: bytes) -> bool:
     return bool(data) and bool(data[0] & FLAG_AUDIO)
+
+
+def pack_file(file_id: int, payload: bytes) -> bytes:
+    return FRAME_HEADER.pack(FLAG_FILE, file_id & 0xFFFFFFFF) + payload
+
+
+def is_file(data: bytes) -> bool:
+    return bool(data) and bool(data[0] & FLAG_FILE)
+
+
+def unpack_file(data: bytes) -> tuple[int, bytes] | None:
+    """ファイルの中身のフレームを (id, 中身) にする。形が違えばNone。"""
+    if len(data) < FRAME_HEADER.size or not data[0] & FLAG_FILE:
+        return None
+    _flags, file_id = FRAME_HEADER.unpack_from(data)
+    return file_id, data[FRAME_HEADER.size:]
 
 
 def unpack_frame(data: bytes) -> tuple[bool, int, bytes]:

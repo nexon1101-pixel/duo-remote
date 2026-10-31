@@ -1,7 +1,8 @@
 """PCが鳴らしている音を取って、iPhoneに送る形（PCM、16ビット、インターリーブ）にする。
 
 - 音は、Windows の WASAPI のループバック（スピーカーに出る音を、そのまま取る仕組み）で取る
-- 取った音は、ffmpeg で、送る形（周波数とチャンネル数）にそろえる。圧縮はしない
+- 取った音は、ffmpeg で、送る形（周波数とチャンネル数）にそろえる。pcm のときは圧縮しない
+- opus のときは、ffmpeg が Ogg に包んだ Opus を出す。その Ogg を読んで、Opus のパケットを1つずつ取り出して送る
 - PCが無音のときは、ループバックからデータが来ない。そのときは、何も送らない
 """
 from __future__ import annotations
@@ -22,6 +23,9 @@ SAMPLE_BYTES = 2  # 16ビット
 # クライアントが選べる音の形
 ALLOWED_RATES = (48000, 44100, 24000, 16000)
 ALLOWED_CHANNELS = (1, 2)
+ALLOWED_CODECS = ("pcm", "opus")
+OPUS_RATE = 48000  # opus のときの周波数は、これだけ
+OPUS_BITRATE = {1: "48k", 2: "96k"}
 
 
 class AudioError(RuntimeError):
@@ -29,9 +33,20 @@ class AudioError(RuntimeError):
 
 
 def build_audio_ffmpeg_cmd(
-    *, ffmpeg: str = "ffmpeg", in_rate: int, in_channels: int, rate: int, channels: int
+    *, ffmpeg: str = "ffmpeg", in_rate: int, in_channels: int, rate: int, channels: int, codec: str = "pcm"
 ) -> list[str]:
-    """取った音（in_*）を、送る形（rate、channels）にそろえる ffmpeg のコマンド。"""
+    """取った音（in_*）を、送る形（rate、channels、codec）にする ffmpeg のコマンド。"""
+    if codec == "opus":
+        return [
+            ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostdin",
+            "-probesize", "32", "-analyzeduration", "0",
+            "-f", "s16le", "-ar", str(in_rate), "-ac", str(in_channels), "-i", "pipe:0",
+            "-ar", str(OPUS_RATE), "-ac", str(channels),
+            "-c:a", "libopus", "-b:a", OPUS_BITRATE.get(channels, "96k"),
+            "-application", "lowdelay", "-frame_duration", "20",
+            # 1ページを小さく（20ミリ秒 = 1パケット）して、ffmpeg の中で音をためないようにする
+            "-f", "ogg", "-page_duration", "20000", "-flush_packets", "1", "pipe:1",
+        ]
     return [
         ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostdin",
         # 入力を調べる時間をなくす。これがないと、音を流し続けても、ffmpeg が出力を始めない。
@@ -46,6 +61,58 @@ def build_audio_ffmpeg_cmd(
 def chunk_bytes(rate: int, channels: int, ms: int = CHUNK_MS) -> int:
     """ms ミリ秒ぶんの音のバイト数（1サンプルぶんの境目で切れるようにする）。"""
     return (rate * ms // 1000) * channels * SAMPLE_BYTES
+
+
+class OggPacketReader:
+    """Ogg のバイト列を少しずつ受け取り、中のパケットを1つずつ取り出す。
+
+    Ogg のページは、"OggS"、版、種類、granule(8)、serial(4)、順番(4)、CRC(4)、segment 数(1)、
+    segment table（segment ごとの長さ。255 なら次の segment に続く）、の順。
+    1つのパケットは、255 未満の長さで終わる。ページの最後が 255 のときは、パケットが次のページに続く。
+    "OggS" で始まらないデータは、次の "OggS" まで読み飛ばす。
+    Opus は、最初の2つのパケット（OpusHead、OpusTags）が見出しなので、返さない。
+    """
+
+    HEADER_SIZE = 27
+
+    def __init__(self, skip_opus_headers: bool = True) -> None:
+        self._buf = bytearray()
+        self._partial = bytearray()  # ページをまたいで続いているパケットの、ここまで
+        self._skip = skip_opus_headers
+
+    def feed(self, data: bytes) -> list[bytes]:
+        self._buf += data
+        packets: list[bytes] = []
+        while True:
+            start = self._buf.find(b"OggS")
+            if start < 0:
+                # "OggS" の途中で切れているかもしれないので、後ろ3バイトは残す
+                del self._buf[: max(len(self._buf) - 3, 0)]
+                break
+            if start:
+                del self._buf[:start]
+            if len(self._buf) < self.HEADER_SIZE:
+                break
+            nseg = self._buf[26]
+            head = self.HEADER_SIZE + nseg
+            if len(self._buf) < head:
+                break
+            table = self._buf[self.HEADER_SIZE:head]
+            total = head + sum(table)
+            if len(self._buf) < total:
+                break
+            pos = head
+            for lacing in table:
+                self._partial += self._buf[pos:pos + lacing]
+                pos += lacing
+                if lacing < 255:
+                    packet = bytes(self._partial)
+                    self._partial.clear()
+                    if self._skip and (packet.startswith(b"OpusHead") or packet.startswith(b"OpusTags")):
+                        continue
+                    packets.append(packet)
+            del self._buf[:total]
+        return packets
 
 
 class LoopbackCapture:
@@ -121,7 +188,9 @@ class AudioStream:
     def __init__(
         self, ffmpeg: str, rate: int, channels: int,
         capture_factory: Callable[[], LoopbackCapture] = LoopbackCapture,
+        codec: str = "pcm",
     ) -> None:
+        self.codec = codec
         self.ffmpeg = ffmpeg
         self.rate = rate
         self.channels = channels
@@ -142,7 +211,7 @@ class AudioStream:
         in_rate, in_channels = await asyncio.to_thread(self._capture.start, on_data)
         cmd = build_audio_ffmpeg_cmd(
             ffmpeg=self.ffmpeg, in_rate=in_rate, in_channels=in_channels,
-            rate=self.rate, channels=self.channels,
+            rate=self.rate, channels=self.channels, codec=self.codec,
         )
         try:
             self._proc = await asyncio.create_subprocess_exec(
@@ -182,6 +251,14 @@ class AudioStream:
 
     async def frames(self) -> AsyncIterator[bytes]:
         assert self._proc and self._proc.stdout
+        if self.codec == "opus":
+            reader = OggPacketReader()
+            while True:
+                data = await self._proc.stdout.read(65536)
+                if not data:
+                    raise AudioError("音の変換（ffmpeg）が止まりました")
+                for packet in reader.feed(data):
+                    yield packet
         size = chunk_bytes(self.rate, self.channels)
         buf = b""
         while True:

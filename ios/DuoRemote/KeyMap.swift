@@ -19,6 +19,20 @@ enum KeyMap {
     static let vkDown = 0x28
     static let vkDelete = 0x2E
 
+    // ショートカット用（文字のキーは、文字のコードと同じ）
+    static let vkA = 0x41
+    static let vkC = 0x43
+    static let vkD = 0x44
+    static let vkE = 0x45
+    static let vkF = 0x46
+    static let vkS = 0x53
+    static let vkV = 0x56
+    static let vkX = 0x58
+    static let vkY = 0x59
+    static let vkZ = 0x5A
+    static let vkF4 = 0x73
+    static let vkF5 = 0x74
+
     // 日本語キーボードの「かな」「英数」（HIDの LANG1、LANG2）。IMEのオン・オフに使う
     static let hidGrave = 0x35 // ` ~（日本語キーボードでは、半角/全角）
     static let hidLang1 = 0x90

@@ -7,6 +7,10 @@ struct ContentView: View {
 
     // 接続先は端末に覚えておく。トークンはキーチェーンにしまう
     @AppStorage("host") private var host = ""
+    /// 外から（Tailscale）つなぐときのホスト。省略できる
+    @AppStorage("hostRemote") private var hostRemote = ""
+    /// 前回つながったホスト（0: 家、1: 外）。次は、こちらから試す
+    @AppStorage("lastHostIndex") private var lastHostIndex = 0
     @AppStorage("port") private var port = "8765"
     @State private var token = ""
     @State private var showToken = false
@@ -19,6 +23,8 @@ struct ContentView: View {
     /// 画面の端の余白（ポイント）。Duo の角が丸く、映像の角が削れるときに、広げる
     @AppStorage("edgeMargin") private var edgeMargin = 0
     @AppStorage("showLatency") private var showLatency = true
+    @AppStorage(RemoteSession.useHEVCKey) private var useHEVC = true
+    @AppStorage(RemoteSession.autoQualityKey) private var autoQuality = true
     @AppStorage(KeyCaptureView.zenkakuKey) private var zenkakuAsIME = false
     /// 右下のボタンで出すキーボード（iPhoneのキーボードか、アプリのキーボード）
     @AppStorage("keyboardKind") private var keyboardKind = InputMode.overlay
@@ -30,6 +36,11 @@ struct ContentView: View {
     @State private var safeInsets = EdgeInsets()
 
     @State private var showingWindows = false
+    @State private var showingMonitors = false
+    /// 写真・ファイルの選択画面を出すか、と、PC のクリップボードにも入れるか
+    @State private var showingPhotoPicker = false
+    @State private var showingFileImporter = false
+    @State private var sendToPCClipboard = false
     /// 画面全体の大きさ（ポイント。キーボードが出ていても変わらない）。ウィンドウの大きさを合わせるときに使う
     @State private var fullSize: CGSize = .zero
     @State private var refitTask: Task<Void, Never>?
@@ -63,6 +74,10 @@ struct ContentView: View {
         }
         // 接続中は、触らなくても画面がロックされないようにする
         .onChange(of: session.state) { _, _ in updateIdleTimer() }
+        .onChange(of: session.activeHost) { _, active in
+            guard let active else { return }
+            if active == host { lastHostIndex = 0 } else if active == hostRemote { lastHostIndex = 1 }
+        }
         // 裏に回ったら接続を閉じ、戻ったらつなぎ直す
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -236,6 +251,14 @@ struct ContentView: View {
         .sheet(isPresented: $showingWindows, onDismiss: { refocus += 1 }) {
             WindowPicker(fitSize: fitSize)
         }
+        .sheet(isPresented: $showingMonitors, onDismiss: { refocus += 1 }) {
+            MonitorPicker()
+        }
+        .fileSendPickers(
+            photosShown: $showingPhotoPicker,
+            filesShown: $showingFileImporter,
+            toClipboard: sendToPCClipboard
+        )
         .onAppear {
             inputMode = GCKeyboard.coalesced != nil ? .hardware : .touch
         }
@@ -331,8 +354,15 @@ struct ContentView: View {
                 Text("表示中: \(window.title)")
             } else if session.viewMode == .desktop {
                 Text("表示中: 仮想画面")
+            } else if session.viewMode == .monitor, let monitor = session.currentMonitor {
+                Text("表示中: \(monitor.name)")
+            }
+            if let active = session.activeHost {
+                Text("接続先: \(hostDescription(active))")
             }
             Text(screenDescription)
+            Text("映像: \(session.codec == "hevc" ? "H.265" : "H.264")"
+                 + (session.autoLevel.map { "、画質: 自動で\($0.shortLabel)" } ?? ""))
             Toggle("PCの音を鳴らす", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
             Toggle("他のアプリの音と混ぜる", systemImage: "speaker.badge.exclamationmark", isOn: $audioMix)
             Picker("入力", selection: $inputMode) {
@@ -363,6 +393,8 @@ struct ContentView: View {
                 }
                 Toggle("アプリのキーボードを下端に固定する", isOn: $keyboardAtBottom)
                 Toggle("半開きのとき、下にキーボードを出す", isOn: $dockWhenHalfOpen)
+                Toggle("画質を通信に合わせて自動で変える（選んだ画質より上にはしない。次の接続から）", isOn: $autoQuality)
+                Toggle("H.265 を使う（通信量が少ない。次の接続から）", isOn: $useHEVC)
                 Toggle("遅れを画面に出す", isOn: $showLatency)
                 Picker("画面の端の余白", selection: $edgeMargin) {
                     Text("なし").tag(0)
@@ -376,13 +408,37 @@ struct ContentView: View {
                     }
                 }
             }
+            Menu("ショートカット", systemImage: "command") {
+                ShortcutMenuItems(session: session)
+            }
             Menu("クリップボード", systemImage: "doc.on.clipboard") {
                 Button("iPhone → PC", systemImage: "arrow.up.doc") { session.sendClipboard() }
                 Button("PC → iPhone", systemImage: "arrow.down.doc") { session.requestClipboard() }
+                Divider()
+                Button("写真を PC に送る", systemImage: "photo") {
+                    sendToPCClipboard = false
+                    showingPhotoPicker = true
+                }
+                Button("写真を PC のクリップボードに入れる", systemImage: "photo.on.rectangle") {
+                    sendToPCClipboard = true
+                    showingPhotoPicker = true
+                }
+                Button("ファイルを PC に送る", systemImage: "doc") {
+                    sendToPCClipboard = false
+                    showingFileImporter = true
+                }
+                Button("ファイルを PC のクリップボードに入れる", systemImage: "doc.on.clipboard") {
+                    sendToPCClipboard = true
+                    showingFileImporter = true
+                }
             }
             Button("ウィンドウを選ぶ", systemImage: "macwindow") {
                 session.requestWindows()
                 showingWindows = true
+            }
+            Button("モニターを選ぶ", systemImage: "display.2") {
+                session.requestMonitors()
+                showingMonitors = true
             }
             if session.virtualAvailable {
                 Button("仮想画面を表示", systemImage: "rectangle.on.rectangle") {
@@ -431,7 +487,14 @@ struct ContentView: View {
 
                 card(title: "接続先", systemImage: "network") {
                     field(systemImage: "server.rack") {
-                        TextField("ホスト（例: 100.x.x.x）", text: $host)
+                        TextField("家（Wi-Fi）のホスト（例: 192.168.x.x）", text: $host)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                    }
+                    Divider().overlay(Color.white.opacity(0.1))
+                    field(systemImage: "globe") {
+                        TextField("外から（Tailscale）のホスト（省略できます）", text: $hostRemote)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
@@ -492,11 +555,12 @@ struct ContentView: View {
                     Button {
                         // 貼り付けたときに付いてくる空白や、全角の英数字を直してから使う
                         host = Self.cleaned(host)
+                        hostRemote = Self.cleaned(hostRemote)
                         port = Self.cleaned(port)
                         token = Self.cleaned(token)
                         Keychain.save("token", token)
                         session.setAudio(audioOn, mixWithOthers: audioMix)
-                        session.connect(host: host, port: Int(port) ?? 8765, token: token, quality: quality)
+                        session.connect(hosts: hostCandidates(), port: Int(port) ?? 8765, token: token, quality: quality)
                     } label: {
                         HStack(spacing: 10) {
                             if session.state == .connecting {
@@ -513,7 +577,7 @@ struct ContentView: View {
                     }
                     .glassButton(prominent: true)
                     .controlSize(.large)
-                    .disabled(host.isEmpty || token.isEmpty || session.state == .connecting)
+                    .disabled((host.isEmpty && hostRemote.isEmpty) || token.isEmpty || session.state == .connecting)
 
                     if session.state == .connecting {
                         Button("やめる", role: .cancel) { session.disconnect() }
@@ -580,6 +644,20 @@ struct ContentView: View {
     static func cleaned(_ text: String) -> String {
         let halfWidth = text.applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? text
         return halfWidth.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 試すホストの並び。前回つながった方（家か外か）を先にする。空のものは除く
+    private func hostCandidates() -> [String] {
+        let all = [host, hostRemote]
+        let first = lastHostIndex == 1 ? 1 : 0
+        return [all[first], all[1 - first]].filter { !$0.isEmpty }
+    }
+
+    /// メニューに出す、今の接続先（「家（192.168.x.x）」など）
+    private func hostDescription(_ active: String) -> String {
+        if active == host { return "家（\(active)）" }
+        if active == hostRemote { return "外（\(active)）" }
+        return active
     }
 
     private func loadToken() {

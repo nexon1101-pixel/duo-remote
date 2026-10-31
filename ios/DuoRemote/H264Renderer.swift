@@ -1,8 +1,10 @@
 import AVFoundation
 import CoreMedia
 import UIKit
+import VideoToolbox
 
-/// H.264（Annex B形式）の1フレームを受け取り、AVSampleBufferDisplayLayerに表示する。
+/// H.264 か H.265（HEVC）（Annex B形式）の1フレームを受け取り、AVSampleBufferDisplayLayerに表示する。
+/// どちらかは、welcome の codec で決まる（setCodec）。
 /// デコードは、レイヤー側（VideoToolbox）が行う。
 /// enqueue は受信のスレッドから、reset はメインスレッドから呼ばれるので、状態はロックで守る。
 final class H264Renderer: @unchecked Sendable {
@@ -10,12 +12,31 @@ final class H264Renderer: @unchecked Sendable {
 
     private let lock = NSLock()
     private var formatDescription: CMVideoFormatDescription?
+    private var vps: Data? // H.265 だけ
     private var sps: Data?
     private var pps: Data?
+    private var hevc = false
+
+    /// この端末が H.265 をハードウェアでデコードできるか（hello の codecs に hevc を入れるか）
+    static var supportsHEVC: Bool { VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC) }
 
     init() {
         layer.videoGravity = .resizeAspect
         layer.backgroundColor = UIColor.black.cgColor
+    }
+
+    /// 映像の形を決める（welcome の codec）。変わったら、パラメーター（SPS など）を忘れて、次のキーフレームを待つ
+    func setCodec(_ codec: String) {
+        lock.lock()
+        let isHEVC = codec == "hevc"
+        if isHEVC != hevc {
+            hevc = isHEVC
+            vps = nil
+            sps = nil
+            pps = nil
+            formatDescription = nil
+        }
+        lock.unlock()
     }
 
     func reset() {
@@ -28,6 +49,7 @@ final class H264Renderer: @unchecked Sendable {
     /// SPS と PPS を忘れる。次のキーフレーム（SPS と PPS が付いている）が来るまで、表示しない
     private func forgetParameterSets() {
         lock.lock()
+        vps = nil
         sps = nil
         pps = nil
         formatDescription = nil
@@ -35,25 +57,46 @@ final class H264Renderer: @unchecked Sendable {
     }
 
     func enqueue(accessUnit: Data, timestampMs: UInt32) {
+        lock.lock()
+        let isHEVC = hevc
+        lock.unlock()
+
         var slices: [Data] = []
+        var newVPS: Data?
         var newSPS: Data?
         var newPPS: Data?
         for nal in Self.splitNALs(accessUnit) {
             guard let header = nal.first else { continue }
-            switch header & 0x1F {
-            case 7: newSPS = nal // SPS
-            case 8: newPPS = nal // PPS
-            case 1, 5: slices.append(nal) // 映像本体（通常、キーフレーム）
-            default: break // AUD、SEIなどは使わない
+            if isHEVC {
+                // H.265 の NAL ヘッダーは2バイト。タイプは1バイト目の 1〜6 ビット目
+                switch (header >> 1) & 0x3F {
+                case 32: newVPS = nal // VPS
+                case 33: newSPS = nal // SPS
+                case 34: newPPS = nal // PPS
+                case 0...31: slices.append(nal) // 映像本体
+                default: break // AUD、SEIなどは使わない
+                }
+            } else {
+                switch header & 0x1F {
+                case 7: newSPS = nal // SPS
+                case 8: newPPS = nal // PPS
+                case 1, 5: slices.append(nal) // 映像本体（通常、キーフレーム）
+                default: break // AUD、SEIなどは使わない
+                }
             }
         }
         guard !slices.isEmpty else { return }
 
         lock.lock()
+        if let newVPS, newVPS != vps { vps = newVPS; formatDescription = nil }
         if let newSPS, newSPS != sps { sps = newSPS; formatDescription = nil }
         if let newPPS, newPPS != pps { pps = newPPS; formatDescription = nil }
         if formatDescription == nil, let sps, let pps {
-            formatDescription = Self.makeFormatDescription(sps: sps, pps: pps)
+            if isHEVC {
+                if let vps { formatDescription = Self.makeHEVCFormatDescription(vps: vps, sps: sps, pps: pps) }
+            } else {
+                formatDescription = Self.makeFormatDescription(sps: sps, pps: pps)
+            }
         }
         let format = formatDescription
         lock.unlock()
@@ -133,6 +176,32 @@ final class H264Renderer: @unchecked Sendable {
                     nalUnitHeaderLength: 4,
                     formatDescriptionOut: &description
                 )
+            }
+        }
+        return status == noErr ? description : nil
+    }
+
+    private static func makeHEVCFormatDescription(vps: Data, sps: Data, pps: Data) -> CMVideoFormatDescription? {
+        var description: CMVideoFormatDescription?
+        let status = vps.withUnsafeBytes { vpsBuffer in
+            sps.withUnsafeBytes { spsBuffer in
+                pps.withUnsafeBytes { ppsBuffer in
+                    let pointers: [UnsafePointer<UInt8>] = [
+                        vpsBuffer.bindMemory(to: UInt8.self).baseAddress!,
+                        spsBuffer.bindMemory(to: UInt8.self).baseAddress!,
+                        ppsBuffer.bindMemory(to: UInt8.self).baseAddress!,
+                    ]
+                    let sizes = [vps.count, sps.count, pps.count]
+                    return CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+                        allocator: kCFAllocatorDefault,
+                        parameterSetCount: 3,
+                        parameterSetPointers: pointers,
+                        parameterSetSizes: sizes,
+                        nalUnitHeaderLength: 4,
+                        extensions: nil,
+                        formatDescriptionOut: &description
+                    )
+                }
             }
         }
         return status == noErr ? description : nil

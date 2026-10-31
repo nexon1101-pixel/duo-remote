@@ -18,12 +18,15 @@ enum ViewMode: Equatable {
     case desktop
     /// ウィンドウ1つだけ
     case window
+    /// 主モニター以外も含む、モニター1つ全体
+    case monitor
 }
 
 /// つなぎ直したときに、同じ表示に戻すため、最後に頼んだ表示を覚えておく
 private enum DisplayRequest {
     case desktop(fit: CGSize?)
     case window(RemoteWindow, fit: CGSize?, toVirtual: Bool)
+    case monitor(RemoteMonitor)
 }
 
 /// 映像の画質。外（4G/5G）では低くすると、遅れがたまりにくい。
@@ -37,6 +40,14 @@ enum VideoQuality: String, CaseIterable, Identifiable {
         case .high: "高（元の大きさ、60fps）"
         case .medium: "中（1080、60fps）"
         case .low: "低（720、30fps）"
+        }
+    }
+
+    var shortLabel: String {
+        switch self {
+        case .high: "高"
+        case .medium: "中"
+        case .low: "低"
         }
     }
 
@@ -65,6 +76,8 @@ final class RemoteSession: ObservableObject {
     static let maxReconnectAttempts = 6
     /// 接続を始めてから、welcome を待つ時間
     static let connectTimeout: Duration = .seconds(10)
+    /// 候補が2つ以上あるとき、最初の候補だけは短く待つ（だめなら、すぐ次の候補を試す）
+    static let firstCandidateTimeout: Duration = .seconds(4)
     /// 接続中に ping を送る間隔と、pong が来なければ切れたとみなす時間
     static let pingInterval: Duration = .seconds(5)
     static let pingTimeout: TimeInterval = 10
@@ -72,6 +85,10 @@ final class RemoteSession: ObservableObject {
     @Published private(set) var state: State = .disconnected
     @Published private(set) var errorMessage: String?
     @Published private(set) var videoSize: CGSize = .zero
+    /// 今の映像の形（h264 か hevc）
+    @Published private(set) var codec = "h264"
+    /// 設定「H.265 を使う」
+    static let useHEVCKey = "useHEVC"
 
     /// 接続中に出すお知らせ（サーバーからのエラーなど）。数秒で消す
     @Published private(set) var notice: String?
@@ -81,12 +98,19 @@ final class RemoteSession: ObservableObject {
     /// 表示しているウィンドウ。nilなら画面全体
     @Published private(set) var currentWindow: RemoteWindow?
     @Published private(set) var viewMode: ViewMode = .screen
+    /// PCのモニターの一覧。requestMonitors() で読み直す（MonitorPicker.swift）
+    @Published var monitors: [RemoteMonitor] = []
+    @Published var isLoadingMonitors = false
+    /// 表示しているモニター。viewMode が .monitor のときだけ入る
+    @Published private(set) var currentMonitor: RemoteMonitor?
     /// PCに、仮想ディスプレイのドライバーが入っている
     @Published private(set) var virtualAvailable = false
     /// PCのIMEがオンか。サーバーが知らせてこないときはnil
     @Published private(set) var imeOn: Bool?
     /// 往復の時間（ミリ秒）。ping を送ってから pong が来るまで
     @Published private(set) var latencyMs: Int?
+    /// 今つながっているホスト（候補の1つ）。つながっていないときはnil
+    @Published private(set) var activeHost: String?
     private var noticeTask: Task<Void, Never>?
 
     let renderer = H264Renderer()
@@ -99,11 +123,22 @@ final class RemoteSession: ObservableObject {
     private var audioWanted = false
     private var audioMix = false
 
-    private var task: URLSessionWebSocketTask?
+    /// ファイルの受け渡し（FileTransfer.swift）
+    private(set) lazy var fileTransfer = FileTransfer(session: self)
+
+    private(set) var task: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
 
     /// つなぎ直すときに使う、接続先
-    private var target: (url: URL, token: String)?
+    private var target: (hosts: [String], port: Int, token: String)?
+    /// 今試している候補の番号（target.hosts の中）
+    private var hostIndex = 0
+    /// 最後にwelcomeまで届いた候補の番号。つなぎ直すときは、ここから試す
+    private var lastGoodIndex = 0
+    /// 今回の順番で、すでに試した候補の数
+    private var triedInRound = 0
+    /// 今の接続で、welcome が届いた
+    private var welcomed = false
     private var reconnectAttempts = 0
     private var reconnectTask: Task<Void, Never>?
     /// サーバーに断られた（トークンが違うなど）。このときは、つなぎ直さない
@@ -111,6 +146,11 @@ final class RemoteSession: ObservableObject {
     /// 最後に選んだウィンドウの大きさの合わせ先。つなぎ直したときに、同じ表示に戻すため
     private var lastDisplay: DisplayRequest?
     private var quality = VideoQuality.high
+    /// 画質を自動で変えるとき、その決まりと、今の画質。自動でないときは nil
+    private var autoQuality: AutoQuality?
+    @Published private(set) var autoLevel: VideoQuality?
+    /// 設定「画質を通信に合わせて自動で変える」
+    static let autoQualityKey = "autoQuality"
     /// アプリが裏に回ったので、接続を閉じている。前に戻ったら、つなぎ直す
     private var suspended = false
 
@@ -135,30 +175,64 @@ final class RemoteSession: ObservableObject {
         }
     }
 
-    func connect(host: String, port: Int, token: String, quality: VideoQuality) {
+    /// hosts は、試す順のホストの並び。空のものと重なりは除く。
+    /// 最初の候補でつながらなければ、すぐ次の候補を試す
+    func connect(hosts: [String], port: Int, token: String, quality: VideoQuality) {
         disconnect()
         errorMessage = nil
         self.quality = quality
+        autoQuality = nil
+        autoLevel = nil
 
-        guard let url = URL(string: "ws://\(host):\(port)/") else {
+        var list: [String] = []
+        for host in hosts where !host.isEmpty && !list.contains(host) {
+            list.append(host)
+        }
+        guard !list.isEmpty, list.allSatisfy({ Self.url(host: $0, port: port) != nil }) else {
             errorMessage = "接続先の形式が正しくありません"
             return
         }
-        target = (url, token)
+        target = (list, port, token)
+        lastGoodIndex = 0
+        beginRound()
         state = .connecting
         open()
     }
 
+    private static func url(host: String, port: Int) -> URL? {
+        URL(string: "ws://\(host):\(port)/")
+    }
+
+    /// 候補を試す順番を、最後につながった候補から始め直す
+    private func beginRound() {
+        hostIndex = lastGoodIndex
+        triedInRound = 0
+    }
+
+    /// 次の候補に移れるなら、移って true を返す
+    private func advanceCandidate() -> Bool {
+        guard let target, triedInRound + 1 < target.hosts.count else { return false }
+        triedInRound += 1
+        hostIndex = (hostIndex + 1) % target.hosts.count
+        return true
+    }
+
     private func open() {
-        guard let target else { return }
+        guard let target, target.hosts.indices.contains(hostIndex),
+              let url = Self.url(host: target.hosts[hostIndex], port: target.port) else { return }
         rejected = false
-        let task = URLSession.shared.webSocketTask(with: target.url)
+        welcomed = false
+        let task = URLSession.shared.webSocketTask(with: url)
         task.maximumMessageSize = 16 * 1024 * 1024
         self.task = task
         task.resume()
 
         var hello: [String: Any] = ["t": "hello", "v": 1, "token": target.token]
-        hello.merge(quality.helloFields) { _, new in new }
+        // つなぎ直しのときは、自動で下げた画質のまま始める
+        hello.merge((autoQuality?.current ?? quality).helloFields) { _, new in new }
+        // H.265 は、同じ画質で通信量が H.264 の半分くらい。この端末が速く読めて、設定でオフにしていなければ、先に頼む
+        let useHEVC = UserDefaults.standard.object(forKey: Self.useHEVCKey) as? Bool ?? true
+        hello["codecs"] = (useHEVC && H264Renderer.supportsHEVC) ? ["hevc", "h264"] : ["h264"]
         let helloData = (try? JSONSerialization.data(withJSONObject: hello)) ?? Data()
         let renderer = self.renderer
 
@@ -184,10 +258,13 @@ final class RemoteSession: ObservableObject {
             }
         }
 
-        // welcome が来なければ、接続に失敗したことにする
+        // welcome が来なければ、接続に失敗したことにする。
+        // 候補が複数あるときは、各回の最初の候補だけ、短く待つ
+        let timeout = (triedInRound == 0 && target.hosts.count > 1)
+            ? Self.firstCandidateTimeout : Self.connectTimeout
         connectWatchdog?.cancel()
         connectWatchdog = Task { [weak self] in
-            try? await Task.sleep(for: Self.connectTimeout)
+            try? await Task.sleep(for: timeout)
             guard let self, !Task.isCancelled, self.task === task, self.state != .connected else { return }
             self.fail(task)
         }
@@ -198,6 +275,13 @@ final class RemoteSession: ObservableObject {
     private nonisolated static func handleBinary(_ data: Data, video: H264Renderer, audio: AudioPlayer) {
         guard data.count > 5, let flags = data.first else { return }
         let body = data.dropFirst(5)
+        if flags == fileFrameFlag {
+            // ファイルの中身（フラグ 0x04 + id(4、ビッグエンディアン) + 中身）。受信のスレッドで書く
+            let start = data.startIndex
+            let id = data[start + 1..<start + 5].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+            FileTransfer.receiver.append(id: id, data: Data(body))
+            return
+        }
         if flags & 0x02 != 0 {
             audio.enqueue(Data(body))
             return
@@ -246,6 +330,7 @@ final class RemoteSession: ObservableObject {
         guard target != nil else { return }
         reconnectAttempts = 0
         state = .reconnecting
+        beginRound()
         open()
     }
 
@@ -253,10 +338,12 @@ final class RemoteSession: ObservableObject {
     func setQuality(_ quality: VideoQuality) {
         guard quality != self.quality else { return }
         self.quality = quality
+        autoQuality = nil // 選び直した画質から、自動の判断をやり直す
         guard state == .connected, target != nil else { return }
         close(code: .goingAway)
         reconnectAttempts = 0
         state = .reconnecting
+        beginRound()
         open()
     }
 
@@ -265,9 +352,11 @@ final class RemoteSession: ObservableObject {
         reconnectTask?.cancel()
         reconnectTask = nil
         target = nil
+        activeHost = nil
         reconnectAttempts = 0
         suspended = false
         currentWindow = nil
+        currentMonitor = nil
         viewMode = .screen
         lastDisplay = nil
         close(code: .normalClosure)
@@ -285,6 +374,7 @@ final class RemoteSession: ObservableObject {
         latencyMs = nil
         task?.cancel(with: code, reason: nil)
         task = nil
+        fileTransfer.cancelAll()
         renderer.reset()
         audio.stop()
         audioOn = false
@@ -301,6 +391,14 @@ final class RemoteSession: ObservableObject {
         let window = currentWindow
         receiveTask = nil
         close(code: .goingAway)
+
+        // welcome が来る前に失敗したら、まだ試していない候補を、すぐ試す
+        // （断られたとき、サーバーが正常に閉じたときは、別の候補でも同じなので試さない）
+        if !welcomed, !rejected, !closedNormally, advanceCandidate() {
+            currentWindow = window // つなぎ直しの途中なら、同じウィンドウの表示に戻す
+            open()
+            return
+        }
 
         if !wasConnecting, !rejected, !closedNormally, target != nil,
            reconnectAttempts < Self.maxReconnectAttempts {
@@ -319,8 +417,10 @@ final class RemoteSession: ObservableObject {
             }
         }
         target = nil
+        activeHost = nil
         reconnectAttempts = 0
         currentWindow = nil
+        currentMonitor = nil
         viewMode = .screen
         lastDisplay = nil
         state = .disconnected
@@ -334,6 +434,7 @@ final class RemoteSession: ObservableObject {
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard let self, !Task.isCancelled, self.state == .reconnecting else { return }
+            self.beginRound()
             self.open()
         }
     }
@@ -342,6 +443,8 @@ final class RemoteSession: ObservableObject {
         imeOn = nil
         windows = []
         isLoadingWindows = false
+        monitors = []
+        isLoadingMonitors = false
         noticeTask?.cancel()
         notice = nil
     }
@@ -389,9 +492,10 @@ final class RemoteSession: ObservableObject {
         send(["t": "clip_set", "s": text])
     }
 
-    /// PCのクリップボードの文字を、もらう（届いたら、iPhoneのクリップボードに入れる）
+    /// PCのクリップボードの中身を、もらう。文字なら clip が返り、iPhoneのクリップボードに入れる。
+    /// ファイルや画像なら、file_begin などで届く（FileTransfer.swift）
     func requestClipboard() {
-        send(["t": "clip_get"])
+        send(["t": "clip_pull"])
     }
 
     func setIME(_ on: Bool) {
@@ -420,9 +524,10 @@ final class RemoteSession: ObservableObject {
 
     private func requestAudio() {
         if audioWanted {
-            // 低画質のときは、音も軽くする（24000Hz、モノラル）
+            // 音は Opus で圧縮して受け取る（PCM の約 1.5Mbps が、約 0.1Mbps になる）。Opus は 48000Hz だけ。
+            // 低画質のときは、モノラルにして、さらに軽くする
             let low = quality == .low
-            send(["t": "audio", "on": true, "rate": low ? 24000 : 48000, "channels": low ? 1 : 2])
+            send(["t": "audio", "on": true, "codec": "opus", "rate": 48000, "channels": low ? 1 : 2])
         } else {
             send(["t": "audio", "on": false])
         }
@@ -453,6 +558,12 @@ final class RemoteSession: ObservableObject {
         send(message)
     }
 
+    /// モニター1つ全体を表示する
+    func showMonitor(_ monitor: RemoteMonitor) {
+        lastDisplay = .monitor(monitor)
+        send(["t": "mode", "mode": "monitor", "id": monitor.id])
+    }
+
     func showScreen() {
         lastDisplay = nil
         send(["t": "mode", "mode": "screen"])
@@ -475,7 +586,7 @@ final class RemoteSession: ObservableObject {
             showDesktop(fit: fit)
         case .window(let window, let oldFit, let toVirtual)?:
             if oldFit != nil { showWindow(window, fit: fit, toVirtual: toVirtual) }
-        case nil:
+        case .monitor?, nil:
             break
         }
     }
@@ -487,7 +598,7 @@ final class RemoteSession: ObservableObject {
         }
     }
 
-    private func show(notice text: String) {
+    func show(notice text: String) {
         notice = text
         noticeTask?.cancel()
         noticeTask = Task { [weak self] in
@@ -514,11 +625,27 @@ final class RemoteSession: ObservableObject {
 
         switch type {
         case "welcome":
+            let auto = UserDefaults.standard.object(forKey: Self.autoQualityKey) as? Bool ?? true
+            if auto {
+                // つなぎ直しのときは、それまでの画質から続ける
+                autoQuality = AutoQuality(ceiling: quality, current: autoQuality?.current)
+                autoLevel = autoQuality?.current
+            } else {
+                autoQuality = nil
+                autoLevel = nil
+            }
+            renderer.setCodec(json["codec"] as? String ?? "h264")
+            codec = json["codec"] as? String ?? "h264"
             if let w = json["w"] as? Int, let h = json["h"] as? Int {
                 videoSize = CGSize(width: w, height: h)
             }
             virtualAvailable = json["virtual"] as? Bool ?? false
             let reconnected = state == .reconnecting
+            welcomed = true
+            lastGoodIndex = hostIndex
+            if let hosts = target?.hosts, hosts.indices.contains(hostIndex) {
+                activeHost = hosts[hostIndex]
+            }
             state = .connected
             errorMessage = nil
             reconnectAttempts = 0
@@ -534,6 +661,8 @@ final class RemoteSession: ObservableObject {
                     showDesktop(fit: fit)
                 case .window(let window, let fit, let toVirtual)?:
                     showWindow(window, fit: fit, toVirtual: toVirtual)
+                case .monitor(let monitor)?:
+                    showMonitor(monitor)
                 case nil:
                     break
                 }
@@ -548,10 +677,22 @@ final class RemoteSession: ObservableObject {
                 // これより前の ping は、返事が来なかったものとして忘れる
                 pendingPings = pendingPings.filter { $0.key > n }
             }
+        case "stats":
+            guard var auto = autoQuality, let dropped = json["dropped"] as? Int else { break }
+            let next = auto.update(dropped: dropped, latencyMs: latencyMs)
+            autoQuality = auto // 変えなかったときも、数えた状態（続けて悪かった回数など）を残す
+            if let next {
+                autoLevel = next
+                var message: [String: Any] = ["t": "quality"]
+                message.merge(next.helloFields) { _, new in new }
+                send(message)
+                show(notice: "通信に合わせて、画質を\(next.shortLabel)にしました")
+            }
         case "audio_state":
             if json["on"] as? Bool == true, audioWanted,
                let rate = json["rate"] as? Int, let channels = json["channels"] as? Int {
-                audio.start(rate: rate, channels: channels, mixWithOthers: audioMix)
+                // 古いサーバーは codec を返さない（PCM で送ってくる）
+                audio.start(rate: rate, channels: channels, codec: json["codec"] as? String ?? "pcm", mixWithOthers: audioMix)
                 audioOn = true
             } else {
                 audio.stop()
@@ -589,15 +730,29 @@ final class RemoteSession: ObservableObject {
                 if let id = json["id"] as? Int {
                     let title = json["title"] as? String ?? ""
                     currentWindow = windows.first { $0.id == id } ?? RemoteWindow(id: id, title: title, app: "")
+                    currentMonitor = nil
                     viewMode = .window
+                }
+            case "monitor":
+                if let id = json["id"] as? String {
+                    currentWindow = nil
+                    currentMonitor = monitors.first { $0.id == id }
+                        ?? RemoteMonitor(id: id, name: json["name"] as? String ?? id)
+                    viewMode = .monitor
                 }
             case "desktop":
                 currentWindow = nil
+                currentMonitor = nil
                 viewMode = .desktop
             default:
                 currentWindow = nil
+                currentMonitor = nil
                 viewMode = .screen
             }
+        case "monitors":
+            handleMonitors(json)
+        case "file_begin", "file_end", "file_saved":
+            fileTransfer.handleControl(type, json)
         case "notice":
             if let message = json["message"] as? String { show(notice: message) }
         case "brought":
