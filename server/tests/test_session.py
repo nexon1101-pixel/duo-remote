@@ -105,7 +105,7 @@ def test_welcome_video_and_input():
             await ws.send(hello(max_height=540))
             welcome = json.loads(await ws.recv())
             assert welcome == {
-                "t": "welcome", "v": 1, "w": 960, "h": 540, "codec": "h264", "mode": "screen", "virtual": False,
+                "t": "welcome", "v": 1, "w": 960, "h": 540, "codec": "h264", "mode": "screen", "virtual": False, "pad": False,
             }
             key, ts, payload = await recv_frame(ws)
             assert key and payload.endswith(b"KEY")

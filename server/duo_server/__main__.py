@@ -17,6 +17,7 @@ from .capture import (
     FfmpegStream, build_ffmpeg_cmd, capture_target, detect_encoder, detect_hevc, detect_window_capture,
 )
 from .input_win import create_input
+from . import gamepad
 from .server import Settings, make_handler
 from .udp import UdpEndpoint
 
@@ -119,7 +120,11 @@ async def run(args: argparse.Namespace) -> None:
         udp = await UdpEndpoint.open(args.host, port)
     except OSError as e:
         log.warning("UDP のポート %d を開けませんでした。UDP なしで動きます: %s", port, e)
-    handler = make_handler(settings, backend, stream_factory, audio_factory, udp)
+    # 仮想のゲームパッドを使えるかを、先に1回だけ調べる（ViGEmBus が入っていないと使えない）
+    pad_probe = await asyncio.to_thread(gamepad.probe)
+    handler = make_handler(
+        settings, backend, stream_factory, audio_factory, udp, pad_factory=gamepad.create_pad, pad_probe=pad_probe,
+    )
     # 仮想ディスプレイのドライバーが入っているかを、先に調べておく（調べるのに1秒ほどかかる）
     virtual = await asyncio.to_thread(backend.virtual_available)
     if virtual and await asyncio.to_thread(backend.virtual_cleanup_leftover):
@@ -130,6 +135,7 @@ async def run(args: argparse.Namespace) -> None:
         async with serve(handler, args.host, port, max_size=1024 * 1024, close_timeout=2):
             print(f"duo_server {__version__} を起動しました: {args.host}:{port}（エンコーダー: {encoder}{'、H.265 も使えます' if settings.hevc_available else ''}）")
             print(f"仮想ディスプレイ: {'使えます' if virtual else 'ドライバーが入っていません'}")
+            print(f"ゲームパッド: {'使えます' if pad_probe[0] else '使えません（' + pad_probe[1] + '）'}")
             print(
                 "ウィンドウの表示: "
                 + ("ウィンドウだけを撮ります（Windows Graphics Capture）" if settings.window_capture

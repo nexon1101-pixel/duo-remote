@@ -14,7 +14,7 @@ from typing import Any, Callable, Protocol
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed
 
-from . import files, protocol, udp as udp_mod
+from . import files, gamepad, protocol, udp as udp_mod
 from .audio import ALLOWED_CHANNELS, ALLOWED_CODECS, ALLOWED_RATES, OPUS_RATE, AudioError
 from .capture import StreamError, output_size
 from .input_win import ClipboardError, from_windows_newlines, to_windows_newlines
@@ -25,6 +25,8 @@ log = logging.getLogger(__name__)
 
 HELLO_TIMEOUT_SEC = 5
 IME_POLL_SEC = 0.5
+# pad を反映する間隔の下限（秒）。1秒に120回まで。超えた分は、最後の状態だけ反映する
+PAD_MIN_INTERVAL_SEC = 1 / gamepad.MAX_PAD_PER_SEC
 WINDOW_POLL_SEC = 0.5
 # 撮る範囲の最小の大きさ（画素）。これより小さいと、エンコーダーが受け付けないことがある
 MIN_REGION = 160
@@ -255,8 +257,18 @@ class Session:
     def __init__(
         self, ws: ServerConnection, settings: Settings, backend, stream_factory: StreamFactory,
         audio_factory: AudioFactory | None = None, udp: UdpEndpoint | None = None,
+        pad_factory: Callable[[], gamepad.VirtualPad] | None = None, pad_reason: str | None = "未対応です",
     ) -> None:
         self.ws = ws
+        # 仮想のゲームパッド。pad_reason は、使えないときの理由（使えるときは None）
+        self.pad_factory = pad_factory
+        self.pad_reason = pad_reason
+        self._pad: gamepad.VirtualPad | None = None
+        self._pad_given_up = False  # 使えないと返した。以後の pad は、静かに捨てる
+        self._pad_pending: tuple | None = None  # 間隔の下限のために、まだ反映していない最後の状態
+        self._pad_last = 0.0  # 最後に反映した時刻
+        self._pad_timer: asyncio.TimerHandle | None = None
+        self._pad_tasks: set[asyncio.Task] = set()
         self.udp = udp
         self.peer: UdpPeer | None = None  # UDP を使えるときだけ（welcome に udp_key を付けた接続）
         self.use_udp = False  # 映像と音を、UDP で送っている
@@ -506,6 +518,99 @@ class Session:
                 self.use_udp = False
                 self._need_key = True  # 戻した映像は、キーフレームから始める
                 await self.send({"t": "transport", "mode": "tcp"})
+
+    # --- ゲームパッド
+
+    async def handle_pad(self, msg: dict[str, Any]) -> None:
+        if self._pad_given_up:
+            return
+        if self._pad is None:
+            # 作るのは、イベントループの上で直接行う（待っている間に切れて、取り外し損ねるのを防ぐため）
+            reason = self.pad_reason
+            pad = None
+            if self.pad_factory is not None and reason is None:
+                try:
+                    pad = self.pad_factory()
+                    pad.connect()
+                except gamepad.PadUnavailable as e:
+                    pad, reason = None, str(e)
+                except Exception as e:
+                    log.exception("仮想のゲームパッドを作れませんでした")
+                    pad, reason = None, f"作れませんでした（{type(e).__name__}）"
+            if pad is None:
+                self._pad_given_up = True
+                await self.send({"t": "pad_state", "available": False, "reason": reason or "使えません"})
+                return
+            loop = asyncio.get_running_loop()
+
+            def on_rumble(large: float, small: float) -> None:
+                # ドライバーのスレッドから呼ばれる。ループに渡す
+                try:
+                    loop.call_soon_threadsafe(self._rumble, large, small)
+                except RuntimeError:  # ループが閉じている
+                    pass
+
+            pad.set_rumble_callback(on_rumble)
+            self._pad = pad
+            log.info("仮想のゲームパッドを作りました")
+            await self.send({"t": "pad_state", "available": True})
+        state = gamepad.clean_state(msg)
+        wait = self._pad_last + PAD_MIN_INTERVAL_SEC - time.monotonic()
+        if wait > 0:
+            # 速すぎる。最後の状態だけ、間隔が空いてから反映する
+            self._pad_pending = state
+            if self._pad_timer is None:
+                self._pad_timer = asyncio.get_running_loop().call_later(wait, self._flush_pad)
+            return
+        self._pad_pending = None
+        self._apply_pad(state)
+
+    def _flush_pad(self) -> None:
+        self._pad_timer = None
+        state, self._pad_pending = self._pad_pending, None
+        if state is not None:
+            self._apply_pad(state)
+
+    def _apply_pad(self, state: tuple) -> None:
+        if self._pad is None:
+            return
+        self._pad_last = time.monotonic()
+        try:
+            self._pad.update(*state)
+        except Exception:
+            log.exception("仮想のゲームパッドに反映できませんでした")
+
+    def _rumble(self, large: float, small: float) -> None:
+        if self._pad is None or self.failed.done():
+            return
+        task = asyncio.create_task(self._send_rumble(large, small))
+        self._pad_tasks.add(task)
+        task.add_done_callback(self._pad_tasks.discard)
+
+    async def _send_rumble(self, large: float, small: float) -> None:
+        try:
+            await self.send({"t": "rumble", "l": large, "r": small})
+        except Exception:  # 切れかけている
+            pass
+
+    def stop_pad(self) -> None:
+        """状態を全部 0 にして、取り外す。何度呼んでもよい。"""
+        if self._pad_timer is not None:
+            self._pad_timer.cancel()
+            self._pad_timer = None
+        self._pad_pending = None
+        pad, self._pad = self._pad, None
+        for task in list(self._pad_tasks):
+            task.cancel()
+        if pad is None:
+            return
+        pad.set_rumble_callback(None)
+        for step in (pad.reset, pad.close):  # 片方が失敗しても、もう片方は行う
+            try:
+                step()
+            except Exception:
+                log.exception("仮想のゲームパッドを取り外せませんでした")
+        log.info("仮想のゲームパッドを取り外しました")
 
     def kick(self) -> None:
         if not self.kicked.done():
@@ -761,6 +866,10 @@ class Session:
             await self.set_transport(msg)
         elif t in files.MESSAGES:
             await self.files.handle(msg)
+        elif t == "pad":
+            await self.handle_pad(msg)
+        elif t == "pad_off":
+            self.stop_pad()
         elif t == "clip_get":
             await self.clip_get()
         elif t == "clip_set":
@@ -997,7 +1106,15 @@ async def _close_quietly(ws: ServerConnection, code: int, reason: str) -> None:
 def make_handler(
     settings: Settings, backend, stream_factory: StreamFactory, audio_factory: AudioFactory | None = None,
     udp: UdpEndpoint | None = None,
+    pad_factory: Callable[[], gamepad.VirtualPad] | None = None, pad_probe: tuple[bool, str] | None = None,
 ):
+    # 仮想のゲームパッドを使えるかは、起動のときに1回だけ調べる（pad_probe は調べた結果。なければここで調べる）
+    if pad_factory is None:
+        pad_ok, pad_reason = False, "未対応です"
+    else:
+        pad_ok, pad_reason = pad_probe if pad_probe is not None else gamepad.probe(pad_factory)
+    if not pad_ok:
+        log.info("仮想のゲームパッドは使えません: %s", pad_reason)
     active: dict[str, Session | None] = {"session": None}
     background: set[asyncio.Task] = set()
     cleanup: dict[str, asyncio.Task | None] = {"task": None}
@@ -1129,7 +1246,10 @@ def make_handler(
             settings.hevc_available,
             short_gop=use_udp_offer,
         )
-        session = Session(ws, per_conn, backend, stream_factory, audio_factory, udp)
+        session = Session(
+            ws, per_conn, backend, stream_factory, audio_factory, udp,
+            pad_factory if pad_ok else None, None if pad_ok else (pad_reason or "使えません"),
+        )
         cancel_cleanup()  # 切れていた間に、戻す予定だったものは、続きから使う
 
         # 同時に1台だけ。前の接続は切る。
@@ -1154,7 +1274,7 @@ def make_handler(
             w, h = session.size
             welcome = {
                 "t": "welcome", "v": protocol.VERSION, "w": w, "h": h, "codec": session.settings.codec, "mode": "screen",
-                "virtual": bool(backend.virtual_available()),
+                "virtual": bool(backend.virtual_available()), "pad": pad_ok,
             }
             if use_udp_offer:
                 session.peer = udp.new_peer()
@@ -1193,6 +1313,7 @@ def make_handler(
             if session.peer is not None:
                 udp.drop_peer(session.peer)
             await session.files.close()
+            session.stop_pad()  # 押したままにならないよう、全部 0 にして取り外す
             await session.stop_stream()
             # 押したまま切れると、PCでボタンやキーが押されたままになるので、離す
             release_held(backend, session.held)
