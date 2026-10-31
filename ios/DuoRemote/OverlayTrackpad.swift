@@ -7,6 +7,8 @@ struct OverlayTrackpad: View {
     let session: RemoteSession
     /// 閉じるボタンを押したとき
     var onClose: () -> Void
+    /// 下部に固定するボタンを押したとき
+    var onDock: () -> Void = {}
 
     /// 濃さは、アプリのキーボードと同じ設定を使う
     @AppStorage(OverlayKeyboard.opacityKey) private var opacity = 0.8
@@ -58,6 +60,14 @@ struct OverlayTrackpad: View {
                     .frame(width: 40, height: Self.barHeight)
             }
             .accessibilityLabel("トラックパッドを閉じる")
+            Button(action: onDock) {
+                Image(systemName: "arrow.down.to.line.compact")
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: 22, height: 22)
+                    .background(Color.white.opacity(0.15), in: Circle())
+                    .frame(width: 32, height: Self.barHeight)
+            }
+            .accessibilityLabel("下部に固定")
             Spacer()
             // 引いて動かせることが分かるように、シートと同じつまみを出す
             Capsule()
