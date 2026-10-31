@@ -15,6 +15,8 @@ struct DockedInput: View {
 
     /// 「…」のメニュー。上の画面の角に出すより、下の画面の帯にある方が、押しやすい
     let menuButton: AnyView
+    /// ウィンドウの一覧を開くボタン。切り替えは何度もするので、帯に置く
+    let windowsButton: AnyView
 
     static let showKeysKey = "dockShowKeys"
     static let showPadKey = "dockShowPad"
@@ -106,6 +108,7 @@ struct DockedInput: View {
                 .glass(in: Capsule(), tint: session.imeOn == true ? .accentColor : nil, interactive: true)
             }
             .buttonStyle(.plain)
+            windowsButton
             menuButton
             Button {
                 showKeys = false

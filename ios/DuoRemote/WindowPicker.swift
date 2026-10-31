@@ -12,24 +12,24 @@ struct WindowPicker: View {
 
     @AppStorage("fitWindow") private var fitWindow = true
     @AppStorage("toVirtual") private var toVirtual = true
+    /// 探す文字
+    @State private var query = ""
+
+    /// 今映しているウィンドウを先頭にして、探す文字で絞った一覧
+    private var shownWindows: [RemoteWindow] {
+        let words = query.split(separator: " ").map(String.init)
+        let matched = session.windows.filter { window in
+            words.allSatisfy { window.title.localizedCaseInsensitiveContains($0) || window.app.localizedCaseInsensitiveContains($0) }
+        }
+        let currentID = session.currentWindow?.id
+        return matched.filter { $0.id == currentID } + matched.filter { $0.id != currentID }
+    }
 
     private var bringing: Bool { session.viewMode == .desktop }
 
     var body: some View {
         NavigationStack {
             List {
-                if !bringing {
-                    Section {
-                        if session.virtualAvailable {
-                            Toggle("仮想画面に移して映す", isOn: $toVirtual)
-                        }
-                        Toggle("この画面に大きさを合わせる", isOn: $fitWindow)
-                            .disabled(session.virtualAvailable && toVirtual)
-                    } footer: {
-                        Text(footerText)
-                    }
-                }
-
                 Section(bringing ? "仮想画面に持ってくるウィンドウ" : "ウィンドウ") {
                     if session.windows.isEmpty {
                         if session.isLoadingWindows {
@@ -43,7 +43,7 @@ struct WindowPicker: View {
                             )
                         }
                     }
-                    ForEach(session.windows) { window in
+                    ForEach(shownWindows) { window in
                         Button {
                             choose(window)
                             dismiss()
@@ -64,9 +64,22 @@ struct WindowPicker: View {
                         }
                     }
                 }
+
+                if !bringing {
+                    Section {
+                        if session.virtualAvailable {
+                            Toggle("仮想画面に移して映す", isOn: $toVirtual)
+                        }
+                        Toggle("この画面に大きさを合わせる", isOn: $fitWindow)
+                            .disabled(session.virtualAvailable && toVirtual)
+                    } footer: {
+                        Text(footerText)
+                    }
+                }
             }
             .navigationTitle(bringing ? "ウィンドウを持ってくる" : "ウィンドウを選ぶ")
             .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "ウィンドウを探す")
             .refreshable { session.requestWindows() }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -77,7 +90,7 @@ struct WindowPicker: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.fraction(0.6), .large])
         .presentationDragIndicator(.visible)
     }
 
@@ -144,6 +157,8 @@ struct WindowPicker: View {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
             }
         }
+        .padding(.vertical, 6)
+        .frame(minHeight: 52)
         .contentShape(Rectangle())
     }
 }

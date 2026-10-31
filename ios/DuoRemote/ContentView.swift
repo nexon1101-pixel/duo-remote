@@ -136,7 +136,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             if let fold = dockedFold {
-                DockedInput(menuButton: AnyView(menu(compact: true)))
+                DockedInput(menuButton: AnyView(menu(compact: true)), windowsButton: AnyView(windowsButton(compact: true)))
                     .padding(.horizontal, 10 + max(safeInsets.leading, safeInsets.trailing))
                     .padding(.top, 8)
                     .padding(.bottom, 8 + safeInsets.bottom)
@@ -187,6 +187,7 @@ struct ContentView: View {
                 } else {
                     HStack(spacing: 0) {
                         Spacer()
+                        windowsButton(compact: false)
                         trackpadButton
                         inputButton
                     }
@@ -349,6 +350,28 @@ struct ContentView: View {
             guard !Task.isCancelled else { return }
             session.refreshDisplay(fit: fitSize)
         }
+    }
+
+    /// ウィンドウの一覧を開くボタン。切り替えは何度もするので、メニューの奥ではなく、すぐ押せる所に置く
+    /// compact: 半開きの下の画面の帯に置く、背の低い形
+    @ViewBuilder
+    private func windowsButton(compact: Bool) -> some View {
+        let tint: Color = session.viewMode == .window || session.viewMode == .desktop ? .accentColor : .white
+        Button {
+            session.requestWindows()
+            showingWindows = true
+        } label: {
+            Image(systemName: "macwindow.on.rectangle")
+                .font(.body.weight(.semibold))
+                .padding(.horizontal, 14)
+                .padding(.vertical, compact ? 0 : 10)
+                .frame(height: compact ? 34 : nil)
+                .foregroundStyle(tint)
+                .glass(in: Capsule(), interactive: true)
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, compact ? 0 : 12)
+        .accessibilityLabel("ウィンドウを選ぶ")
     }
 
     /// トラックパッドを出す・しまうボタン（重ねて出す形）
