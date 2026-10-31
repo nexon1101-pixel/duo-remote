@@ -58,7 +58,20 @@ struct ContentView: View {
     @AppStorage(DockedInput.showPadKey) private var dockShowPad = true
     /// アプリのキーボードを、普通の iPhone のキーボードのように下端に固定する
     @AppStorage(OverlayKeyboard.colorKeysKey) private var colorKeys = true
-    @AppStorage("overlayKeyboardAtBottom") private var keyboardAtBottom = false
+    @AppStorage(OverlayDockMode.key) private var dockModeRaw = ""
+    /// 前の版の設定（キーボードを下端に固定するか）。置き方を選ぶ前の人のために残す
+    @AppStorage("overlayKeyboardAtBottom") private var legacyKeyboardAtBottom = false
+
+    private var dockMode: OverlayDockMode {
+        OverlayDockMode(rawValue: dockModeRaw) ?? (legacyKeyboardAtBottom ? .keyboard : .free)
+    }
+    private var dockModeBinding: Binding<OverlayDockMode> {
+        Binding(get: { dockMode }, set: { dockModeRaw = $0.rawValue })
+    }
+    /// 下端に固定したキーボードを出すか
+    private var bottomKeys: Bool { inputMode == .overlay && dockMode != .free }
+    /// 下端に固定したトラックパッドを出すか
+    private var bottomPad: Bool { showTrackpad && dockMode == .both }
 
     var body: some View {
         ZStack {
@@ -142,7 +155,7 @@ struct ContentView: View {
                     .allowsHitTesting(false)
             }
 
-            if showTrackpad && halfOpenFold == nil {
+            if showTrackpad && halfOpenFold == nil && dockMode != .both {
                 OverlayTrackpad(session: session) { showTrackpad = false }
                     .padding(.top, safeInsets.top)
                     .padding(.leading, safeInsets.leading)
@@ -151,11 +164,11 @@ struct ContentView: View {
                     .transition(.opacity)
             }
 
-            if inputMode == .overlay && halfOpenFold == nil && !keyboardAtBottom {
+            if inputMode == .overlay && halfOpenFold == nil && dockMode == .free {
                 OverlayKeyboard(session: session, onClose: {
                     if inputMode == .overlay { inputMode = .touch }
                 }, onDock: {
-                    keyboardAtBottom = true
+                    dockModeRaw = OverlayDockMode.keyboard.rawValue
                 })
                 .padding(.top, safeInsets.top)
                 .padding(.leading, safeInsets.leading)
@@ -183,19 +196,23 @@ struct ContentView: View {
                             if inputMode == .software { inputMode = .touch }
                         }
                     }
-                    if inputMode == .overlay && keyboardAtBottom {
+                    if bottomKeys || bottomPad {
                         BottomKeyboard(
                             session: session,
-                            maxKeysHeight: fullSize.height * 0.45,
+                            showKeys: bottomKeys,
+                            showPad: bottomPad,
+                            padHeight: min(max(fullSize.height * 0.18, 110), 170),
+                            maxKeysHeight: fullSize.height * (bottomPad ? 0.35 : 0.45),
                             bottomInset: safeInsets.bottom,
-                            onUndock: { keyboardAtBottom = false }
+                            onUndock: { dockModeRaw = OverlayDockMode.free.rawValue }
                         )
                         .transition(.move(edge: .bottom))
                     }
                 }
             }
             .animation(.spring(duration: 0.35), value: inputMode)
-            .animation(.spring(duration: 0.35), value: keyboardAtBottom)
+            .animation(.spring(duration: 0.35), value: dockModeRaw)
+            .animation(.spring(duration: 0.35), value: showTrackpad)
         }
         // 画面の端までは使う。キーボードが出たときだけ、入力の欄がその上に上がる
         .ignoresSafeArea(.container)
@@ -378,7 +395,7 @@ struct ContentView: View {
         .padding(12)
         .padding(.trailing, safeInsets.trailing)
         // iPhoneのキーボードが出ているときは、映像がキーボードの上で終わるので、ホームの線の分は要らない
-        .padding(.bottom, inputMode == .software || (inputMode == .overlay && keyboardAtBottom) ? 0 : safeInsets.bottom)
+        .padding(.bottom, inputMode == .software || bottomKeys || bottomPad ? 0 : safeInsets.bottom)
     }
 
     private static let autoChoice = "auto"
@@ -450,7 +467,11 @@ struct ContentView: View {
                     Text("40%").tag(0.4)
                 }
                 Toggle("キーを役割ごとに色分けする", isOn: $colorKeys)
-                Toggle("アプリのキーボードを下端に固定する", isOn: $keyboardAtBottom)
+                Picker("キーボードとトラックパッドの置き方", selection: dockModeBinding) {
+                    ForEach(OverlayDockMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
                 Toggle("半開きのとき、下にキーボードを出す", isOn: $dockWhenHalfOpen)
                 Toggle("H.265 を使う（通信量が少ない。次の接続から）", isOn: $useHEVC)
                 Toggle("遅れを画面に出す", isOn: $showLatency)

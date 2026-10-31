@@ -140,10 +140,39 @@ struct OverlayKeyboard: View {
 
 // MARK: - 下端に固定
 
+/// キーボードとトラックパッドの置き方
+enum OverlayDockMode: String, CaseIterable, Identifiable {
+    /// どちらも、映像の上で、自由に動かす
+    case free
+    /// キーボードだけ、下端に固定する。トラックパッドは自由に動かす
+    case keyboard
+    /// キーボードとトラックパッドを、下端に固定する（キーボードの下にトラックパッド）
+    case both
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .free: "すべて自由に動かす"
+        case .keyboard: "キーボードを下端に固定"
+        case .both: "キーボードとトラックパッドを下端に固定"
+        }
+    }
+
+    static let key = "overlayDockMode"
+}
+
 /// 普通の iPhone のキーボードのように、画面の下に横いっぱいで出すアプリのキーボード。
-/// 広い画面では、背が高くなりすぎないよう、高さの上限に合わせて幅を狭め、真ん中に置く
+/// 広い画面では、背が高くなりすぎないよう、高さの上限に合わせて幅を狭め、真ん中に置く。
+/// 置き方が「キーボードとトラックパッドを下端に固定」のときは、キーボードの下に、トラックパッドも置く
 struct BottomKeyboard: View {
     let session: RemoteSession
+    /// キーボードを出すか
+    var showKeys = true
+    /// キーボードの下に、トラックパッドを出すか
+    var showPad = false
+    /// トラックパッドの高さ
+    var padHeight: CGFloat = 150
     /// 高さの上限（帯と、下の余白を除く）
     let maxKeysHeight: CGFloat
     /// ホームの線の分の余白
@@ -161,6 +190,7 @@ struct BottomKeyboard: View {
         let ratio = OverlayKeyboard.keyAspect * CGFloat(layout.rows.count) / OverlayKeyboardLayout.rowWidth
 
         VStack(spacing: 0) {
+            if showKeys {
             HStack {
                 Text(layout.label)
                     .font(.caption2.weight(.semibold))
@@ -177,13 +207,22 @@ struct BottomKeyboard: View {
             }
             .padding(.horizontal, 14)
             .frame(height: Self.barHeight)
+            }
             // 幅は、渡された数字ではなく、実際に使える幅に合わせる（広すぎて、左右のキーが画面の外に出ないように）。
             // 高さは、その幅と、キーの縦横の比で決まる。高さの上限を超えるときは、幅を狭めて、真ん中に置く
-            OverlayKeysView(session: session, layout: layout)
-                .aspectRatio(1 / ratio, contentMode: .fit)
-                .frame(maxWidth: .infinity)
-                .frame(maxHeight: maxKeysHeight)
-                .padding(.horizontal, 6)
+            if showKeys {
+                OverlayKeysView(session: session, layout: layout)
+                    .aspectRatio(1 / ratio, contentMode: .fit)
+                    .frame(maxWidth: .infinity)
+                    .frame(maxHeight: maxKeysHeight)
+                    .padding(.horizontal, 6)
+            }
+            if showPad {
+                TrackpadPad(send: session.send, zones: .sides)
+                    .frame(height: padHeight)
+                    .padding(.horizontal, 6)
+                    .padding(.top, showKeys ? 6 : 8)
+            }
         }
         .padding(.bottom, 6 + bottomInset)
         .frame(maxWidth: .infinity)
