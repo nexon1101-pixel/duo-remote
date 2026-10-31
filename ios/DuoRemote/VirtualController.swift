@@ -233,63 +233,125 @@ final class VirtualControllerUIView: UIView {
     }
 
     override func draw(_ rect: CGRect) {
-        guard !buttons.isEmpty else { return }
+        guard !buttons.isEmpty, let ctx = UIGraphicsGetCurrentContext() else { return }
         let k = preset.keys
         let d = unit
-        let base = UIColor(white: 1, alpha: 0.18)
-        let accent = tintColor.withAlphaComponent(0.65)
-        let edge = UIColor(white: 1, alpha: 0.12)
+        let accent = tintColor
 
-        // 十字
-        let c = dpadCenter
-        let centerRect = CGRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d)
-        let arms: [(key: ControllerKey, rect: CGRect, glyph: String)] = [
-            (k.up, CGRect(x: c.x - d / 2, y: c.y - d * 1.5, width: d, height: d), "↑"),
-            (k.down, CGRect(x: c.x - d / 2, y: c.y + d / 2, width: d, height: d), "↓"),
-            (k.left, CGRect(x: c.x - d * 1.5, y: c.y - d / 2, width: d, height: d), "←"),
-            (k.right, CGRect(x: c.x + d / 2, y: c.y - d / 2, width: d, height: d), "→"),
-        ]
-        fillRounded(centerRect, radius: 10, color: base, edge: edge)
-        for arm in arms {
-            fillRounded(arm.rect, radius: 10, color: isPressed(arm.key) ? accent : base, edge: edge)
-            drawLabel(arm.glyph, size: d * 0.4, in: arm.rect)
-        }
+        drawDPad(ctx: ctx, keys: k, d: d, accent: accent)
 
         // 丸いボタン、肩のボタン、Start と Select
         for b in buttons {
-            let color = isPressed(b.key) ? accent : base
+            let pressed = isPressed(b.key)
             if b.round {
-                color.setFill()
-                let path = UIBezierPath(ovalIn: b.rect)
-                path.fill()
-                edge.setStroke()
-                path.lineWidth = 0.5
-                path.stroke()
-                drawLabel(b.key.label, size: d * 0.4, in: b.rect)
+                // 4つのボタンは、位置ごとに色を付ける（下: 緑、右: 赤、左: 青、上: 黄）
+                let tint = faceTint(b.key, keys: k)
+                let r = pressed ? b.rect.insetBy(dx: -2, dy: -2) : b.rect
+                ctx.saveGState()
+                ctx.setShadow(offset: CGSize(width: 0, height: 2), blur: 5, color: UIColor(white: 0, alpha: 0.35).cgColor)
+                tint.withAlphaComponent(pressed ? 0.9 : 0.3).setFill()
+                UIBezierPath(ovalIn: r).fill()
+                ctx.restoreGState()
+                tint.withAlphaComponent(pressed ? 1 : 0.75).setStroke()
+                let ring = UIBezierPath(ovalIn: r.insetBy(dx: 0.75, dy: 0.75))
+                ring.lineWidth = 1.5
+                ring.stroke()
+                drawLabel(b.key.label, size: d * 0.38, weight: .bold, color: .white, in: r)
             } else {
-                fillRounded(b.rect, radius: b.rect.height / 2, color: color, edge: edge)
                 let isShoulder = b.key.label.count == 1
-                drawLabel(b.key.label, size: isShoulder ? d * 0.34 : d * 0.24, in: b.rect)
+                ctx.saveGState()
+                ctx.setShadow(offset: CGSize(width: 0, height: 2), blur: 4, color: UIColor(white: 0, alpha: 0.3).cgColor)
+                (pressed ? accent.withAlphaComponent(0.7) : UIColor(white: 1, alpha: 0.16)).setFill()
+                UIBezierPath(roundedRect: b.rect, cornerRadius: b.rect.height / 2).fill()
+                ctx.restoreGState()
+                UIColor(white: 1, alpha: 0.18).setStroke()
+                let edge = UIBezierPath(roundedRect: b.rect.insetBy(dx: 0.25, dy: 0.25), cornerRadius: b.rect.height / 2)
+                edge.lineWidth = 0.5
+                edge.stroke()
+                drawLabel(
+                    b.key.label, size: isShoulder ? d * 0.34 : d * 0.22,
+                    weight: isShoulder ? .bold : .semibold, color: UIColor(white: 1, alpha: 0.92), in: b.rect
+                )
             }
         }
     }
 
-    private func fillRounded(_ rect: CGRect, radius: CGFloat, color: UIColor, edge: UIColor) {
+    /// 十字は、1つの十字の形に描く。押している方向だけ、色を付ける。矢印は、三角で描く
+    private func drawDPad(ctx: CGContext, keys k: ControllerKeys, d: CGFloat, accent: UIColor) {
+        let c = dpadCenter
+        let corner = d * 0.3
+        let horizontal = CGRect(x: c.x - d * 1.5, y: c.y - d / 2, width: d * 3, height: d)
+        let vertical = CGRect(x: c.x - d / 2, y: c.y - d * 1.5, width: d, height: d * 3)
+        let cross = UIBezierPath(roundedRect: horizontal, cornerRadius: corner)
+        cross.append(UIBezierPath(roundedRect: vertical, cornerRadius: corner))
+        ctx.saveGState()
+        ctx.setShadow(offset: CGSize(width: 0, height: 2), blur: 6, color: UIColor(white: 0, alpha: 0.4).cgColor)
+        UIColor(white: 1, alpha: 0.16).setFill()
+        cross.fill()
+        ctx.restoreGState()
+        // 真ん中の、くぼみ
+        UIColor(white: 0, alpha: 0.18).setFill()
+        UIBezierPath(ovalIn: CGRect(x: c.x - d * 0.26, y: c.y - d * 0.26, width: d * 0.52, height: d * 0.52)).fill()
+
+        let arms: [(key: ControllerKey, dir: CGPoint, offset: CGPoint)] = [
+            (k.up, CGPoint(x: 0, y: -1), CGPoint(x: 0, y: -1)),
+            (k.down, CGPoint(x: 0, y: 1), CGPoint(x: 0, y: 1)),
+            (k.left, CGPoint(x: -1, y: 0), CGPoint(x: -1, y: 0)),
+            (k.right, CGPoint(x: 1, y: 0), CGPoint(x: 1, y: 0)),
+        ]
+        for arm in arms {
+            let box = CGRect(x: c.x + arm.offset.x * d - d / 2, y: c.y + arm.offset.y * d - d / 2, width: d, height: d)
+            let pressed = isPressed(arm.key)
+            if pressed {
+                accent.withAlphaComponent(0.7).setFill()
+                UIBezierPath(roundedRect: box.insetBy(dx: 2, dy: 2), cornerRadius: corner * 0.8).fill()
+            }
+            drawArrow(direction: arm.dir, in: box, bright: pressed)
+        }
+    }
+
+    private func drawArrow(direction dir: CGPoint, in box: CGRect, bright: Bool) {
+        let s = box.width * 0.17
+        let m = CGPoint(x: box.midX, y: box.midY)
+        let perp = CGPoint(x: -dir.y, y: dir.x)
+        let tip = CGPoint(x: m.x + dir.x * s, y: m.y + dir.y * s)
+        let baseCenter = CGPoint(x: m.x - dir.x * s * 0.7, y: m.y - dir.y * s * 0.7)
+        let p1 = CGPoint(x: baseCenter.x + perp.x * s * 1.1, y: baseCenter.y + perp.y * s * 1.1)
+        let p2 = CGPoint(x: baseCenter.x - perp.x * s * 1.1, y: baseCenter.y - perp.y * s * 1.1)
+        let path = UIBezierPath()
+        path.move(to: tip)
+        path.addLine(to: p1)
+        path.addLine(to: p2)
+        path.close()
+        path.lineJoinStyle = .round
+        path.lineWidth = 2
+        let color = UIColor(white: 1, alpha: bright ? 1 : 0.7)
         color.setFill()
-        let path = UIBezierPath(roundedRect: rect, cornerRadius: radius)
+        color.setStroke()
         path.fill()
-        edge.setStroke()
-        path.lineWidth = 0.5
         path.stroke()
     }
 
-    private func drawLabel(_ text: String, size: CGFloat, in box: CGRect) {
+    /// 4つのボタンの色。位置で決める
+    private func faceTint(_ key: ControllerKey, keys k: ControllerKeys) -> UIColor {
+        switch key.sc {
+        case k.faceDown.sc: return .systemGreen
+        case k.faceRight.sc: return .systemRed
+        case k.faceLeft.sc: return .systemBlue
+        case k.faceUp.sc: return .systemYellow
+        default: return .white
+        }
+    }
+
+    private func drawLabel(_ text: String, size: CGFloat, weight: UIFont.Weight, color: UIColor, in box: CGRect) {
         let style = NSMutableParagraphStyle()
         style.alignment = .center
         style.lineBreakMode = .byClipping
+        let base = UIFont.systemFont(ofSize: size, weight: weight)
+        let font = base.fontDescriptor.withDesign(.rounded).map { UIFont(descriptor: $0, size: size) } ?? base
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: size, weight: .semibold),
-            .foregroundColor: UIColor.white,
+            .font: font,
+            .foregroundColor: color,
             .paragraphStyle: style,
         ]
         let textSize = (text as NSString).size(withAttributes: attrs)
