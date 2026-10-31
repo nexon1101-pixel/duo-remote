@@ -57,6 +57,7 @@ struct ContentView: View {
     @AppStorage("dockWhenHalfOpen") private var dockWhenHalfOpen = true
     /// ゲームモード（上半分に映像、下半分に入力の板）
     @AppStorage("gameMode") private var gameMode = false
+    @AppStorage(ControllerKind.storageKey) private var controllerKind = ControllerKind.simple
     @AppStorage(DockedInput.showKeysKey) private var dockShowKeys = true
     @AppStorage(DockedInput.showPadKey) private var dockShowPad = true
     /// アプリのキーボードを、普通の iPhone のキーボードのように下に固定する
@@ -99,13 +100,21 @@ struct ContentView: View {
             loadToken()
             updateIdleTimer()
             migrateDockMode()
+            updatePhysicalController()
         }
+        // 本物のコントローラは、ガチで、PC が対応しているときだけ、PC に送る
+        .onChange(of: controllerKind) { _, _ in updatePhysicalController() }
+        .onChange(of: session.padAvailable) { _, _ in updatePhysicalController() }
+        .onChange(of: session.padState) { _, _ in updatePhysicalController() }
         // トラックパッドを下部に固定にしたときは、そのまま出す（出し入れは、トラックパッドのボタンで）
         .onChange(of: padAtBottom) { _, atBottom in
             if atBottom { showTrackpad = true }
         }
         // 接続中は、触らなくても画面がロックされないようにする
-        .onChange(of: session.state) { _, _ in updateIdleTimer() }
+        .onChange(of: session.state) { _, _ in
+            updateIdleTimer()
+            updatePhysicalController()
+        }
         .onChange(of: session.activeHost) { _, active in
             guard let active else { return }
             if active == host { lastHostIndex = 0 } else if active == hostRemote { lastHostIndex = 1 }
@@ -127,6 +136,13 @@ struct ContentView: View {
         .onChange(of: audioMix) { _, _ in session.setAudio(audioOn, mixWithOthers: audioMix) }
         // 音を始められなかったら、スイッチをオフに戻す
         .onChange(of: session.audioFailures) { _, _ in audioOn = false }
+    }
+
+    private func updatePhysicalController() {
+        PhysicalController.shared.configure(
+            session: session,
+            inUse: controllerKind == .pad && session.padUsable && session.state == .connected
+        )
     }
 
     private func updateIdleTimer() {

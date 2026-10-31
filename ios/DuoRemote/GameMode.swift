@@ -33,6 +33,8 @@ struct GameModePanel: View {
     @AppStorage("gameModePane") private var pane = GameModePane.controller
     @AppStorage("gameMode") private var gameMode = false
     @AppStorage("controllerPreset") private var preset = ControllerPreset.arrows
+    @AppStorage(ControllerKind.storageKey) private var controllerKind = ControllerKind.simple
+    @ObservedObject private var physical = PhysicalController.shared
 
     /// 「…」のメニュー
     let menuButton: AnyView
@@ -84,19 +86,62 @@ struct GameModePanel: View {
             .glass(in: RoundedRectangle(cornerRadius: UIMetrics.panelRadius, style: .continuous))
     }
 
-    private var controllerPane: some View {
-        VirtualControllerView(session: session, preset: preset)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .glass(in: RoundedRectangle(cornerRadius: UIMetrics.panelRadius, style: .continuous))
-            .overlay(alignment: .bottom) {
-                presetMenu
-                    .padding(.bottom, 6)
-            }
+    /// ガチを選んでいて、PC も対応しているときだけ、ガチで動かす。PC が対応していないときは、簡易で動かす
+    private var usesPad: Bool {
+        controllerKind == .pad && session.padUsable
     }
 
-    /// コントローラの隅の小さい歯車。キーの割り当てを切り替える
+    /// 本物のコントローラを使っている。このときは、画面のコントローラを薄くして、触れないようにする
+    private var physicalInUse: Bool {
+        usesPad && physical.isConnected
+    }
+
+    private var controllerPane: some View {
+        ZStack {
+            if usesPad {
+                VirtualGamepadView(session: session, enabled: !physicalInUse)
+                    .opacity(physicalInUse ? 0.25 : 1)
+            } else {
+                VirtualControllerView(session: session, preset: preset)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .glass(in: RoundedRectangle(cornerRadius: UIMetrics.panelRadius, style: .continuous))
+        .overlay(alignment: .bottom) {
+            VStack(spacing: 2) {
+                if let text = controllerNote {
+                    Text(text)
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.7))
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 240)
+                        .allowsHitTesting(false)
+                }
+                presetMenu
+            }
+            .padding(.bottom, 6)
+        }
+    }
+
+    /// コントローラの板の隅の、小さい案内
+    private var controllerNote: String? {
+        if controllerKind == .pad && !session.padUsable {
+            return "PC にゲームパッドの部品（ViGEmBus）が入っていません。簡易で動きます"
+        }
+        guard physical.isConnected else { return nil }
+        return usesPad ? "コントローラ接続中" : "コントローラ接続中（ガチにすると使えます）"
+    }
+
+    /// コントローラの隅の小さい歯車。種類と、キーの割り当てを切り替える
     private var presetMenu: some View {
         Menu {
+            Picker("コントローラの種類", selection: $controllerKind) {
+                ForEach(ControllerKind.allCases) { item in
+                    Text(item.label).tag(item)
+                }
+            }
+            .pickerStyle(.inline)
             Picker("キーの割り当て", selection: $preset) {
                 ForEach(ControllerPreset.allCases) { item in
                     Text(item.label).tag(item)
@@ -106,7 +151,7 @@ struct GameModePanel: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "gearshape")
-                Text(preset.label)
+                Text(usesPad ? "ガチ" : preset.label)
             }
             .font(.caption.weight(.semibold))
             .foregroundStyle(.white.opacity(0.8))
@@ -114,7 +159,7 @@ struct GameModePanel: View {
             .frame(height: 34)
             .contentShape(Capsule())
         }
-        .accessibilityLabel("コントローラのキーの割り当て")
+        .accessibilityLabel("コントローラの種類とキーの割り当て")
     }
 
     /// 上の帯。切り替え、ウィンドウ、メニュー、ゲームモードを終わるボタン
