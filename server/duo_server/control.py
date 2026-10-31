@@ -48,7 +48,7 @@ def read_settings(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
 
 
 def save_settings(changes: dict[str, Any], path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
-    """変えた項目だけを、確かめてから保存する。トークンは、ここでは変えない。保存した後の設定を返す。"""
+    """変えた項目だけを、確認してから保存する。トークンは、ここでは変えない。保存した後の設定を返す。"""
     cfg, _ = load_config(path)
     for key, value in changes.items():
         if key in SETTING_LIMITS:

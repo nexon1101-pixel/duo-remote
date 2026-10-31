@@ -437,7 +437,7 @@ class VirtualDisplay:
                 return found
             time.sleep(0.5)
         raise VirtualDisplayError(
-            "仮想モニターが出ませんでした。vdd_settings.xml の count が 1 以上か、確かめてください"
+            "仮想モニターが出ませんでした。vdd_settings.xml の count が 1 以上か、確認してください"
         )
 
     def off(self, force: bool = False) -> None:

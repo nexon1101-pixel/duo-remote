@@ -982,7 +982,7 @@ if sys.platform == "win32":
                     expected[0], expected[1], pos.x, pos.y,
                 )
             elif self._cursor_checks == 1:
-                log.info("カーソルが動くことを確かめました")
+                log.info("カーソルが動くことを確認しました")
 
         def move_rel(self, dx: float, dy: float) -> None:
             """今のカーソルの位置から動かす。dx, dy は、表示している範囲の幅・高さに対する割合。

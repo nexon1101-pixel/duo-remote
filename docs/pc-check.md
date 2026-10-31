@@ -4,14 +4,14 @@
 
 ## あなたにお願いしたいこと
 
-iPhone から自宅の Windows PC を操作するアプリ「duo-remote」の、PC側のサーバーを動かして、正しく動くかを確かめてください。リポジトリは https://github.com/nexon1101-pixel/duo-remote です。
+iPhone から自宅の Windows PC を操作するアプリ「duo-remote」の、PC側のサーバーを動かして、正しく動くかを確認してください。リポジトリは https://github.com/nexon1101-pixel/duo-remote です。
 
 ## 守ること
 
 - コードは書き換えない。GitHub に push しない
 - サーバーのトークン（`server/config.json` の `token`、サーバーの起動時に表示される値）は、報告に書かない。画面に表示されたことだけ伝える
 - ルーターの設定は変えない。Windows のファイアウォールを丸ごと無効にしない
-- 管理者として実行するのは、手順で求められたときか、ユーザーに確かめてからにする
+- 管理者として実行するのは、手順で求められたときか、ユーザーに確認してからにする
 - 途中で止まったら、先に進まず、出たメッセージをそのまま報告する
 
 ## 手順
@@ -107,4 +107,4 @@ powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE
 
 1. iPhone の Safari で https://github.com/nexon1101-pixel/duo-remote/releases/tag/latest を開き、`DuoRemote.ipa` を SideStore で入れる
 2. アプリに、ホスト（報告の IP アドレス）、ポート（8765）、トークン（サーバーの画面に出たもの）を入れて接続する
-3. `docs/tasks.md` の「D. 実機で確かめること」を順に試す
+3. `docs/tasks.md` の「D. 実機で確認すること」を順に試す

@@ -25,7 +25,8 @@ body {
   font: 14px/1.6 "Segoe UI Variable", "Segoe UI", "Yu Gothic UI", system-ui, sans-serif;
 }
 main { max-width: 860px; margin: 0 auto; padding: 16px 16px 40px; }
-header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 8px 0 16px; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 8px 0 14px; background: var(--card);
+  border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 12px 20px; }
 header h1 { font-size: 22px; margin: 0; font-weight: 600; }
 header .ver { color: var(--sub); font-size: 13px; margin-left: 6px; font-weight: 400; }
 header .grow { flex: 1; }
@@ -36,11 +37,14 @@ header .grow { flex: 1; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
   padding: 16px 20px; margin-bottom: 14px; }
 .card h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+.card h2::before { content: ""; display: inline-block; width: 3px; height: 14px; border-radius: 2px; background: var(--accent);
+  margin-right: 8px; vertical-align: -2px; }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0; }
 .row .label { width: 120px; color: var(--sub); flex: none; }
 .row .value { flex: 1; min-width: 120px; word-break: break-all; font-family: Consolas, monospace; }
 /* ホストは複数あるので、1行ずつ、コピーのボタンをほかの行と同じ右端にそろえる */
-.hostline { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.hostline { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 8px; }
+.hostline.recommended { background: color-mix(in srgb, var(--accent) 9%, transparent); }
 .hostline .hostaddr { flex: 1; }
 .small { font-size: 12px; color: var(--sub); }
 /* 印と装置の名前は、アドレス（等幅）の中にあっても、普通の文字にする */
@@ -48,9 +52,10 @@ header .grow { flex: 1; }
 .ifname { font-size: 12px; color: var(--sub); margin-left: 8px; }
 .hostline:not(.recommended) .hostaddr { color: var(--sub); }
 .tag { font-size: 11px; padding: 0 8px; border-radius: 999px; background: var(--accent); color: var(--accent-text); margin-left: 6px; }
-button { font: inherit; padding: 5px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--btn);
+button { font: inherit; min-height: 32px; padding: 5px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--btn);
   color: var(--text); cursor: pointer; }
 button:hover { background: var(--btn-hover); }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button:disabled { opacity: .5; cursor: default; }
 button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
 button.primary:hover { filter: brightness(1.08); }
@@ -96,7 +101,7 @@ footer { text-align: center; margin-top: 24px; }
   <header>
     <h1>DuoRemote サーバー<span class="ver" id="ver"></span></h1>
     <span class="grow"></span>
-    <span class="badge" id="badge"><span class="dot"></span><span id="badgeText">確認しています</span></span>
+    <span class="badge" id="badge"><span class="dot"></span><span id="badgeText">確認中</span></span>
     <button class="primary big" id="toggle" disabled>起動</button>
     <button id="restart" disabled>再起動</button>
   </header>
@@ -118,9 +123,9 @@ footer { text-align: center; margin-top: 24px; }
       <label>ポート<input type="number" id="s_port"></label>
       <label>フレームレート<input type="number" id="s_fps"></label>
       <label>ビットレート（kbps）<input type="number" id="s_bitrate_kbps"></label>
-      <label>映像の高さの上限（0は元の大きさ）<input type="number" id="s_max_height"></label>
+      <label>映像の高さ上限（0で元の大きさ）<input type="number" id="s_max_height"></label>
       <label>エンコーダー<select id="s_encoder"></select></label>
-      <label>モニターの番号<input type="number" id="s_output_idx"></label>
+      <label>モニター番号<input type="number" id="s_output_idx"></label>
     </div>
     <div class="row"><button class="primary" id="save">保存</button>
       <span class="small">フレームレート・ビットレート・高さは、アプリで画質を選ぶとアプリの値になります。</span></div>
@@ -130,24 +135,24 @@ footer { text-align: center; margin-top: 24px; }
   <section class="card">
     <h2>Windows</h2>
     <div class="row"><span class="label">管理者</span><span class="value" id="adminText" style="font-family:inherit"></span>
-      <button id="adminBtn" hidden>管理者として起動し直す</button></div>
+      <button id="adminBtn" hidden>管理者で再起動</button></div>
     <div class="row"><span class="label">自動起動</span>
       <label class="switch"><input type="checkbox" id="autostart"><span></span></label>
       <span>ログインしたときに自動で起動する</span></div>
-    <div class="row"><span class="label">開くブラウザー</span>
+    <div class="row"><span class="label">管理画面のブラウザー</span>
       <select id="panelBrowser">
         <option value="edge">Edge（ウィンドウ）</option>
         <option value="chrome">Chrome（タブ）</option>
-        <option value="default">いつものブラウザー</option>
+        <option value="default">既定のブラウザー</option>
       </select>
       <span class="small">次に panel.bat で開くときから変わります。Claude に操作させるときは Chrome です</span></div>
   </section>
 
   <section class="card">
     <h2>更新</h2>
-    <div class="row"><span class="label">今の版</span><span class="value" id="curVer" style="font-family:inherit"></span></div>
-    <div class="row"><span class="label">GitHub の版</span><span class="value" id="newVer" style="font-family:inherit">確かめていません</span>
-      <button id="checkBtn">確かめる</button><button class="primary" id="updateBtn" hidden>更新する</button></div>
+    <div class="row"><span class="label">現在の版</span><span class="value" id="curVer" style="font-family:inherit"></span></div>
+    <div class="row"><span class="label">最新の版</span><span class="value" id="newVer" style="font-family:inherit">未確認</span>
+      <button id="checkBtn">更新を確認</button><button class="primary" id="updateBtn" hidden>更新する</button></div>
     <div class="small" id="method"></div>
     <pre class="log short" id="updateLog" hidden></pre>
     <details id="prevUpdate" hidden><summary class="small">前回の更新のログ</summary><pre class="log short" id="prevUpdateLog"></pre></details>
@@ -163,7 +168,7 @@ footer { text-align: center; margin-top: 24px; }
   <footer><button class="danger" id="quit">管理画面を終了</button></footer>
 </main>
 <div class="toast" id="toast"></div>
-<!-- 確かめる表示。ブラウザーの確認の小窓（confirm）は、PCを操作する Claude（Claude in Chrome）が押せず、タブが止まるので使わない -->
+<!-- 確認する表示。ブラウザーの確認の小窓（confirm）は、PCを操作する Claude（Claude in Chrome）が押せず、タブが止まるので使わない -->
 <div class="ask" id="ask" hidden>
   <div class="askbox" role="dialog" aria-modal="true">
     <p id="askText"></p>
@@ -215,24 +220,24 @@ function renderStatus() {
   $("ver").textContent = "版 " + st.version;
   $("curVer").textContent = st.version;
   $("badge").className = "badge" + (st.running ? " on" : "");
-  $("badgeText").textContent = st.running ? "動いています" : "止まっています";
+  $("badgeText").textContent = st.running ? "実行中" : "停止中";
   $("toggle").textContent = st.running ? "停止" : "起動";
   $("toggle").className = st.running ? "big" : "primary big";
   $("toggle").disabled = busy; $("restart").disabled = busy || !st.running;
-  $("adminText").textContent = st.admin ? "管理者として動いています"
+  $("adminText").textContent = st.admin ? "管理者として実行中"
     : "管理者ではありません（仮想ディスプレイに必要です）";
   $("adminBtn").hidden = st.admin;
   $("autostart").checked = st.autostart;
   $("portShow").textContent = st.port;
   const hosts = $("hosts"); hosts.textContent = "";
   const details = st.address_details || st.addresses.map((a) => ({ address: a, name: "", recommended: false, tailscale: a.startsWith("100.") }));
-  if (!details.length) hosts.textContent = "見つかりませんでした";
+  if (!details.length) hosts.textContent = "見つかりません";
   details.forEach((d) => {
     const line = document.createElement("div");
     line.className = "hostline" + (d.recommended ? " recommended" : "");
     const text = document.createElement("span"); text.className = "hostaddr"; text.textContent = d.address;
-    if (d.recommended) { const t = document.createElement("span"); t.className = "tag"; t.textContent = "家の Wi-Fi・有線ならこれ"; text.append(t); }
-    if (d.tailscale) { const t = document.createElement("span"); t.className = "tag"; t.textContent = "Tailscale（外から）"; text.append(t); }
+    if (d.recommended) { const t = document.createElement("span"); t.className = "tag"; t.textContent = "自宅の Wi-Fi・有線（おすすめ）"; text.append(t); }
+    if (d.tailscale) { const t = document.createElement("span"); t.className = "tag"; t.textContent = "Tailscale（外出先）"; text.append(t); }
     if (d.name) { const n = document.createElement("span"); n.className = "ifname"; n.textContent = d.name; text.append(n); }
     line.append(text);
     const b = document.createElement("button"); b.textContent = "コピー";
@@ -310,32 +315,32 @@ $("autostart").onchange = async (ev) => {
 $("panelBrowser").onchange = async (ev) => {
   try {
     const r = await api("/api/settings", "POST", { changes: { panel_browser: ev.target.value } });
-    cfg.settings = r.settings; toast("開くブラウザーを変えました");
+    cfg.settings = r.settings; toast("管理画面のブラウザーを変えました");
   } catch (e) { fail(e); }
 };
 
 $("adminBtn").onclick = async () => {
-  if (!(await ask("管理者として起動し直します。この画面は新しい画面に変わります。続けますか。"))) return;
+  if (!(await ask("管理者で再起動します。この画面は新しい画面に変わります。続けますか。"))) return;
   let r;
   try { r = await api("/api/admin", "POST"); } catch (e) { fail(e); return; }
   $("down").style.display = "block";
-  $("down").textContent = "管理者として起動し直しています。このページは新しい画面に切り替わります。";
+  $("down").textContent = "管理者で再起動しています。このページは新しい画面に切り替わります。";
   moveToNext(r.next_key, $("down"));
 };
 
 // 更新
 let updateInfo = null;
 async function checkUpdate() {
-  $("newVer").textContent = "確かめています…";
+  $("newVer").textContent = "確認中…";
   try {
     updateInfo = await api("/api/update");
     $("curVer").textContent = updateInfo.current;
     $("method").textContent = "更新の方式: " + (updateInfo.method === "git" ? "git" : "ZIP");
-    if (updateInfo.error) $("newVer").textContent = "確かめられませんでした（" + updateInfo.error + "）";
+    if (updateInfo.error) $("newVer").textContent = "確認できませんでした（" + updateInfo.error + "）";
     else if (updateInfo.available) $("newVer").textContent = updateInfo.latest + "（新しい版があります）";
     else $("newVer").textContent = (updateInfo.latest || updateInfo.current) + "（最新です）";
     $("updateBtn").hidden = !(updateInfo.available && !updateInfo.error);
-  } catch (e) { $("newVer").textContent = "確かめられませんでした"; fail(e); }
+  } catch (e) { $("newVer").textContent = "確認できませんでした"; fail(e); }
 }
 $("checkBtn").onclick = checkUpdate;
 // 更新のあとに起動し直したとき、前の管理画面で出ていた更新のログを見せる
@@ -380,7 +385,7 @@ function finishUpdate(nextKey) {
 
 // 起動し直した新しい管理画面が答えるようになったら、このページを、その鍵のアドレスに移す
 async function moveToNext(nextKey, note) {
-  failures = -1000; // 古い管理画面が止まっても、「止まっています」の帯を出さない
+  failures = -1000; // 古い管理画面が止まっても、「管理画面が止まっています」の帯を出さない
   if (!nextKey) return;
   for (let i = 0; i < 90; i++) {
     await new Promise((r) => setTimeout(r, 1000));

@@ -272,7 +272,7 @@ class Session:
         self._stream: Stream | None = None
         self._video: asyncio.Task | None = None
         self._first_frame = asyncio.Event()  # 今の映像の、最初のフレームが届いた
-        self._verifying = False  # 撮り始めを確かめている間は、失敗しても、接続を切らない（やり直す）
+        self._verifying = False  # 撮り始めを確認している間は、失敗しても、接続を切らない（やり直す）
         self._paused = False  # 画面の設定を変える間、撮影を止めている
         self._restarts: list[float] = []  # 撮影が止まって、撮り直した時刻
         self._recovery: asyncio.Task | None = None
@@ -547,7 +547,7 @@ class Session:
         self, window: int | None, region: tuple[int, int, int, int] | None, monitor: dict | None = None
     ) -> None:
         """表示する範囲を変えて、撮り直す。大きさが変わるときは、先に resize を送る。
-        仮想ディスプレイを撮るときは、最初のフレームが届くまで確かめ、失敗したら、モニターの情報を取り直して、やり直す。"""
+        仮想ディスプレイを撮るときは、最初のフレームが届くまで確認し、失敗したら、モニターの情報を取り直して、やり直す。"""
         self._paused = False
         verify = monitor is not None and bool(monitor.get("virtual"))
         attempts = VIRTUAL_START_ATTEMPTS if verify else 1

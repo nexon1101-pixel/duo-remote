@@ -1,4 +1,4 @@
-"""Windows の上でだけ動くテスト。ctypes の定義が正しいか（大きさ、呼び出し）を確かめる。"""
+"""Windows の上でだけ動くテスト。ctypes の定義が正しいか（大きさ、呼び出し）を確認する。"""
 import sys
 
 import pytest

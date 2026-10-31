@@ -1,6 +1,6 @@
 """サーバーの自己診断。起動: python -m duo_server.selfcheck
 
-動いているサーバーに、このPCからつないで、次を確かめる。iPhone は使わない。
+動いているサーバーに、このPCからつないで、次を確認する。iPhone は使わない。
 - 接続とトークン
 - 映像が届くか（フレーム数、キーフレーム、ビットレート）
 - 往復の時間（ping）
@@ -431,7 +431,7 @@ async def _run_checks(
                 if await _wait_ime_state(ws, True):
                     r.good("IMEをオンにできました（PCのIMEの状態が、オンになった）")
                 else:
-                    r.bad("IMEをオンにしても、PCのIMEの状態が、オンになりませんでした（IMEが日本語になっているか、確かめてください）")
+                    r.bad("IMEをオンにしても、PCのIMEの状態が、オンになりませんでした（IMEが日本語になっているか、確認してください）")
                 await ws.send(json.dumps({"t": "ime", "on": False}))
                 if await _wait_ime_state(ws, False):
                     r.good("IMEをオフにできました（PCのIMEの状態が、オフになった）")
@@ -535,7 +535,7 @@ def _screen_pixels() -> tuple[int, int]:
 
 
 async def _check_mouse(ws, r: Report) -> None:
-    """アプリから届く操作（move）が、PCのカーソルを動かすかを試す。iPhone がなくても、サーバーと Windows の間を確かめられる。
+    """アプリから届く操作（move）が、PCのカーソルを動かすかを試す。iPhone がなくても、サーバーと Windows の間を確認できる。
     動かなければ、サーバーの画面（server\\duo_server.log）の WARNING を見る。"""
     if _cursor_position() is None:
         r.info("マウスの確認は、サーバーと同じ Windows のPCでだけできます")
@@ -605,7 +605,7 @@ async def _check_monitors(ws, r: Report, seconds: float, codec: str) -> None:
 async def _check_quality(ws, r: Report, seconds: float, codec: str, video_h: int) -> None:
     await ws.send(json.dumps({"t": "quality", "max_height": 720}))
     if 0 < video_h <= 720:
-        r.info(f"映像の高さが {video_h} なので、高さ720への変更は確かめません")
+        r.info(f"映像の高さが {video_h} なので、高さ720への変更は確認しません")
     else:
         try:
             size = await _recv_json(ws, {"resize"}, timeout=10)
@@ -735,7 +735,7 @@ async def _check_put(ws, r: Report, path: Path, to_clipboard: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser(prog="duo_server.selfcheck", description="動いているサーバーを、このPCから確かめる")
+    p = argparse.ArgumentParser(prog="duo_server.selfcheck", description="動いているサーバーを、このPCから確認する")
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="サーバーの設定ファイル（トークンを読む）")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, help="ポート（省略すると設定ファイルの値）")
