@@ -17,7 +17,9 @@ def test_save_settings_checks_ranges(tmp_path):
     on_disk = json.loads(cfg.read_text(encoding="utf-8"))
     assert on_disk["token"] == settings["token"]  # トークンは変わらない
 
-    for bad in ({"fps": 500}, {"port": "x"}, {"fps": 1.5}, {"fps": True}, {"encoder": "h265"}, {"token": "x"}):
+    assert saved["panel_browser"] == "edge"
+    assert control.save_settings({"panel_browser": "chrome"}, cfg)["panel_browser"] == "chrome"
+    for bad in ({"panel_browser": "firefox"}, {"fps": 500}, {"port": "x"}, {"fps": 1.5}, {"fps": True}, {"encoder": "h265"}, {"token": "x"}):
         with pytest.raises(control.SettingsError):
             control.save_settings(bad, cfg)
     assert json.loads(cfg.read_text(encoding="utf-8"))["fps"] == 30

@@ -29,8 +29,11 @@ SETTING_LIMITS: dict[str, tuple[int, int]] = {
     "output_idx": (0, 15),
 }
 ENCODERS = ("auto", "h264_nvenc", "libx264")
+# 管理画面を開くブラウザー。edge: Edge のアプリ表示（アドレスバーのないウィンドウ）、chrome: Chrome のタブ、default: いつものブラウザー
+PANEL_BROWSERS = ("edge", "chrome", "default")
 DEFAULTS: dict[str, Any] = {
     "port": 8765, "fps": 60, "bitrate_kbps": 8000, "max_height": 0, "encoder": "auto", "output_idx": 0,
+    "panel_browser": "edge",
 }
 
 
@@ -55,6 +58,10 @@ def save_settings(changes: dict[str, Any], path: Path = DEFAULT_CONFIG) -> dict[
             if not low <= int(value) <= high:
                 raise SettingsError(f"{key} は {low}〜{high} にしてください")
             cfg[key] = int(value)
+        elif key == "panel_browser":
+            if value not in PANEL_BROWSERS:
+                raise SettingsError(f"panel_browser は {'、'.join(PANEL_BROWSERS)} のどれかにしてください")
+            cfg[key] = value
         elif key == "encoder":
             if value not in ENCODERS:
                 raise SettingsError(f"encoder は {'、'.join(ENCODERS)} のどれかにしてください")

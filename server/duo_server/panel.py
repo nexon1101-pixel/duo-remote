@@ -78,11 +78,31 @@ def find_edge() -> str | None:
     return None
 
 
-def open_window(url: str) -> None:
-    """Edge のアプリ表示で、普通のウィンドウのように開く。Edge がなければ、いつものブラウザーで開く。"""
-    edge = find_edge()
-    if edge:
+def find_chrome() -> str | None:
+    if sys.platform != "win32":
+        return shutil.which("google-chrome") or shutil.which("chrome")
+    found = shutil.which("chrome")
+    if found:
+        return found
+    for env in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        base = os.environ.get(env)
+        if base:
+            candidate = Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe"
+            if candidate.exists():
+                return str(candidate)
+    return None
+
+
+def open_window(url: str, browser: str = "edge") -> None:
+    """管理画面を開く。
+    - edge: Edge のアプリ表示で、普通のウィンドウのように開く
+    - chrome: Chrome の新しいタブで開く（拡張機能が使えるので、PCを操作する Claude が、Claude in Chrome で触れる）
+    - default: いつものブラウザーで開く
+    選んだブラウザーが見つからなければ、いつものブラウザーで開く。"""
+    if browser == "edge" and (edge := find_edge()):
         subprocess.Popen([edge, f"--app={url}", "--window-size=920,760"])
+    elif browser == "chrome" and (chrome := find_chrome()):
+        subprocess.Popen([chrome, "--new-tab", url])
     else:
         webbrowser.open(url)
 
@@ -412,12 +432,26 @@ def remove_lock(path: Path = LOCK_PATH) -> None:
             pass
 
 
+def browser_of(args: argparse.Namespace) -> str:
+    """開くブラウザー。--browser があればそれ、なければ管理画面の設定。"""
+    if args.browser:
+        return args.browser
+    try:
+        return str(control.read_settings().get("panel_browser", "edge"))
+    except (OSError, ValueError):
+        return "edge"
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="duo_server.panel", description="サーバーの管理画面")
     p.add_argument("--port", type=int, default=DEFAULT_PORT, help="管理画面のポート（127.0.0.1だけで待ち受ける）")
     p.add_argument("--autostart", action="store_true", help="ログイン時の自動起動（ウィンドウを開かない）")
     p.add_argument("--no-window", action="store_true", help="ウィンドウを開かない")
     p.add_argument("--restart", action="store_true", help="更新などの起動し直し（前の管理画面が終わるのを待つ）")
+    p.add_argument(
+        "--browser", choices=control.PANEL_BROWSERS,
+        help="管理画面を開くブラウザー（省略すると、管理画面の設定。初めは edge）",
+    )
     return p.parse_args(argv)
 
 
@@ -448,7 +482,7 @@ def main(argv: list[str] | None = None) -> int:
     existing = running_panel()
     if existing:
         if show_window:
-            open_window(f"http://127.0.0.1:{existing['port']}/?k={existing['key']}")
+            open_window(f"http://127.0.0.1:{existing['port']}/?k={existing['key']}", browser_of(args))
         return 0
 
     key = secrets.token_urlsafe(24)
@@ -467,7 +501,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         process.start(control.server_args(control.read_settings(), control.DEFAULT_CONFIG))
         if show_window:
-            open_window(url)
+            open_window(url, browser_of(args))
         print(f"管理画面を起動しました: {url}")
         while not handler.exit_signal.wait(0.5):
             pass

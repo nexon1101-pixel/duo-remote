@@ -251,3 +251,21 @@ def test_lock_and_ping(tmp_path, app):
     assert panel.running_panel(lock)["port"] == app.port
     lock.write_text(json.dumps({"port": app.port, "key": "bad", "pid": 1}))
     assert panel.running_panel(lock) is None
+
+
+def test_browser_of(monkeypatch, tmp_path):
+    monkeypatch.setattr(control, "read_settings", lambda: {"panel_browser": "chrome"})
+    assert panel.browser_of(panel.parse_args([])) == "chrome"
+    assert panel.browser_of(panel.parse_args(["--browser", "default"])) == "default"
+
+
+def test_open_window_falls_back(monkeypatch):
+    opened = []
+    monkeypatch.setattr(panel, "find_chrome", lambda: None)
+    monkeypatch.setattr(panel.webbrowser, "open", lambda url: opened.append(("default", url)))
+    panel.open_window("http://x/", "chrome")
+    assert opened == [("default", "http://x/")]
+    monkeypatch.setattr(panel, "find_chrome", lambda: "chrome.exe")
+    monkeypatch.setattr(panel.subprocess, "Popen", lambda cmd: opened.append(tuple(cmd)))
+    panel.open_window("http://y/", "chrome")
+    assert opened[-1] == ("chrome.exe", "--new-tab", "http://y/")
