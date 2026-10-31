@@ -59,6 +59,8 @@ class Settings:
     fps: int = 60
     bitrate_kbps: int = 8000
     max_height: int = 0
+    # ウィンドウを表示するとき、画面を切り抜かず、ウィンドウだけを撮る（ffmpeg に gfxcapture があるとき）
+    window_capture: bool = False
 
 
 class Stream(Protocol):
@@ -70,8 +72,11 @@ class Stream(Protocol):
 # 引数: (周波数, チャンネル数) -> 音の取得元（start、frames、stop を持つ）
 AudioFactory = Callable[[int, int], Any]
 
-# 引数: (設定, 撮る大きさ, 撮る範囲（Noneなら、モニター全体。デスクトップ上の位置）, モニター（Noneなら主モニター）) -> 映像の取得元
-StreamFactory = Callable[[Settings, "tuple[int, int]", "tuple[int, int, int, int] | None", "dict | None"], Stream]
+# 引数: (設定, 撮る大きさ, 撮る範囲（Noneなら、モニター全体。デスクトップ上の位置）, モニター（Noneなら主モニター）,
+#        ウィンドウ（window_capture のときだけ。ウィンドウだけを撮る）) -> 映像の取得元
+StreamFactory = Callable[
+    [Settings, "tuple[int, int]", "tuple[int, int, int, int] | None", "dict | None", "int | None"], Stream
+]
 
 
 def _num(v: Any, default: float | None = None) -> float | None:
@@ -236,7 +241,8 @@ class Session:
         else:
             src = self.backend.screen_size()
         self.size = output_size(src[0], src[1], self.settings.max_height)
-        self._stream = self.stream_factory(self.settings, src, self.region, self.monitor)
+        window = self.window if self.settings.window_capture else None
+        self._stream = self.stream_factory(self.settings, src, self.region, self.monitor, window)
         await self._stream.start()
 
     def start_video(self) -> None:
@@ -528,7 +534,13 @@ class Session:
         found = monitor_of(rect, self.backend.monitors())
         if found is None:
             return None, None
-        return (None if found["primary"] else found), clamp_region(rect, found["rect"])
+        monitor = None if found["primary"] else found
+        if self.settings.window_capture:
+            # ウィンドウだけを撮るときは、モニターからはみ出した部分も撮れるので、切り詰めない
+            x, y, w, h = rect
+            w, h = w - (w % 2), h - (h % 2)
+            return monitor, ((x, y, w, h) if w >= MIN_REGION and h >= MIN_REGION else None)
+        return monitor, clamp_region(rect, found["rect"])
 
     def _where(self, rect: tuple[int, int, int, int], monitors: list[dict]) -> str:
         found = monitor_of(rect, monitors)
@@ -715,6 +727,14 @@ class Session:
             if region is None or target == current:
                 pending = None
                 continue
+            if self.settings.window_capture and self.region is not None and region[2:] == self.region[2:]:
+                # ウィンドウだけを撮っているときは、動かしただけなら撮り直さず、操作の座標だけを合わせる
+                async with self._lock:
+                    if self.window == wid:
+                        self.region, self.monitor = region, monitor
+                        self.backend.set_region(region)
+                pending = None
+                continue
             # 動かしている途中で何度も撮り直さないよう、同じ位置が2回続いたら撮り直す
             if target != pending:
                 pending = target
@@ -826,6 +846,7 @@ def make_handler(
             min(max(fps, 5), 120),
             min(max(bitrate, MIN_BITRATE_KBPS), MAX_BITRATE_KBPS),
             max(max_height, 0),
+            settings.window_capture,
         )
         session = Session(ws, per_conn, backend, stream_factory, audio_factory)
         cancel_cleanup()  # 切れていた間に、戻す予定だったものは、続きから使う

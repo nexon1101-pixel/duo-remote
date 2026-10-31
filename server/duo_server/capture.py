@@ -94,14 +94,21 @@ def build_ffmpeg_cmd(
     max_height: int = 0,
     src_height: int = 0,
     region: tuple[int, int, int, int] | None = None,
+    window: int | None = None,
 ) -> list[str]:
     """画面を撮ってH.264にするffmpegのコマンドを作る。
-    regionは撮る範囲（モニターの左上からの x, y, 幅, 高さ。画素）。Noneなら画面全体。"""
+    regionは撮る範囲（モニターの左上からの x, y, 幅, 高さ。画素）。Noneなら画面全体。
+    windowを渡すと、画面を切り抜くのではなく、そのウィンドウだけを撮る（Windows Graphics Capture。
+    ほかのウィンドウが上に重なっても映らない）。このとき output_idx と region は使わない。"""
     gop = max(fps * 2, 1)
-    grab = f"ddagrab=output_idx={output_idx}:framerate={fps}:draw_mouse=1"
-    if region is not None:
-        x, y, w, h = region
-        grab += f":offset_x={x}:offset_y={y}:video_size={w}x{h}"
+    if window is not None:
+        # width=-2、height=-2: 幅と高さを偶数に切り下げる（圧縮に偶数が要る）
+        grab = f"gfxcapture=hwnd={window}:max_framerate={fps}:capture_cursor=1:width=-2:height=-2"
+    else:
+        grab = f"ddagrab=output_idx={output_idx}:framerate={fps}:draw_mouse=1"
+        if region is not None:
+            x, y, w, h = region
+            grab += f":offset_x={x}:offset_y={y}:video_size={w}x{h}"
     scale = bool(max_height and src_height and src_height > max_height)
 
     if encoder == "h264_nvenc":
@@ -148,6 +155,18 @@ def detect_encoder(ffmpeg: str = "ffmpeg") -> str:
     except (OSError, subprocess.SubprocessError):
         return "libx264"
     return "h264_nvenc" if "h264_nvenc" in out else "libx264"
+
+
+def detect_window_capture(ffmpeg: str = "ffmpeg") -> bool:
+    """ffmpeg に、ウィンドウだけを撮る gfxcapture（Windows Graphics Capture。ffmpeg 8.1 以降）があるか調べる。"""
+    try:
+        out = subprocess.run(
+            [ffmpeg, "-hide_banner", "-filters"],
+            capture_output=True, text=True, timeout=15,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return any(line.split()[1:2] == ["gfxcapture"] for line in out.splitlines())
 
 
 class StreamError(RuntimeError):

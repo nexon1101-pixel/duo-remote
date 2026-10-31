@@ -121,3 +121,28 @@ def test_capture_target():
     assert capture_target(virtual, (3940, 40, 800, 600)) == (1, (100, 40, 800, 600))
     # 番号が分からないモニターは、主モニターの番号で撮る
     assert capture_target({"output": None, "rect": (0, 0, 1, 1)}, None, default_output=3) == (3, None)
+
+
+def test_ffmpeg_cmd_window_capture():
+    cmd = build_ffmpeg_cmd(encoder="h264_nvenc", fps=30, window=0x1234, region=(1, 2, 3, 4), src_height=600)
+    graph = cmd[cmd.index("-i") + 1]
+    assert graph.startswith("gfxcapture=hwnd=4660:max_framerate=30:")
+    assert "ddagrab" not in graph and "offset_x" not in graph and "width=-2" in graph
+    cmd = build_ffmpeg_cmd(encoder="libx264", window=7, src_height=1080, max_height=720)
+    graph = cmd[cmd.index("-i") + 1]
+    assert graph.startswith("gfxcapture=hwnd=7:") and "hwdownload" in graph and "scale=-2:720" in graph
+
+
+def test_detect_window_capture(monkeypatch):
+    import subprocess
+
+    from duo_server import capture
+
+    class Done:
+        def __init__(self, out):
+            self.stdout = out
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done(" ... ddagrab    |->V  Grab Windows Desktop\n"))
+    assert capture.detect_window_capture() is False
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done(" ... gfxcapture   |->V  Capture graphics\n"))
+    assert capture.detect_window_capture() is True

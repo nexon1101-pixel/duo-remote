@@ -42,7 +42,7 @@ def test_server_reports_missing_ffmpeg_to_client(tmp_path):
     from duo_server.input_win import NullInput
     from duo_server.server import Settings, make_handler
 
-    def factory(settings, src, region, monitor=None):
+    def factory(settings, src, region, monitor=None, window=None):
         return FfmpegStream(["ffmpeg-that-does-not-exist-xyz"])
 
     async def go():

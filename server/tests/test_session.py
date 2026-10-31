@@ -41,17 +41,17 @@ class WindowFailsStream(FakeStream):
             raise StreamError("ffmpeg が起動できませんでした（テスト）")
 
 
-async def run_with_server(body, backend=None, streams=None, stream_cls=FakeStream):
+async def run_with_server(body, backend=None, streams=None, stream_cls=FakeStream, window_capture=False):
     backend = backend or NullInput((1920, 1080))
     streams = streams if streams is not None else []
 
-    def factory(settings, src, region, monitor=None):
+    def factory(settings, src, region, monitor=None, window=None):
         s = stream_cls()
-        s.settings, s.src, s.region = settings, src, region
+        s.settings, s.src, s.region, s.window = settings, src, region, window
         streams.append(s)
         return s
 
-    handler = make_handler(Settings(token=TOKEN), backend, factory)
+    handler = make_handler(Settings(token=TOKEN, window_capture=window_capture), backend, factory)
     async with serve(handler, "127.0.0.1", 0) as server:
         port = server.sockets[0].getsockname()[1]
         await body(f"ws://127.0.0.1:{port}", backend)
@@ -519,3 +519,37 @@ def test_clipboard_error_keeps_connection():
                 pass
 
     asyncio.run(run_with_server(body, backend=Busy((1920, 1080))))
+
+
+def test_window_capture_takes_whole_window_and_does_not_restart_on_move(monkeypatch):
+    """ウィンドウだけを撮るときは、ウィンドウの番号を渡し、はみ出した部分も切り詰めない。
+    動かしただけなら撮り直さず、操作の座標だけを合わせる。大きさが変わったら撮り直す。"""
+    monkeypatch.setattr(server_mod, "WINDOW_POLL_SEC", 0.05)
+    streams = []
+
+    async def body(url, backend):
+        # 右に 200 はみ出したウィンドウ（主モニターは 1920x1080）
+        backend.windows[101]["rect"] = (1320, 50, 801, 600)
+        async with connect(url) as ws:
+            await ws.send(hello())
+            await recv_until(ws, "welcome")
+            await ws.send(json.dumps({"t": "mode", "mode": "window", "id": 101}))
+            assert await recv_until(ws, "resize") == {"t": "resize", "w": 800, "h": 600}
+            assert backend.region == (1320, 50, 800, 600)
+
+            backend.windows[101]["rect"] = (10, 20, 801, 600)  # 動かしただけ
+            for _ in range(40):
+                if backend.region == (10, 20, 800, 600):
+                    break
+                await asyncio.sleep(0.05)
+            assert backend.region == (10, 20, 800, 600)
+            assert len(streams) == 2  # 撮り直していない
+
+            backend.windows[101]["rect"] = (10, 20, 1000, 700)  # 大きさが変わった
+            assert await recv_until(ws, "resize") == {"t": "resize", "w": 1000, "h": 700}
+
+        assert [(s.region, s.window) for s in streams] == [
+            (None, None), ((1320, 50, 800, 600), 101), ((10, 20, 1000, 700), 101),
+        ]
+
+    asyncio.run(run_with_server(body, backend=make_backend(), streams=streams, window_capture=True))
