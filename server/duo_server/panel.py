@@ -53,14 +53,14 @@ def relaunch(args: list[str]) -> None:
     )
 
 
-def run_as_admin() -> bool:
-    """管理者として panel.bat を起動し直す。UAC（確認の画面）で断られたら False。"""
+def run_as_admin(extra: list[str] | None = None) -> bool:
+    """管理者として panel.bat を起動し直す。UAC（確認の画面）で断られたら False。extra は、足す引数。"""
     if sys.platform != "win32":
         return False
     try:
         import ctypes
 
-        params = subprocess.list2cmdline(["--restart", *CARRY_ARGS])
+        params = subprocess.list2cmdline(["--restart", *CARRY_ARGS, *(extra or [])])
         result = ctypes.windll.shell32.ShellExecuteW(None, "runas", str(PANEL_BAT), params, str(SERVER_DIR), 1)
         return int(result) > 32
     except Exception:
@@ -166,6 +166,8 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
     クラスの exit_event が立ったら、main が管理画面を終わる。"""
     update = UpdateState()
     exit_event = threading.Event()
+    # 起動し直すときに、新しい管理画面に渡す鍵。このページは、新しい管理画面が動き出したら、この鍵のアドレスに移る
+    next_key = secrets.token_urlsafe(24)
 
     def args_for_server() -> list[str]:
         return control.server_args(control.read_settings(config), config)
@@ -192,6 +194,8 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
                 previous = UPDATE_LOG_PATH.read_text(encoding="utf-8").splitlines()
             except OSError:
                 pass
+        if snap["done"]:
+            snap["next_key"] = next_key
         return {**snap, "previous": previous}
 
     def finish_and_exit(relaunch_args: list[str] | None) -> None:
@@ -236,7 +240,7 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
                 except OSError:
                     pass
         if error is None:
-            finish_and_exit(["--restart"])
+            finish_and_exit(["--restart", "--key", next_key])
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "DuoPanel"
@@ -404,13 +408,13 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
                 update.error = None
                 update.lines = []
             threading.Thread(target=run_update, daemon=True).start()
-            return 200, {"started": True}, None
+            return 200, {"started": True, "next_key": next_key}, None
 
         def _admin(self):
-            if not run_as_admin():
+            if not run_as_admin(["--key", next_key]):
                 return 400, {"error": "管理者として起動できませんでした"}, None
             process.stop()
-            return 200, {"ok": True}, exit_event.set
+            return 200, {"ok": True, "next_key": next_key}, exit_event.set
 
         def _quit(self):
             process.stop()
@@ -452,6 +456,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--autostart", action="store_true", help="ログイン時の自動起動（ウィンドウを開かない）")
     p.add_argument("--no-window", action="store_true", help="ウィンドウを開かない")
     p.add_argument("--restart", action="store_true", help="更新などの起動し直し（前の管理画面が終わるのを待つ）")
+    p.add_argument("--key", help="起動し直しのとき、前の管理画面から渡される鍵（ページが、そのまま移れるように）")
     p.add_argument(
         "--browser", choices=control.PANEL_BROWSERS,
         help="管理画面を開くブラウザー（省略すると、管理画面の設定。初めは edge）",
@@ -480,7 +485,10 @@ def bind(port: int, handler: type, retry_seconds: float) -> ThreadingHTTPServer:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     CARRY_ARGS[:] = ["--browser", args.browser] if args.browser else []
-    show_window = not (args.autostart or args.no_window)
+    if args.port != DEFAULT_PORT:
+        CARRY_ARGS.extend(["--port", str(args.port)])
+    # 鍵を渡されたとき（起動し直し）は、前の管理画面のページが、そのまま新しいアドレスに移るので、ウィンドウを開かない
+    show_window = not (args.autostart or args.no_window or args.key)
 
     if args.restart:
         wait_until_gone(LOCK_PATH, RESTART_WAIT)
@@ -490,7 +498,7 @@ def main(argv: list[str] | None = None) -> int:
             open_window(f"http://127.0.0.1:{existing['port']}/?k={existing['key']}", browser_of(args))
         return 0
 
-    key = secrets.token_urlsafe(24)
+    key = args.key or secrets.token_urlsafe(24)
     process = control.ServerProcess()
     handler = make_app(process, key, control.DEFAULT_CONFIG)
     try:
