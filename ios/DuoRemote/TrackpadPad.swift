@@ -2,34 +2,143 @@ import SwiftUI
 import UIKit
 
 /// ノートパソコンのような、映像とは別の場所に置くトラックパッド。
-/// 半開きの Duo の下の画面で、キーボードの横に置く。
+/// 半開きの Duo の下の画面と、重ねて出す形（OverlayTrackpad）で使う。
 ///
 /// - 1本指で動かす＝カーソルを動かす（速く動かすほど、多めに動く）
 /// - 1本指でタップ＝左クリック、2本指でタップ＝右クリック
 /// - 2本指で動かす＝スクロール（指を離したあとも、少し流れ続ける）
 /// - 長押ししてから動かす＝左ボタンを押したまま動かす（ドラッグ）
-/// - 左右のボタンは置かない（文字のボタンは、見た目がよくないので）
+/// - クリックの場所（文字は出さず、薄い線で分ける）。押している間だけ、ボタンを押した状態にする。
+///   押したまま、パッドを別の指で動かすと、ドラッグになる。場所は、使い方で変える（ClickZoneLayout）
+///   - 半開きの下の画面: 左端が左ボタン、右端が右ボタン（両手の親指で持つ形に合わせる）
+///   - 重ねて出す形: パッドの下の3割を、左半分と右半分に分ける
 struct TrackpadPad: View {
     /// 制御メッセージを送る（RemoteSession.send と同じ形）
     let send: @MainActor ([String: Any]) -> Void
+    /// クリックの場所を、どこに置くか
+    var zones: ClickZoneLayout = .bottom
+
+    /// 下に置くときの、パッド全体に対する高さの割合と、高さの下限（ポイント）
+    private static let zoneFraction: CGFloat = 0.3
+    private static let zoneMinHeight: CGFloat = 48
+    /// 左右の端に置くときの、パッド全体に対する幅の割合と、幅の下限（ポイント）
+    private static let sideFraction: CGFloat = 0.2
+    private static let sideMinWidth: CGFloat = 56
 
     var body: some View {
-        surface
-    }
-
-    private var surface: some View {
         let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
-        return ZStack {
+        ZStack {
             Color.clear
                 .glass(in: shape)
+            // カーソルを動かす部分と、クリックの場所は、重ならないように分ける。
+            // 重なると、クリックの場所を押したとき、下のパッドが、カーソルを動かしてしまう
+            GeometryReader { proxy in
+                switch zones {
+                case .bottom:
+                    let zone = min(max(proxy.size.height * Self.zoneFraction, Self.zoneMinHeight), proxy.size.height * 0.5)
+                    VStack(spacing: 0) {
+                        movePad.frame(height: proxy.size.height - zone)
+                        ClickZones(send: send)
+                            .frame(height: zone)
+                    }
+                case .sides:
+                    let zone = min(max(proxy.size.width * Self.sideFraction, Self.sideMinWidth), proxy.size.width * 0.3)
+                    HStack(spacing: 0) {
+                        ClickZone(button: "left", send: send)
+                            .frame(width: zone)
+                        divider(vertical: true)
+                        movePad
+                        divider(vertical: true)
+                        ClickZone(button: "right", send: send)
+                            .frame(width: zone)
+                    }
+                }
+            }
+        }
+        .clipShape(shape)
+        .contentShape(shape)
+    }
+
+    /// カーソルを動かす部分（アイコンと、タッチを受け取る面）
+    private var movePad: some View {
+        ZStack {
             Image(systemName: "rectangle.and.hand.point.up.left")
                 .font(.system(size: 44, weight: .light))
                 .foregroundStyle(.white.opacity(0.18))
                 .allowsHitTesting(false)
             TrackpadSurface(send: send)
         }
-        .clipShape(shape)
-        .contentShape(shape)
+    }
+
+    private func divider(vertical: Bool) -> some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.14))
+            .frame(width: vertical ? 1 : nil, height: vertical ? nil : 1)
+    }
+}
+
+/// クリックの場所の置き方
+enum ClickZoneLayout {
+    /// パッドの下の3割を、左半分と右半分に分ける
+    case bottom
+    /// パッドの左端と右端
+    case sides
+}
+
+/// パッドの下の、左右のクリックの場所。文字は出さず、薄い線で分ける。押している間は、薄く光る
+private struct ClickZones: View {
+    let send: @MainActor ([String: Any]) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ClickZone(button: "left", send: send)
+            Rectangle()
+                .fill(Color.white.opacity(0.14))
+                .frame(width: 1)
+            ClickZone(button: "right", send: send)
+        }
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color.white.opacity(0.14))
+                .frame(height: 1)
+        }
+    }
+}
+
+/// クリックの場所の1つ。押している間だけ、ボタンを押した状態にする
+private struct ClickZone: View {
+    let button: String
+    let send: @MainActor ([String: Any]) -> Void
+
+    @State private var pressed = false
+    private let haptics = UIImpactFeedbackGenerator(style: .light)
+
+    var body: some View {
+        Rectangle()
+            .fill(pressed ? Color.white.opacity(0.14) : Color.clear)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !pressed else { return }
+                        pressed = true
+                        haptics.impactOccurred()
+                        send(["t": "button", "b": button, "d": "down"])
+                    }
+                    .onEnded { _ in
+                        guard pressed else { return }
+                        pressed = false
+                        send(["t": "button", "b": button, "d": "up"])
+                    }
+            )
+            .onDisappear {
+                // 押したまま消えたときに、PCのボタンが押されたままにならないようにする
+                guard pressed else { return }
+                pressed = false
+                send(["t": "button", "b": button, "d": "up"])
+            }
+            .accessibilityLabel(button == "left" ? "左クリック" : "右クリック")
+            .accessibilityAddTraits(.isButton)
     }
 }
 
@@ -54,13 +163,21 @@ private struct TrackpadSurface: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: UIView, coordinator: TrackpadCoordinator) {
-        coordinator.stopInertia()
+        coordinator.releaseHeld()
     }
 }
 
 /// パッドの上のタッチを、マウス操作に変えて送る。動かし方は TouchInput のトラックパッドの方式に合わせる
 @MainActor
-final class TrackpadCoordinator: NSObject {
+final class TrackpadCoordinator: NSObject, UIGestureRecognizerDelegate {
+    /// ピンチの使い方（設定）。video: 映像の拡大・縮小（iPhone の中だけ）、pc: PC に Ctrl+ホイールを送る
+    static let pinchModeKey = "trackpadPinchMode"
+    /// pc のとき、ホイール1目盛りにする、ピンチの変わり具合（1.12 倍ごと）
+    private static let pinchStep: CGFloat = 1.12
+    /// ピンチとして動き出す、ピンチの変わり具合（これより小さいうちは、スクロールとして扱う）
+    private static let pinchStart: CGFloat = 0.06
+    private static let vkControl = 0x11
+
     /// パッドの幅のこの倍数を、「表示している範囲の幅」1として割合にする。
     /// 2.5 にすると、ゆっくり動かしたとき、パッドの端から端で画面の幅の0.4ほど動く
     static let referenceWidthFactor: CGFloat = 2.5
@@ -90,6 +207,14 @@ final class TrackpadCoordinator: NSObject {
     private var lastScrollTranslation = CGPoint.zero
     private var scrollSent = CGPoint.zero // 送り済みのホイール量（wheelSubdivisions 単位）
     private var inertia: Task<Void, Never>?
+    private var scrollRecognizer: UIPanGestureRecognizer?
+    private var pinchRecognizer: UIPinchGestureRecognizer?
+    /// ピンチの途中か。動き出したあとは、2本指のスクロールを送らない
+    private var pinching = false
+    /// 前に反映した、ピンチの拡大率
+    private var pinchApplied: CGFloat = 1
+    /// pc のとき、Ctrl を押しているか（途中で消えたときに、離すため）
+    private var controlDown = false
 
     func install(on view: UIView) {
         self.view = view
@@ -107,9 +232,80 @@ final class TrackpadCoordinator: NSObject {
         scroll.minimumNumberOfTouches = 2
         scroll.maximumNumberOfTouches = 2
 
-        for recognizer in [tap, twoFingerTap, longPress, move, scroll] {
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch))
+        // スクロールとピンチは、同時に受け取ってから、動きの大きい方に決める
+        scroll.delegate = self
+        pinch.delegate = self
+        scrollRecognizer = scroll
+        pinchRecognizer = pinch
+
+        for recognizer in [tap, twoFingerTap, longPress, move, scroll, pinch] {
             view.addGestureRecognizer(recognizer)
         }
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool {
+        (gestureRecognizer === scrollRecognizer && other === pinchRecognizer)
+            || (gestureRecognizer === pinchRecognizer && other === scrollRecognizer)
+    }
+
+    // MARK: - ピンチ
+
+    @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
+        switch recognizer.state {
+        case .began:
+            pinching = false
+            pinchApplied = 1
+        case .changed:
+            if !pinching {
+                guard abs(recognizer.scale - 1) > Self.pinchStart else { return }
+                pinching = true
+                stopInertia()
+            }
+            let mode = UserDefaults.standard.string(forKey: Self.pinchModeKey) ?? "video"
+            let ratio = recognizer.scale / pinchApplied
+            if mode == "pc" {
+                // 1.12 倍ごとに、ホイール1目盛り。広げると拡大（上へ）、狭めると縮小（下へ）
+                if ratio >= Self.pinchStep {
+                    wheelWithControl(up: true)
+                    pinchApplied = recognizer.scale
+                } else if ratio <= 1 / Self.pinchStep {
+                    wheelWithControl(up: false)
+                    pinchApplied = recognizer.scale
+                }
+            } else {
+                pinchApplied = recognizer.scale
+                NotificationCenter.default.post(name: .duoZoomVideo, object: nil, userInfo: ["factor": ratio])
+            }
+        default:
+            // 終わった・取り消された。Ctrl を押していれば、離す
+            pinching = false
+            releaseControl()
+        }
+    }
+
+    /// Ctrl を押したまま、ホイールを1目盛り回す（PC のアプリの拡大・縮小）
+    private func wheelWithControl(up: Bool) {
+        if !controlDown {
+            controlDown = true
+            send(["t": "key", "vk": Self.vkControl, "d": "down"])
+        }
+        send(["t": "scroll", "dx": 0.0, "dy": up ? 1.0 : -1.0])
+    }
+
+    private func releaseControl() {
+        guard controlDown else { return }
+        controlDown = false
+        send(["t": "key", "vk": Self.vkControl, "d": "up"])
+    }
+
+    /// 消えるときに、押したままのものを離す
+    func releaseHeld() {
+        stopInertia()
+        releaseControl()
     }
 
     // MARK: - タップと長押し
@@ -202,8 +398,10 @@ final class TrackpadCoordinator: NSObject {
             lastScrollTranslation = .zero
         case .changed:
             lastScrollTranslation = t
+            guard !pinching else { return }
             scroll(total: t)
         case .ended:
+            guard !pinching else { return }
             startInertia(from: t, velocity: recognizer.velocity(in: view))
         default:
             break

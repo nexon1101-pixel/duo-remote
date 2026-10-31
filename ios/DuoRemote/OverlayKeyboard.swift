@@ -143,8 +143,6 @@ struct OverlayKeyboard: View {
 /// 広い画面では、背が高くなりすぎないよう、高さの上限に合わせて幅を狭め、真ん中に置く
 struct BottomKeyboard: View {
     let session: RemoteSession
-    /// 置ける幅
-    let width: CGFloat
     /// 高さの上限（帯と、下の余白を除く）
     let maxKeysHeight: CGFloat
     /// ホームの線の分の余白
@@ -158,9 +156,8 @@ struct BottomKeyboard: View {
     private static let barHeight: CGFloat = 28
 
     var body: some View {
+        // キーの縦横の比（横幅1に対する高さ）
         let ratio = OverlayKeyboard.keyAspect * CGFloat(layout.rows.count) / OverlayKeyboardLayout.rowWidth
-        let keysWidth = max(min(width - 12, maxKeysHeight / ratio), 1)
-        let keysHeight = keysWidth * ratio
 
         VStack(spacing: 0) {
             HStack {
@@ -179,8 +176,13 @@ struct BottomKeyboard: View {
             }
             .padding(.horizontal, 14)
             .frame(height: Self.barHeight)
+            // 幅は、渡された数字ではなく、実際に使える幅に合わせる（広すぎて、左右のキーが画面の外に出ないように）。
+            // 高さは、その幅と、キーの縦横の比で決まる。高さの上限を超えるときは、幅を狭めて、真ん中に置く
             OverlayKeysView(session: session, layout: layout)
-                .frame(width: keysWidth, height: keysHeight)
+                .aspectRatio(1 / ratio, contentMode: .fit)
+                .frame(maxWidth: .infinity)
+                .frame(maxHeight: maxKeysHeight)
+                .padding(.horizontal, 6)
         }
         .padding(.bottom, 6 + bottomInset)
         .frame(maxWidth: .infinity)
