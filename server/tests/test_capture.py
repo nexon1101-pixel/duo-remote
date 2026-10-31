@@ -128,6 +128,9 @@ def test_ffmpeg_cmd_window_capture():
     graph = cmd[cmd.index("-i") + 1]
     assert graph.startswith("gfxcapture=hwnd=4660:max_framerate=30:")
     assert "ddagrab" not in graph and "offset_x" not in graph and "width=-2" in graph
+    # 止まったウィンドウでもキーフレームが来るよう、時間で入れる
+    assert cmd[cmd.index("-force_key_frames") + 1] == "expr:gte(t,n_forced*2)"
+    assert "-force_key_frames" not in build_ffmpeg_cmd(encoder="h264_nvenc", src_height=1080)
     cmd = build_ffmpeg_cmd(encoder="libx264", window=7, src_height=1080, max_height=720)
     graph = cmd[cmd.index("-i") + 1]
     assert graph.startswith("gfxcapture=hwnd=7:") and "hwdownload" in graph and "scale=-2:720" in graph

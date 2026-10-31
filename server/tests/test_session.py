@@ -553,3 +553,44 @@ def test_window_capture_takes_whole_window_and_does_not_restart_on_move(monkeypa
         ]
 
     asyncio.run(run_with_server(body, backend=make_backend(), streams=streams, window_capture=True))
+
+
+class SilentStream(FakeStream):
+    """ウィンドウの中身が変わるまで、1枚も出さない映像（ffmpeg 8.1 の gfxcapture と同じ）。
+    ウィンドウに描き直しを頼まれたら、出し始める。"""
+
+    repainted: asyncio.Event | None = None
+
+    async def frames(self):
+        if self.window is not None:
+            await SilentStream.repainted.wait()
+        yield True, b"\x00\x00\x00\x01\x09\xf0KEY"
+        await asyncio.sleep(3600)
+
+
+def test_window_capture_repaints_until_first_frame(monkeypatch):
+    """ウィンドウだけを撮るとき、最初の1枚が届くまで、ウィンドウに描き直しを頼む。届いたら、やめる。"""
+    monkeypatch.setattr(server_mod, "NUDGE_INTERVAL_SEC", 0.05)
+
+    async def body(url, backend):
+        SilentStream.repainted = asyncio.Event()
+        repaint = backend.repaint_window
+
+        def on_repaint(wid):
+            repaint(wid)
+            SilentStream.repainted.set()
+
+        backend.repaint_window = on_repaint
+        async with connect(url) as ws:
+            await ws.send(hello())
+            await recv_until(ws, "welcome")
+            await recv_frame(ws)  # 画面全体の最初の1枚
+            await ws.send(json.dumps({"t": "mode", "mode": "window", "id": 101}))
+            await recv_until(ws, "resize")
+            key, _, payload = await recv_frame(ws)
+            assert key and payload.endswith(b"KEY")
+            count = backend.calls.count(("repaint", 101))
+            await asyncio.sleep(0.3)
+            assert count >= 1 and backend.calls.count(("repaint", 101)) == count  # 届いたあとは頼まない
+
+    asyncio.run(run_with_server(body, backend=make_backend(), stream_cls=SilentStream, window_capture=True))
