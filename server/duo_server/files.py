@@ -357,7 +357,7 @@ class FileTransfer:
         except (ClipboardError, OSError) as e:
             await self._error(f"保存はできましたが、クリップボードには入れられませんでした（{e}）")
             return
-        await self._send({"t": "notice", "message": "PCのクリップボードに入れました"})
+        await self._send({"t": "notice", "message": "PC のクリップボードにコピーしました"})
 
     # --- PC → iPhone
 

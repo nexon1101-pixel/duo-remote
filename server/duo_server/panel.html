@@ -103,7 +103,7 @@ footer { text-align: center; margin-top: 24px; }
 
   <section class="card">
     <h2>つなぎ方</h2>
-    <div class="small">次の値を、iPhone のアプリに入れます。</div>
+    <div class="small">iPhone のアプリに入れる値です。</div>
     <div class="row"><span class="label">ホスト</span><span class="value" id="hosts"></span></div>
     <div class="row"><span class="label">ポート</span><span class="value" id="portShow"></span>
       <button data-copy="portShow">コピー</button></div>
@@ -123,7 +123,7 @@ footer { text-align: center; margin-top: 24px; }
       <label>モニターの番号<input type="number" id="s_output_idx"></label>
     </div>
     <div class="row"><button class="primary" id="save">保存</button>
-      <span class="small">アプリで画質を選んだときは、フレームレート・ビットレート・高さがアプリの値になります。</span></div>
+      <span class="small">フレームレート・ビットレート・高さは、アプリで画質を選ぶとアプリの値になります。</span></div>
     <div class="notice" id="restartNotice" hidden>再起動すると反映されます。<button id="restartNow">今すぐ再起動</button></div>
   </section>
 
@@ -140,7 +140,7 @@ footer { text-align: center; margin-top: 24px; }
         <option value="chrome">Chrome（タブ）</option>
         <option value="default">いつものブラウザー</option>
       </select>
-      <span class="small">次に panel.bat で開くときから変わります。PCを操作する Claude に頼むときは Chrome にします</span></div>
+      <span class="small">次に panel.bat で開くときから変わります。Claude に操作させるときは Chrome です</span></div>
   </section>
 
   <section class="card">
@@ -220,7 +220,7 @@ function renderStatus() {
   $("toggle").className = st.running ? "big" : "primary big";
   $("toggle").disabled = busy; $("restart").disabled = busy || !st.running;
   $("adminText").textContent = st.admin ? "管理者として動いています"
-    : "管理者ではありません。仮想ディスプレイには、管理者での起動が必要です";
+    : "管理者ではありません（仮想ディスプレイに必要です）";
   $("adminBtn").hidden = st.admin;
   $("autostart").checked = st.autostart;
   $("portShow").textContent = st.port;
@@ -293,7 +293,7 @@ $("save").onclick = async () => {
 $("tokenEye").onclick = () => { tokenVisible = !tokenVisible; renderToken(); };
 $("tokenCopy").onclick = () => cfg && copyText(cfg.settings.token);
 $("tokenNew").onclick = async () => {
-  if (!(await ask("トークンを作り直します。iPhone のアプリにも新しいトークンを入れ直してください。続けますか。"))) return;
+  if (!(await ask("トークンを作り直します。アプリのトークンも入れ直してください。続けますか。"))) return;
   try {
     const r = await api("/api/token", "POST");
     cfg.settings.token = r.token; renderToken(); toast("トークンを作り直しました"); pollStatus();
@@ -315,11 +315,11 @@ $("panelBrowser").onchange = async (ev) => {
 };
 
 $("adminBtn").onclick = async () => {
-  if (!(await ask("管理者として起動し直します。この画面は閉じて、新しい画面が開きます。続けますか。"))) return;
+  if (!(await ask("管理者として起動し直します。この画面は新しい画面に変わります。続けますか。"))) return;
   let r;
   try { r = await api("/api/admin", "POST"); } catch (e) { fail(e); return; }
   $("down").style.display = "block";
-  $("down").textContent = "管理者として起動し直しています。しばらくすると、このページが新しい画面に切り替わります。";
+  $("down").textContent = "管理者として起動し直しています。このページは新しい画面に切り替わります。";
   moveToNext(r.next_key, $("down"));
 };
 
@@ -333,7 +333,7 @@ async function checkUpdate() {
     $("method").textContent = "更新の方式: " + (updateInfo.method === "git" ? "git" : "ZIP");
     if (updateInfo.error) $("newVer").textContent = "確かめられませんでした（" + updateInfo.error + "）";
     else if (updateInfo.available) $("newVer").textContent = updateInfo.latest + "（新しい版があります）";
-    else $("newVer").textContent = (updateInfo.latest || updateInfo.current) + "（今の版が最新です）";
+    else $("newVer").textContent = (updateInfo.latest || updateInfo.current) + "（最新です）";
     $("updateBtn").hidden = !(updateInfo.available && !updateInfo.error);
   } catch (e) { $("newVer").textContent = "確かめられませんでした"; fail(e); }
 }
@@ -347,7 +347,7 @@ $("checkBtn").onclick = checkUpdate;
 })();
 
 $("updateBtn").onclick = async () => {
-  if (!(await ask("更新します。サーバーは止まり、管理画面も起動し直します。続けますか。"))) return;
+  if (!(await ask("更新します。サーバーと管理画面が再起動します。続けますか。"))) return;
   try {
     const r = await api("/api/update", "POST");
     updateNextKey = r.next_key;
@@ -389,7 +389,7 @@ async function moveToNext(nextKey, note) {
       if (r.ok) { location.href = "/?k=" + encodeURIComponent(nextKey); return; }
     } catch (e) { /* まだ起動していない */ }
   }
-  note.textContent = "新しい管理画面が見つかりませんでした。server フォルダの panel.bat で開き直してください。";
+  note.textContent = "新しい管理画面が見つかりません。server フォルダの panel.bat で開いてください。";
 }
 
 // ログ
@@ -410,7 +410,7 @@ $("copyLog").onclick = () => copyText($("log").textContent);
 $("quit").onclick = async () => {
   if (!(await ask("管理画面を終了します。サーバーも止まります。続けますか。"))) return;
   try { await api("/api/quit", "POST"); } catch (e) { fail(e); return; }
-  $("down").style.display = "block"; $("down").textContent = "管理画面を終了しました。このウィンドウは閉じてかまいません。";
+  $("down").style.display = "block"; $("down").textContent = "終了しました。このウィンドウは閉じてかまいません。";
   failures = -1000;
 };
 

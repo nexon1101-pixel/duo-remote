@@ -424,11 +424,11 @@ final class RemoteSession: ObservableObject {
 
         if errorMessage == nil {
             if wasConnecting {
-                errorMessage = "接続できません。PC のサーバーが動いているか、アドレスとトークンを確かめてください"
+                errorMessage = "接続できません。サーバー、アドレス、トークンを確かめてください"
             } else if closedNormally {
-                errorMessage = "接続が切れました（別の端末がつないだか、サーバーが止まりました）"
+                errorMessage = "接続が切れました（別の端末が接続したか、サーバーが停止）"
             } else {
-                errorMessage = "接続が切れて、つなぎ直せませんでした"
+                errorMessage = "再接続できませんでした"
             }
         }
         target = nil
@@ -500,11 +500,11 @@ final class RemoteSession: ObservableObject {
     /// iPhoneのクリップボードの文字を、PCのクリップボードに入れる
     func sendClipboard() {
         guard let text = UIPasteboard.general.string, !text.isEmpty else {
-            show(notice: "iPhone のクリップボードに文字がありません")
+            show(notice: "iPhone のクリップボードが空です")
             return
         }
         guard text.unicodeScalars.count <= Self.maxClipLength else {
-            show(notice: "文字が長すぎます（\(Self.maxClipLength)文字まで）")
+            show(notice: "文字数が多すぎます（\(Self.maxClipLength)文字まで）")
             return
         }
         send(["t": "clip_set", "s": text])
@@ -682,7 +682,7 @@ final class RemoteSession: ObservableObject {
             startHeartbeat(for: source)
             if audioWanted { requestAudio() }
             if reconnected {
-                show(notice: "つなぎ直しました")
+                show(notice: "再接続しました")
                 // サーバーは本物の画面全体から始めるので、見ていた表示（仮想画面、ウィンドウ）に戻す
                 switch lastDisplay {
                 case .desktop(let fit)?:
@@ -714,7 +714,7 @@ final class RemoteSession: ObservableObject {
                 var message: [String: Any] = ["t": "quality"]
                 message.merge(next.helloFields) { _, new in new }
                 send(message)
-                show(notice: "画質を\(next.shortLabel)にしました（通信に合わせた自動切り替え）")
+                show(notice: "画質を\(next.shortLabel)にしました（自動）")
             }
         case "audio_state":
             if json["on"] as? Bool == true, audioWanted,
@@ -733,10 +733,10 @@ final class RemoteSession: ObservableObject {
         case "clip":
             let text = json["s"] as? String ?? ""
             if text.isEmpty {
-                show(notice: "PC のクリップボードに文字がありません")
+                show(notice: "PC のクリップボードが空です")
             } else {
                 UIPasteboard.general.string = text
-                show(notice: "iPhoneのクリップボードに入れました")
+                show(notice: "iPhone のクリップボードにコピーしました")
             }
         case "ime_state":
             imeOn = json["on"] as? Bool
@@ -802,7 +802,7 @@ final class RemoteSession: ObservableObject {
             show(notice: "「\(title)」を仮想画面に移しました")
             requestWindows() // 一覧の「出ている場所」を、読み直す
         case "error":
-            let message = (json["message"] as? String) ?? "サーバーでエラーが起きました"
+            let message = (json["message"] as? String) ?? "サーバーのエラー"
             if state == .connected {
                 show(notice: message)
             } else {

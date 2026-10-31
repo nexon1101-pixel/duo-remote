@@ -67,7 +67,7 @@ struct MonitorPicker: View {
                             ContentUnavailableView(
                                 "モニターがありません",
                                 systemImage: "display",
-                                description: Text("下に引くか、右上のボタンで更新します")
+                                description: Text("下に引いて更新します")
                             )
                         }
                     }

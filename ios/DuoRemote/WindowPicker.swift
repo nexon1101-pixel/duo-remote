@@ -57,7 +57,7 @@ struct WindowPicker: View {
                             ContentUnavailableView(
                                 "ウィンドウがありません",
                                 systemImage: "macwindow",
-                                description: Text("下に引くか、右上のボタンで更新します")
+                                description: Text("下に引いて更新します")
                             )
                         }
                     }
@@ -77,7 +77,7 @@ struct WindowPicker: View {
 
                 if isGrid && shownWindows.isEmpty && !session.windows.isEmpty {
                     Section {
-                        Text("「\(query)」に一致するウィンドウはありません")
+                        Text("「\(query)」は見つかりません")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -117,14 +117,14 @@ struct WindowPicker: View {
                         if session.virtualAvailable {
                             Toggle("仮想画面に移して映す", isOn: $toVirtual)
                         }
-                        Toggle("この画面の大きさに合わせる", isOn: $fitWindow)
+                        Toggle("この画面に合わせる", isOn: $fitWindow)
                             .disabled(session.virtualAvailable && toVirtual)
                     } footer: {
                         Text(footerText)
                     }
                 }
             }
-            .navigationTitle(bringing ? "ウィンドウを仮想画面に移す" : "ウィンドウを選ぶ")
+            .navigationTitle(bringing ? "ウィンドウを移す" : "ウィンドウを選ぶ")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "ウィンドウを探す")
             .refreshable { session.requestWindows() }
@@ -158,9 +158,9 @@ struct WindowPicker: View {
 
     private var footerText: String {
         if session.virtualAvailable && toVirtual {
-            return "選んだウィンドウを仮想画面に移し、この画面と同じ縦横比で映します。切断すると元の場所に戻ります。"
+            return "選んだウィンドウを仮想画面に移して映します。切断すると元に戻ります。"
         }
-        return "選んだウィンドウを、この画面と同じ縦横比にします。文字の大きさは、PC で見るときとほぼ同じです。"
+        return "選んだウィンドウを、この画面の縦横比に変えます。"
     }
 
     private func choose(_ window: RemoteWindow) {

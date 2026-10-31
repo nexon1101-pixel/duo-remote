@@ -655,7 +655,7 @@ class Session:
             return None
         present = any(m["virtual"] for m in self.backend.monitors())
         if not present:
-            await self.send({"t": "notice", "message": "仮想ディスプレイを出しています…"})
+            await self.send({"t": "notice", "message": "仮想ディスプレイを起動中…"})
         if (not present or (fit_w and fit_h)) and self._stream is not None:
             await self._pause_video()  # モニターを足す・解像度を変えると、動いている撮影が止まるので、先に止める
         try:
@@ -693,7 +693,7 @@ class Session:
                 await self._resume_video()
         elif t == "restore":
             restored = await asyncio.to_thread(self.backend.restore_brought)
-            await self.send({"t": "notice", "message": f"ウィンドウを元の場所に戻しました（{len(restored)}個）"})
+            await self.send({"t": "notice", "message": f"ウィンドウを元に戻しました（{len(restored)}個）"})
         elif t == "audio":
             await self.set_audio(msg)
         elif t in files.MESSAGES:
@@ -736,7 +736,7 @@ class Session:
         except ClipboardError as e:
             await self.send({"t": "error", "message": str(e)})
             return
-        await self.send({"t": "notice", "message": "PCのクリップボードに入れました"})
+        await self.send({"t": "notice", "message": "PC のクリップボードにコピーしました"})
 
     async def _window_list(self) -> list[dict]:
         monitors = await asyncio.to_thread(self.backend.monitors)
@@ -789,7 +789,7 @@ class Session:
         wid = _int(msg.get("id"))
         info = self.backend.window_info(wid) if wid is not None else None
         if info is None:
-            await self.send({"t": "error", "message": "そのウィンドウは見つかりません。一覧を読み直してください"})
+            await self.send({"t": "error", "message": "そのウィンドウは見つかりません。一覧を更新してください"})
             return
         monitor = await self._ensure_virtual()
         if monitor is None:
@@ -821,7 +821,7 @@ class Session:
             mid = msg.get("id")
             monitor = next((m for m in self.backend.monitors() if m["name"] == mid), None)
             if monitor is None:
-                await self.send({"t": "error", "message": "そのモニターは見つかりません。一覧を読み直してください"})
+                await self.send({"t": "error", "message": "そのモニターは見つかりません。一覧を更新してください"})
                 return
             info = monitor_info(monitor)
             async with self._lock:
@@ -845,12 +845,12 @@ class Session:
                 await self._switch_with_fallback(None, None, monitor, "仮想画面")
             return
         if mode != "window":
-            await self.send({"t": "error", "message": f"知らない表示の範囲です: {mode!r}"})
+            await self.send({"t": "error", "message": f"使えない表示の範囲です: {mode!r}"})
             return
 
         wid = _int(msg.get("id"))
         if wid is None or self.backend.window_info(wid) is None:
-            await self.send({"t": "error", "message": "そのウィンドウは見つかりません。一覧を読み直してください"})
+            await self.send({"t": "error", "message": "そのウィンドウは見つかりません。一覧を更新してください"})
             return
         fit_w, fit_h = _num(msg.get("fit_w")), _num(msg.get("fit_h"))
         # 相手のアプリが固まっていると戻ってこないことがあるので、ウィンドウの操作は、別のスレッドで呼ぶ

@@ -217,7 +217,7 @@ final class FileTransfer {
     /// 写真アプリから選んだものを読み込んで、送る
     func sendPhotos(_ items: [PhotosPickerItem], toClipboard: Bool) {
         guard !items.isEmpty else { return }
-        session?.show(notice: "写真を読み込んでいます…")
+        session?.show(notice: "写真を読み込み中…")
         Task { [weak self] in
             var files: [OutgoingFile] = []
             for (index, item) in items.enumerated() {
@@ -268,7 +268,7 @@ final class FileTransfer {
         }
         guard !accepted.isEmpty else { return }
         guard session.state == .connected else {
-            session.show(notice: "未接続のため送れません")
+            session.show(notice: "未接続です")
             accepted.forEach { $0.cleanup() }
             return
         }
@@ -307,7 +307,7 @@ final class FileTransfer {
         ])
         let end = Self.jsonString(["t": "file_end", "id": Int(id)])
         let label = batchTotal > 1 ? "(\(batchDone)/\(batchTotal)) " : ""
-        session.show(notice: "送っています \(label)\(file.name)")
+        session.show(notice: "送信中 \(label)\(file.name)")
         let size = file.size
         let name = file.name
         do {
@@ -315,7 +315,7 @@ final class FileTransfer {
             try await Self.stream(url: file.url, id: id, socket: socket) { [weak self] sent in
                 guard size > 0 else { return }
                 let percent = min(Int(sent * 100 / size), 99)
-                self?.session?.show(notice: "送っています \(label)\(name) \(percent)%")
+                self?.session?.show(notice: "送信中 \(label)\(name) \(percent)%")
             }
             try await socket.send(.string(end))
         } catch {

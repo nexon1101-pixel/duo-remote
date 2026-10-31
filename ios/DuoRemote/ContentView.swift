@@ -269,7 +269,7 @@ struct ContentView: View {
                     ProgressView()
                         .controlSize(.large)
                         .tint(.white)
-                    Text("つなぎ直しています…")
+                    Text("再接続中…")
                         .font(.headline)
                         .foregroundStyle(.white)
                     Button("やめる") { session.disconnect() }
@@ -478,25 +478,25 @@ struct ContentView: View {
                         Text(layout.label).tag(layout)
                     }
                 }
-                Toggle("トラックパッドを重ねて表示", isOn: $showTrackpad)
+                Toggle("トラックパッドを表示", isOn: $showTrackpad)
                 Picker("トラックパッドのピンチ", selection: $trackpadPinch) {
-                    Text("映像をズーム（アプリ内だけ）").tag("video")
-                    Text("PC をズーム（Ctrl+ホイールを送る）").tag("pc")
+                    Text("映像を拡大").tag("video")
+                    Text("PC を拡大（Ctrl+ホイール）").tag("pc")
                 }
-                Picker("キーボードとトラックパッドの濃さ", selection: $overlayOpacity) {
+                Picker("濃さ", selection: $overlayOpacity) {
                     Text("100%").tag(1.0)
                     Text("80%").tag(0.8)
                     Text("60%").tag(0.6)
                     Text("40%").tag(0.4)
                 }
                 Toggle("キーの色分け", isOn: $colorKeys)
-                Picker("キーボードとトラックパッドの置き方", selection: dockModeBinding) {
+                Picker("置き方", selection: dockModeBinding) {
                     ForEach(OverlayDockMode.allCases) { mode in
                         Text(mode.label).tag(mode)
                     }
                 }
-                Toggle("半開きのとき、下の画面にキーボードを出す", isOn: $dockWhenHalfOpen)
-                Toggle("H.265 を使う（通信量が減る。次の接続から）", isOn: $useHEVC)
+                Toggle("半開きで下にキーボード", isOn: $dockWhenHalfOpen)
+                Toggle("H.265（次の接続から）", isOn: $useHEVC)
                 Toggle("遅延を表示", isOn: $showLatency)
                 Picker("画面の端の余白", selection: $edgeMargin) {
                     Text("なし").tag(0)
@@ -504,8 +504,8 @@ struct ContentView: View {
                     Text("中（20）").tag(20)
                     Text("大（30）").tag(30)
                 }
-                Picker("画質（変えると再接続します）", selection: qualityChoice) {
-                    Text("自動（通信に合わせる。上限は最後に選んだ画質）").tag(Self.autoChoice)
+                Picker("画質（変えると再接続）", selection: qualityChoice) {
+                    Text("自動").tag(Self.autoChoice)
                     ForEach(VideoQuality.allCases) { q in
                         Text(q.label).tag(q.rawValue)
                     }
@@ -594,14 +594,14 @@ struct ContentView: View {
 
                 card(title: "接続先", systemImage: "network") {
                     field(systemImage: "server.rack") {
-                        TextField("自宅 Wi-Fi のアドレス（例: 192.168.x.x）", text: $host)
+                        TextField("自宅のアドレス（192.168.x.x）", text: $host)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
                     }
                     Divider().overlay(Color.white.opacity(0.1))
                     field(systemImage: "globe") {
-                        TextField("外出先（Tailscale）のアドレス（なくてもよい）", text: $hostRemote)
+                        TextField("外出先のアドレス（Tailscale・任意）", text: $hostRemote)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
@@ -644,7 +644,7 @@ struct ContentView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    Text("外出先（4G/5G）では、画質を低くすると遅れにくくなります")
+                    Text("外出先では、画質を低くすると遅れにくくなります")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -673,7 +673,7 @@ struct ContentView: View {
                         HStack(spacing: 10) {
                             if session.state == .connecting {
                                 ProgressView().tint(.white)
-                                Text("接続しています…")
+                                Text("接続中…")
                             } else {
                                 Image(systemName: "bolt.horizontal.fill")
                                 Text("接続")
