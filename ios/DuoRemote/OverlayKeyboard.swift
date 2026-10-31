@@ -14,6 +14,7 @@ struct OverlayKeyboard: View {
 
     static let layoutKey = "overlayKeyboardLayout"
     static let opacityKey = "overlayKeyboardOpacity"
+    static let colorKeysKey = "overlayKeyboardColorKeys"
 
     @AppStorage(Self.layoutKey) private var layout = OverlayKeyboardLayout.us
     @AppStorage(Self.opacityKey) private var opacity = 0.8
@@ -198,18 +199,22 @@ struct OverlayKeysView: UIViewRepresentable {
     let layout: OverlayKeyboardLayout
     /// IME の状態が変わったら、キーの表示（あ / A）を描き直すために、ここで見ておく
     @EnvironmentObject private var observed: RemoteSession
+    /// キーの色分け（設定で切り替える）
+    @AppStorage(OverlayKeyboard.colorKeysKey) private var colorKeys = true
 
     func makeUIView(context: Context) -> OverlayKeysUIView {
         let view = OverlayKeysUIView()
         view.session = session
         view.layout = layout
         view.imeOn = observed.imeOn
+        view.colorKeys = colorKeys
         return view
     }
 
     func updateUIView(_ uiView: OverlayKeysUIView, context: Context) {
         uiView.session = session
         uiView.imeOn = observed.imeOn
+        uiView.colorKeys = colorKeys
         if uiView.layout != layout {
             uiView.layout = layout
         }
@@ -232,6 +237,10 @@ final class OverlayKeysUIView: UIView {
     /// PC の IME の状態（あ / A のキーに出す）。変わったら描き直す
     var imeOn: Bool? {
         didSet { if imeOn != oldValue { setNeedsDisplay() } }
+    }
+    /// true のとき、キーを役割ごとに色分けする
+    var colorKeys = true {
+        didSet { if colorKeys != oldValue { setNeedsDisplay() } }
     }
     var layout: OverlayKeyboardLayout = .us {
         didSet {
@@ -340,7 +349,7 @@ final class OverlayKeysUIView: UIView {
             let state = key.modifier.flatMap { modifiers[$0] }
             let fill: UIColor
             // 役割ごとの薄い色。Enter は青、Esc・BS・Del は赤、矢印などは青緑
-            let roleTint: UIColor? = Self.roleTint(of: key)
+            let roleTint: UIColor? = colorKeys ? Self.roleTint(of: key) : nil
             if pressed.contains("\(f.row),\(f.col)") {
                 fill = UIColor(white: 1, alpha: 0.5)
             } else if key.ime && imeOn == true {
@@ -349,10 +358,10 @@ final class OverlayKeysUIView: UIView {
                 fill = .systemBlue
             } else if state != nil {
                 fill = UIColor.systemBlue.withAlphaComponent(0.6)
-            } else if fn && key.fn != nil {
+            } else if colorKeys && fn && key.fn != nil {
                 // Fn を押している間に替わるキーは、オレンジにして、替わったことが分かるようにする
                 fill = UIColor.systemOrange.withAlphaComponent(0.4)
-            } else if key.ime {
+            } else if colorKeys && key.ime {
                 fill = UIColor.systemPurple.withAlphaComponent(0.35)
             } else if let roleTint {
                 fill = roleTint

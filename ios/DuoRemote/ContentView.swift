@@ -57,6 +57,7 @@ struct ContentView: View {
     @AppStorage(DockedInput.showKeysKey) private var dockShowKeys = true
     @AppStorage(DockedInput.showPadKey) private var dockShowPad = true
     /// アプリのキーボードを、普通の iPhone のキーボードのように下端に固定する
+    @AppStorage(OverlayKeyboard.colorKeysKey) private var colorKeys = true
     @AppStorage("overlayKeyboardAtBottom") private var keyboardAtBottom = false
 
     var body: some View {
@@ -448,6 +449,7 @@ struct ContentView: View {
                     Text("60%").tag(0.6)
                     Text("40%").tag(0.4)
                 }
+                Toggle("キーを役割ごとに色分けする", isOn: $colorKeys)
                 Toggle("アプリのキーボードを下端に固定する", isOn: $keyboardAtBottom)
                 Toggle("半開きのとき、下にキーボードを出す", isOn: $dockWhenHalfOpen)
                 Toggle("H.265 を使う（通信量が少ない。次の接続から）", isOn: $useHEVC)
