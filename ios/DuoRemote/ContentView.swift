@@ -196,12 +196,16 @@ struct ContentView: View {
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 } else {
-                    HStack(spacing: 0) {
+                    HStack(spacing: 10) {
                         Spacer()
                         windowsButton(compact: false)
                         trackpadButton
                         inputButton
                     }
+                    .padding(12)
+                    .padding(.trailing, safeInsets.trailing)
+                    // iPhoneのキーボードが出ているときは、映像がキーボードの上で終わるので、ホームの線の分は要らない
+                    .padding(.bottom, inputMode == .software || bottomKeys || bottomPad ? 0 : safeInsets.bottom)
                     if inputMode == .software {
                         SoftwareInputBar(refocus: refocus) {
                             // キーボードが閉じられたら、タッチだけに戻す
@@ -373,15 +377,9 @@ struct ContentView: View {
             showingWindows = true
         } label: {
             Image(systemName: "macwindow.on.rectangle")
-                .font(.body.weight(.semibold))
-                .padding(.horizontal, 14)
-                .padding(.vertical, compact ? 0 : 10)
-                .frame(height: compact ? 34 : nil)
-                .foregroundStyle(tint)
-                .glass(in: Capsule(), interactive: true)
+                .modifier(BarButtonLabel(tint: tint, compact: compact))
         }
         .buttonStyle(.plain)
-        .padding(.vertical, compact ? 0 : 12)
         .accessibilityLabel("ウィンドウを選択")
     }
 
@@ -391,13 +389,9 @@ struct ContentView: View {
             showTrackpad.toggle()
         } label: {
             Image(systemName: "rectangle.and.hand.point.up.left")
-                .font(.body.weight(.semibold))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .foregroundStyle(showTrackpad ? Color.accentColor : .white)
-                .glass(in: Capsule(), interactive: true)
+                .modifier(BarButtonLabel(tint: showTrackpad ? Color.accentColor : .white))
         }
-        .padding(.vertical, 12)
+        .buttonStyle(.plain)
         .accessibilityLabel(showTrackpad ? "トラックパッドを隠す" : "トラックパッドを表示")
     }
 
@@ -420,16 +414,9 @@ struct ContentView: View {
                         .background(on ? Color.accentColor : Color.white.opacity(0.2), in: Circle())
                 }
             }
-            .font(.body.weight(.semibold))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .foregroundStyle(.white)
-            .glass(in: Capsule(), interactive: true)
+            .modifier(BarButtonLabel(tint: .white))
         }
-        .padding(12)
-        .padding(.trailing, safeInsets.trailing)
-        // iPhoneのキーボードが出ているときは、映像がキーボードの上で終わるので、ホームの線の分は要らない
-        .padding(.bottom, inputMode == .software || bottomKeys || bottomPad ? 0 : safeInsets.bottom)
+        .buttonStyle(.plain)
     }
 
     private static let autoChoice = "auto"
@@ -822,5 +809,22 @@ private struct LatencyBadgeContent: View {
             .foregroundStyle(.white.opacity(0.9))
             .glass(in: Capsule())
         }
+    }
+}
+
+/// 右下の丸いボタン（ウィンドウ、トラックパッド、キーボード）の見た目をそろえる。高さ 44、最低の幅 52
+struct BarButtonLabel: ViewModifier {
+    var tint: Color
+    /// 半開きの下の画面の帯に置く、背の低い形（高さ 34）
+    var compact = false
+
+    func body(content: Content) -> some View {
+        content
+            .font(.body.weight(.semibold))
+            .padding(.horizontal, compact ? 14 : 16)
+            .frame(minWidth: compact ? 0 : 52, minHeight: compact ? 34 : 44)
+            .foregroundStyle(tint)
+            .glass(in: Capsule(), interactive: true)
+            .contentShape(Capsule())
     }
 }
