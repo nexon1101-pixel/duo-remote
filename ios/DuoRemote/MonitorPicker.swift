@@ -2,7 +2,8 @@ import SwiftUI
 
 /// PCのモニター（一覧の1行）。
 struct RemoteMonitor: Identifiable, Equatable {
-    let id: Int
+    /// サーバーが決める、モニターを区別する文字列（Windows のデバイス名。例: \\.\DISPLAY1）
+    let id: String
     let name: String
     let width: Int
     let height: Int
@@ -11,7 +12,7 @@ struct RemoteMonitor: Identifiable, Equatable {
     /// 仮想ディスプレイ
     var virtual = false
 
-    init(id: Int, name: String, width: Int = 0, height: Int = 0, primary: Bool = false, virtual: Bool = false) {
+    init(id: String, name: String, width: Int = 0, height: Int = 0, primary: Bool = false, virtual: Bool = false) {
         self.id = id
         self.name = name
         self.width = width
@@ -22,10 +23,10 @@ struct RemoteMonitor: Identifiable, Equatable {
 
     /// サーバーの monitors の1項目から作る
     init?(json: [String: Any]) {
-        guard let id = json["id"] as? Int else { return nil }
+        guard let id = json["id"] as? String else { return nil }
         self.init(
             id: id,
-            name: json["name"] as? String ?? "モニター \(id)",
+            name: json["name"] as? String ?? id,
             width: json["w"] as? Int ?? 0,
             height: json["h"] as? Int ?? 0,
             primary: json["primary"] as? Bool ?? false,

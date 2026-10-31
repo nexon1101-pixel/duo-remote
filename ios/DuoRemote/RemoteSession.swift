@@ -734,10 +734,10 @@ final class RemoteSession: ObservableObject {
                     viewMode = .window
                 }
             case "monitor":
-                if let id = json["id"] as? Int {
+                if let id = json["id"] as? String {
                     currentWindow = nil
                     currentMonitor = monitors.first { $0.id == id }
-                        ?? RemoteMonitor(id: id, name: json["name"] as? String ?? "モニター \(id)")
+                        ?? RemoteMonitor(id: id, name: json["name"] as? String ?? id)
                     viewMode = .monitor
                 }
             case "desktop":
