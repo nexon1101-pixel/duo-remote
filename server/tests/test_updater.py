@@ -115,7 +115,7 @@ def test_zip_rejects_unsafe_path(tmp_path, monkeypatch, bad):
     data = _make_zip({"duo-remote-main/ok.txt": b"ok", bad: b"evil"})
     monkeypatch.setattr(updater, "_download", lambda url, timeout: data)
     monkeypatch.setattr(updater.shutil, "which", lambda name: None)
-    with pytest.raises(UpdateError, match="不正なパス"):
+    with pytest.raises(UpdateError, match="使えないパス"):
         updater.apply(lambda s: None, root=root)
     assert not (tmp_path / "evil").exists()
     assert not (root / "ok.txt").exists()  # 何も書かない

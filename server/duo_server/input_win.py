@@ -175,6 +175,12 @@ class NullInput(_BringMixin):
             return None
         return {"title": w["title"], "rect": w["rect"], "minimized": w.get("minimized", False)}
 
+    def window_thumb_raw(self, wid: int, max_w: int) -> tuple[int, int, bytes] | None:
+        """テスト用。ウィンドウの "thumb" に、(幅, 高さ, BGRA) を入れておくと、それを返す。なければ None"""
+        self.calls.append(("thumb", wid, max_w))
+        w = self.windows.get(wid)
+        return None if w is None else w.get("thumb")
+
     def focus_window(self, wid: int) -> bool:
         self.calls.append(("focus", wid))
         w = self.windows.get(wid)
@@ -245,6 +251,12 @@ class NullInput(_BringMixin):
 
     def keep_awake(self, on: bool) -> None:
         self.keep_awake_calls.append(on)  # calls には入れない（入力の記録と分けておく）
+
+
+def is_blank_bgra(data: bytes) -> bool:
+    """画素が、全部ほぼ真っ黒か（ウィンドウの中身が取れなかったときの目印）。間引いて調べる"""
+    step = max(4, (len(data) // 4096) // 4 * 4)
+    return not any(data[i] > 8 or data[i + 1] > 8 or data[i + 2] > 8 for i in range(0, len(data) - 3, step))
 
 
 if sys.platform == "win32":
@@ -522,6 +534,81 @@ if sys.platform == "win32":
             ("GdiplusVersion", ctypes.c_uint32), ("DebugEventCallback", ctypes.c_void_p),
             ("SuppressBackgroundThread", wt.BOOL), ("SuppressExternalCodecs", wt.BOOL),
         ]
+
+    def _window_thumb_raw(hwnd: int, max_w: int) -> tuple[int, int, bytes] | None:
+        """ウィンドウの中身を、横 max_w ピクセル以内に縮めて、(幅, 高さ, 上から順の BGRA) で返す。
+        最小化している、大きさがない、中身が真っ黒（GPU で描くウィンドウで、取れなかった）ときは None。"""
+        c_vp = ctypes.c_void_p
+        gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+        gdi32.CreateCompatibleDC.argtypes = (c_vp,)
+        gdi32.CreateCompatibleDC.restype = c_vp
+        gdi32.CreateCompatibleBitmap.argtypes = (c_vp, ctypes.c_int, ctypes.c_int)
+        gdi32.CreateCompatibleBitmap.restype = c_vp
+        gdi32.SelectObject.argtypes = (c_vp, c_vp)
+        gdi32.SelectObject.restype = c_vp
+        gdi32.DeleteObject.argtypes = (c_vp,)
+        gdi32.DeleteDC.argtypes = (c_vp,)
+        gdi32.SetStretchBltMode.argtypes = (c_vp, ctypes.c_int)
+        gdi32.SetBrushOrgEx.argtypes = (c_vp, ctypes.c_int, ctypes.c_int, c_vp)
+        gdi32.StretchBlt.argtypes = (
+            c_vp, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            c_vp, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.DWORD,
+        )
+        gdi32.GetDIBits.argtypes = (c_vp, c_vp, wt.UINT, wt.UINT, c_vp, c_vp, wt.UINT)
+        user32.GetDC.argtypes = (c_vp,)
+        user32.GetDC.restype = c_vp
+        user32.ReleaseDC.argtypes = (c_vp, c_vp)
+        user32.PrintWindow.argtypes = (wt.HWND, c_vp, wt.UINT)
+
+        if not user32.IsWindow(hwnd) or user32.IsIconic(hwnd):
+            return None
+        rect = wt.RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return None
+        w, h = rect.right - rect.left, rect.bottom - rect.top
+        if w <= 0 or h <= 0 or w * h > 8192 * 8192:
+            return None
+        tw = max(1, min(max_w, w))
+        th = max(1, round(h * tw / w))
+        screen = user32.GetDC(None)
+        src_dc = dst_dc = None
+        src_bmp = dst_bmp = None
+        try:
+            src_dc = gdi32.CreateCompatibleDC(screen)
+            src_bmp = gdi32.CreateCompatibleBitmap(screen, w, h)
+            dst_dc = gdi32.CreateCompatibleDC(screen)
+            dst_bmp = gdi32.CreateCompatibleBitmap(screen, tw, th)
+            if not (src_dc and src_bmp and dst_dc and dst_bmp):
+                return None
+            old_src = gdi32.SelectObject(src_dc, src_bmp)
+            old_dst = gdi32.SelectObject(dst_dc, dst_bmp)
+            try:
+                # 2 = PW_RENDERFULLCONTENT。DWM で描くウィンドウ（ブラウザなど）も、中身を取る
+                if not user32.PrintWindow(hwnd, src_dc, 2):
+                    return None
+                gdi32.SetStretchBltMode(dst_dc, 4)  # HALFTONE
+                gdi32.SetBrushOrgEx(dst_dc, 0, 0, None)
+                if not gdi32.StretchBlt(dst_dc, 0, 0, tw, th, src_dc, 0, 0, w, h, 0x00CC0020):  # SRCCOPY
+                    return None
+            finally:
+                gdi32.SelectObject(src_dc, old_src)
+                gdi32.SelectObject(dst_dc, old_dst)
+            info = _BITMAPINFOHEADER(ctypes.sizeof(_BITMAPINFOHEADER), tw, -th, 1, 32, 0, tw * th * 4, 0, 0, 0, 0)
+            pixels = ctypes.create_string_buffer(tw * th * 4)
+            if not gdi32.GetDIBits(dst_dc, dst_bmp, 0, th, pixels, ctypes.byref(info), 0):
+                return None
+            data = pixels.raw
+        finally:
+            for bmp in (src_bmp, dst_bmp):
+                if bmp:
+                    gdi32.DeleteObject(bmp)
+            for dc in (src_dc, dst_dc):
+                if dc:
+                    gdi32.DeleteDC(dc)
+            user32.ReleaseDC(None, screen)
+        if is_blank_bgra(data):
+            return None
+        return tw, th, data
 
     def _image_to_dib(path: str) -> bytes | None:
         """画像ファイル（PNG、JPEG など）を、GDI+ で読んで、CF_DIB の形（32ビット）にする。できなければ None。"""
@@ -808,6 +895,9 @@ if sys.platform == "win32":
                 if rect is not None:
                     result.append({"id": h, "title": _window_title(h), "app": _app_name(h), "rect": rect})
             return result
+
+        def window_thumb_raw(self, wid: int, max_w: int) -> tuple[int, int, bytes] | None:
+            return _window_thumb_raw(wid, max_w)
 
         def window_info(self, wid: int) -> dict | None:
             if not user32.IsWindow(wid):

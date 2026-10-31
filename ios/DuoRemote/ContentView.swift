@@ -56,9 +56,22 @@ struct ContentView: View {
     @AppStorage("dockWhenHalfOpen") private var dockWhenHalfOpen = true
     @AppStorage(DockedInput.showKeysKey) private var dockShowKeys = true
     @AppStorage(DockedInput.showPadKey) private var dockShowPad = true
-    /// アプリのキーボードを、普通の iPhone のキーボードのように下端に固定する
+    /// アプリのキーボードを、普通の iPhone のキーボードのように下に固定する
     @AppStorage(OverlayKeyboard.colorKeysKey) private var colorKeys = true
-    @AppStorage("overlayKeyboardAtBottom") private var keyboardAtBottom = false
+    @AppStorage(OverlayDockMode.key) private var dockModeRaw = ""
+    /// 前の版の設定（キーボードを下に固定するか）。置き方を選ぶ前の人のために残す
+    @AppStorage("overlayKeyboardAtBottom") private var legacyKeyboardAtBottom = false
+
+    private var dockMode: OverlayDockMode {
+        OverlayDockMode(rawValue: dockModeRaw) ?? (legacyKeyboardAtBottom ? .keyboard : .free)
+    }
+    private var dockModeBinding: Binding<OverlayDockMode> {
+        Binding(get: { dockMode }, set: { dockModeRaw = $0.rawValue })
+    }
+    /// 下端に固定したキーボードを出すか
+    private var bottomKeys: Bool { inputMode == .overlay && dockMode != .free }
+    /// 下端に固定したトラックパッドを出すか
+    private var bottomPad: Bool { showTrackpad && dockMode == .both }
 
     var body: some View {
         ZStack {
@@ -123,7 +136,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             if let fold = dockedFold {
-                DockedInput(menuButton: AnyView(menu(compact: true)))
+                DockedInput(menuButton: AnyView(menu(compact: true)), windowsButton: AnyView(windowsButton(compact: true)))
                     .padding(.horizontal, 10 + max(safeInsets.leading, safeInsets.trailing))
                     .padding(.top, 8)
                     .padding(.bottom, 8 + safeInsets.bottom)
@@ -142,7 +155,7 @@ struct ContentView: View {
                     .allowsHitTesting(false)
             }
 
-            if showTrackpad && halfOpenFold == nil {
+            if showTrackpad && halfOpenFold == nil && dockMode != .both {
                 OverlayTrackpad(session: session) { showTrackpad = false }
                     .padding(.top, safeInsets.top)
                     .padding(.leading, safeInsets.leading)
@@ -151,11 +164,11 @@ struct ContentView: View {
                     .transition(.opacity)
             }
 
-            if inputMode == .overlay && halfOpenFold == nil && !keyboardAtBottom {
+            if inputMode == .overlay && halfOpenFold == nil && dockMode == .free {
                 OverlayKeyboard(session: session, onClose: {
                     if inputMode == .overlay { inputMode = .touch }
                 }, onDock: {
-                    keyboardAtBottom = true
+                    dockModeRaw = OverlayDockMode.keyboard.rawValue
                 })
                 .padding(.top, safeInsets.top)
                 .padding(.leading, safeInsets.leading)
@@ -174,6 +187,7 @@ struct ContentView: View {
                 } else {
                     HStack(spacing: 0) {
                         Spacer()
+                        windowsButton(compact: false)
                         trackpadButton
                         inputButton
                     }
@@ -183,19 +197,23 @@ struct ContentView: View {
                             if inputMode == .software { inputMode = .touch }
                         }
                     }
-                    if inputMode == .overlay && keyboardAtBottom {
+                    if bottomKeys || bottomPad {
                         BottomKeyboard(
                             session: session,
-                            maxKeysHeight: fullSize.height * 0.45,
+                            showKeys: bottomKeys,
+                            showPad: bottomPad,
+                            padHeight: min(max(fullSize.height * 0.18, 110), 170),
+                            maxKeysHeight: fullSize.height * (bottomPad ? 0.35 : 0.45),
                             bottomInset: safeInsets.bottom,
-                            onUndock: { keyboardAtBottom = false }
+                            onUndock: { dockModeRaw = OverlayDockMode.free.rawValue }
                         )
                         .transition(.move(edge: .bottom))
                     }
                 }
             }
             .animation(.spring(duration: 0.35), value: inputMode)
-            .animation(.spring(duration: 0.35), value: keyboardAtBottom)
+            .animation(.spring(duration: 0.35), value: dockModeRaw)
+            .animation(.spring(duration: 0.35), value: showTrackpad)
         }
         // 画面の端までは使う。キーボードが出たときだけ、入力の欄がその上に上がる
         .ignoresSafeArea(.container)
@@ -251,10 +269,10 @@ struct ContentView: View {
                     ProgressView()
                         .controlSize(.large)
                         .tint(.white)
-                    Text("つなぎ直しています…")
+                    Text("再接続中…")
                         .font(.headline)
                         .foregroundStyle(.white)
-                    Button("やめる") { session.disconnect() }
+                    Button("キャンセル") { session.disconnect() }
                         .glassButton()
                 }
                 .padding(.horizontal, 32)
@@ -334,6 +352,28 @@ struct ContentView: View {
         }
     }
 
+    /// ウィンドウの一覧を開くボタン。切り替えは何度もするので、メニューの奥ではなく、すぐ押せる所に置く
+    /// compact: 半開きの下の画面の帯に置く、背の低い形
+    @ViewBuilder
+    private func windowsButton(compact: Bool) -> some View {
+        let tint: Color = session.viewMode == .window || session.viewMode == .desktop ? .accentColor : .white
+        Button {
+            session.requestWindows()
+            showingWindows = true
+        } label: {
+            Image(systemName: "macwindow.on.rectangle")
+                .font(.body.weight(.semibold))
+                .padding(.horizontal, 14)
+                .padding(.vertical, compact ? 0 : 10)
+                .frame(height: compact ? 34 : nil)
+                .foregroundStyle(tint)
+                .glass(in: Capsule(), interactive: true)
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, compact ? 0 : 12)
+        .accessibilityLabel("ウィンドウを選択")
+    }
+
     /// トラックパッドを出す・しまうボタン（重ねて出す形）
     private var trackpadButton: some View {
         Button {
@@ -347,7 +387,7 @@ struct ContentView: View {
                 .glass(in: Capsule(), interactive: true)
         }
         .padding(.vertical, 12)
-        .accessibilityLabel(showTrackpad ? "トラックパッドをしまう" : "トラックパッドを出す")
+        .accessibilityLabel(showTrackpad ? "トラックパッドを隠す" : "トラックパッドを表示")
     }
 
     /// 右下のボタン。iPhoneのキーボードを出す・しまう。PCのIMEの状態も見せる
@@ -378,7 +418,7 @@ struct ContentView: View {
         .padding(12)
         .padding(.trailing, safeInsets.trailing)
         // iPhoneのキーボードが出ているときは、映像がキーボードの上で終わるので、ホームの線の分は要らない
-        .padding(.bottom, inputMode == .software || (inputMode == .overlay && keyboardAtBottom) ? 0 : safeInsets.bottom)
+        .padding(.bottom, inputMode == .software || bottomKeys || bottomPad ? 0 : safeInsets.bottom)
     }
 
     private static let autoChoice = "auto"
@@ -415,53 +455,57 @@ struct ContentView: View {
             }
             Text(screenDescription)
             Text("映像: \(session.codec == "hevc" ? "H.265" : "H.264")"
-                 + (session.autoLevel.map { "、画質: 自動で\($0.shortLabel)" } ?? ""))
-            Toggle("PCの音を鳴らす", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
-            Toggle("他のアプリの音と混ぜる", systemImage: "speaker.badge.exclamationmark", isOn: $audioMix)
+                 + (session.autoLevel.map { "、画質: 自動（\($0.shortLabel)）" } ?? ""))
+            Toggle("PC の音声を再生", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
+            Toggle("他のアプリの音声と同時に再生", systemImage: "speaker.badge.exclamationmark", isOn: $audioMix)
             Picker("入力", selection: $inputMode) {
                 ForEach(InputMode.allCases) { mode in
                     Label(mode.label, systemImage: mode.systemImage).tag(mode)
                 }
             }
             .pickerStyle(.inline)
-            Menu("操作の設定", systemImage: "slider.horizontal.3") {
-                Picker("画面の触り方", selection: $pointerMode) {
+            Menu("設定", systemImage: "slider.horizontal.3") {
+                Picker("タッチ操作", selection: $pointerMode) {
                     ForEach(PointerMode.allCases) { mode in
                         Text(mode.label).tag(mode)
                     }
                 }
                 .pickerStyle(.inline)
-                Toggle("command を Ctrl にする", isOn: $commandAsControl)
+                Toggle("Command キーを Ctrl として使う", isOn: $commandAsControl)
                 Toggle("半角/全角キーで IME を切り替える", isOn: $zenkakuAsIME)
-                Picker("アプリのキーボードの配列", selection: $overlayLayout) {
+                Picker("キーボード配列", selection: $overlayLayout) {
                     ForEach(OverlayKeyboardLayout.allCases) { layout in
                         Text(layout.label).tag(layout)
                     }
                 }
-                Toggle("トラックパッドを出す（重ねて出す形）", isOn: $showTrackpad)
-                Picker("トラックパッドのピンチ", selection: $trackpadPinch) {
-                    Text("映像を拡大・縮小（iPhone の中だけ）").tag("video")
-                    Text("PC に Ctrl+ホイールを送る（PC のアプリの拡大・縮小）").tag("pc")
+                Toggle("トラックパッドを表示", isOn: $showTrackpad)
+                Picker("ピンチ操作", selection: $trackpadPinch) {
+                    Text("映像を拡大・縮小").tag("video")
+                    Text("PC 側で拡大・縮小（Ctrl+ホイール）").tag("pc")
                 }
-                Picker("キーボードとトラックパッドの濃さ", selection: $overlayOpacity) {
+                Picker("不透明度", selection: $overlayOpacity) {
                     Text("100%").tag(1.0)
                     Text("80%").tag(0.8)
                     Text("60%").tag(0.6)
                     Text("40%").tag(0.4)
                 }
-                Toggle("キーを役割ごとに色分けする", isOn: $colorKeys)
-                Toggle("アプリのキーボードを下端に固定する", isOn: $keyboardAtBottom)
-                Toggle("半開きのとき、下にキーボードを出す", isOn: $dockWhenHalfOpen)
-                Toggle("H.265 を使う（通信量が少ない。次の接続から）", isOn: $useHEVC)
-                Toggle("遅れを画面に出す", isOn: $showLatency)
-                Picker("画面の端の余白", selection: $edgeMargin) {
+                Toggle("キーを色分け", isOn: $colorKeys)
+                Picker("配置", selection: dockModeBinding) {
+                    ForEach(OverlayDockMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                Toggle("半開き時に下の画面へキーボードを表示", isOn: $dockWhenHalfOpen)
+                Toggle("H.265 を使用（次回接続から）", isOn: $useHEVC)
+                Toggle("遅延を表示", isOn: $showLatency)
+                Picker("画面の余白", selection: $edgeMargin) {
                     Text("なし").tag(0)
                     Text("小（10）").tag(10)
                     Text("中（20）").tag(20)
                     Text("大（30）").tag(30)
                 }
-                Picker("画質（選ぶと、つなぎ直します）", selection: qualityChoice) {
-                    Text("自動（通信に合わせる。上限は最後に選んだ高・中・低）").tag(Self.autoChoice)
+                Picker("画質（変更すると再接続します）", selection: qualityChoice) {
+                    Text("自動").tag(Self.autoChoice)
                     ForEach(VideoQuality.allCases) { q in
                         Text(q.label).tag(q.rawValue)
                     }
@@ -474,28 +518,28 @@ struct ContentView: View {
                 Button("iPhone → PC", systemImage: "arrow.up.doc") { session.sendClipboard() }
                 Button("PC → iPhone", systemImage: "arrow.down.doc") { session.requestClipboard() }
                 Divider()
-                Button("写真を PC に送る", systemImage: "photo") {
+                Button("写真を PC に送信", systemImage: "photo") {
                     sendToPCClipboard = false
                     showingPhotoPicker = true
                 }
-                Button("写真を PC のクリップボードに入れる", systemImage: "photo.on.rectangle") {
+                Button("写真を PC のクリップボードにコピー", systemImage: "photo.on.rectangle") {
                     sendToPCClipboard = true
                     showingPhotoPicker = true
                 }
-                Button("ファイルを PC に送る", systemImage: "doc") {
+                Button("ファイルを PC に送信", systemImage: "doc") {
                     sendToPCClipboard = false
                     showingFileImporter = true
                 }
-                Button("ファイルを PC のクリップボードに入れる", systemImage: "doc.on.clipboard") {
+                Button("ファイルを PC のクリップボードにコピー", systemImage: "doc.on.clipboard") {
                     sendToPCClipboard = true
                     showingFileImporter = true
                 }
             }
-            Button("ウィンドウを選ぶ", systemImage: "macwindow") {
+            Button("ウィンドウを選択", systemImage: "macwindow") {
                 session.requestWindows()
                 showingWindows = true
             }
-            Button("モニターを選ぶ", systemImage: "display.2") {
+            Button("モニターを選択", systemImage: "display.2") {
                 session.requestMonitors()
                 showingMonitors = true
             }
@@ -503,12 +547,12 @@ struct ContentView: View {
                 Button("仮想画面を表示", systemImage: "rectangle.on.rectangle") {
                     session.showDesktop(fit: fitSize)
                 }
-                Button("持ってきたウィンドウを元に戻す", systemImage: "arrow.uturn.backward") {
+                Button("移動したウィンドウを元に戻す", systemImage: "arrow.uturn.backward") {
                     session.restoreWindows()
                 }
             }
             if session.viewMode != .screen {
-                Button("本物の画面を表示", systemImage: "display") { session.showScreen() }
+                Button("メイン画面を表示", systemImage: "display") { session.showScreen() }
             }
             Button("切断", systemImage: "xmark.circle", role: .destructive) { session.disconnect() }
         } label: {
@@ -550,14 +594,14 @@ struct ContentView: View {
 
                 card(title: "接続先", systemImage: "network") {
                     field(systemImage: "server.rack") {
-                        TextField("家（Wi-Fi）のホスト（例: 192.168.x.x）", text: $host)
+                        TextField("自宅のホスト（例: 192.168.1.10）", text: $host)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
                     }
                     Divider().overlay(Color.white.opacity(0.1))
                     field(systemImage: "globe") {
-                        TextField("外から（Tailscale）のホスト（省略できます）", text: $hostRemote)
+                        TextField("外出先のホスト（Tailscale、任意）", text: $hostRemote)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
@@ -588,7 +632,7 @@ struct ContentView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.borderless)
-                        .accessibilityLabel(showToken ? "トークンを隠す" : "トークンを表示する")
+                        .accessibilityLabel(showToken ? "トークンを非表示" : "トークンを表示")
                     }
                 }
 
@@ -600,7 +644,7 @@ struct ContentView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    Text("外（4G/5G）からつなぐときは、低くすると遅れがたまりにくくなります")
+                    Text("モバイル通信では、画質を下げると遅延が少なくなります")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -629,7 +673,7 @@ struct ContentView: View {
                         HStack(spacing: 10) {
                             if session.state == .connecting {
                                 ProgressView().tint(.white)
-                                Text("接続しています…")
+                                Text("接続中…")
                             } else {
                                 Image(systemName: "bolt.horizontal.fill")
                                 Text("接続")
@@ -644,7 +688,7 @@ struct ContentView: View {
                     .disabled((host.isEmpty && hostRemote.isEmpty) || token.isEmpty || session.state == .connecting)
 
                     if session.state == .connecting {
-                        Button("やめる", role: .cancel) { session.disconnect() }
+                        Button("キャンセル", role: .cancel) { session.disconnect() }
                             .glassButton()
                     }
                 }
@@ -673,7 +717,7 @@ struct ContentView: View {
             Text("DuoRemote")
                 .font(.largeTitle.bold())
                 .foregroundStyle(.white)
-            Text("自宅の PC を、この iPhone から")
+            Text("iPhone から PC をリモート操作")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
@@ -719,8 +763,8 @@ struct ContentView: View {
 
     /// メニューに出す、今の接続先（「家（192.168.x.x）」など）
     private func hostDescription(_ active: String) -> String {
-        if active == host { return "家（\(active)）" }
-        if active == hostRemote { return "外（\(active)）" }
+        if active == host { return "自宅（\(active)）" }
+        if active == hostRemote { return "外出先（\(active)）" }
         return active
     }
 

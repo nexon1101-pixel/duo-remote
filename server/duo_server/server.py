@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
 import hmac
 import logging
@@ -251,6 +252,7 @@ class Session:
         self.audio_factory = audio_factory
         self._audio = None
         self._audio_task: asyncio.Task | None = None
+        self._thumb_task: asyncio.Task | None = None
         self.files = files.FileTransfer(self.send, ws.send, backend)
         self.settings = settings
         self.backend = backend
@@ -398,13 +400,13 @@ class Session:
         rate, channels = _int(msg.get("rate")) or 48000, _int(msg.get("channels")) or 2
         codec = msg.get("codec") or "pcm"
         if codec not in ALLOWED_CODECS or (codec == "opus" and rate != OPUS_RATE):
-            await self.send({"t": "audio_state", "on": False, "reason": "その音の形には対応していません"})
+            await self.send({"t": "audio_state", "on": False, "reason": "その音の形は使えません"})
             return
         if rate not in ALLOWED_RATES or channels not in ALLOWED_CHANNELS:
-            await self.send({"t": "audio_state", "on": False, "reason": "その音の形には対応していません"})
+            await self.send({"t": "audio_state", "on": False, "reason": "その音の形は使えません"})
             return
         if self.audio_factory is None:
-            await self.send({"t": "audio_state", "on": False, "reason": "このサーバーでは、音を送れません"})
+            await self.send({"t": "audio_state", "on": False, "reason": "このサーバーでは音を送れません"})
             return
         stream = self.audio_factory(rate, channels, "opus") if codec == "opus" else self.audio_factory(rate, channels)
         try:
@@ -481,10 +483,10 @@ class Session:
                     if not self.failed.done():
                         self.failed.set_exception(e)
                     return
-                log.error("映像が止まり続けるため、本物の画面に戻します: %s", e)
+                log.error("映像が止まり続けるため、メイン画面に戻します: %s", e)
                 try:
                     await self.send({
-                        "t": "error", "message": f"映像の取得が止まったため、本物の画面に戻します（{_reason(e)}）",
+                        "t": "error", "message": f"映像が止まり続けたので、メイン画面に戻します（{_reason(e)}）",
                     })
                     await self.send({"t": "mode", "mode": "screen"})
                     self._restarts.clear()
@@ -614,7 +616,7 @@ class Session:
             await self._switch(window, region, monitor)
         except StreamError as e:
             log.error("%sを映せませんでした: %s", what, e)
-            await self.send({"t": "error", "message": f"{what}を映せませんでした（{_reason(e)}）。本物の画面に戻します"})
+            await self.send({"t": "error", "message": f"{what}を映せませんでした（{_reason(e)}）。メイン画面に戻します"})
             await self.send({"t": "mode", "mode": "screen"})
             await self._switch(None, None)
 
@@ -653,7 +655,7 @@ class Session:
             return None
         present = any(m["virtual"] for m in self.backend.monitors())
         if not present:
-            await self.send({"t": "notice", "message": "仮想ディスプレイを出しています…"})
+            await self.send({"t": "notice", "message": "仮想ディスプレイを起動中…"})
         if (not present or (fit_w and fit_h)) and self._stream is not None:
             await self._pause_video()  # モニターを足す・解像度を変えると、動いている撮影が止まるので、先に止める
         try:
@@ -672,6 +674,8 @@ class Session:
         t = msg.get("t")
         if t == "list_windows":
             await self.send({"t": "windows", "list": await self._window_list()})
+        elif t == "window_thumb":
+            await self.window_thumbs(msg)
         elif t == "mode":
             try:
                 await self.set_mode(msg)
@@ -689,7 +693,7 @@ class Session:
                 await self._resume_video()
         elif t == "restore":
             restored = await asyncio.to_thread(self.backend.restore_brought)
-            await self.send({"t": "notice", "message": f"ウィンドウを元の場所に戻しました（{len(restored)}個）"})
+            await self.send({"t": "notice", "message": f"ウィンドウを元に戻しました（{len(restored)}個）"})
         elif t == "audio":
             await self.set_audio(msg)
         elif t in files.MESSAGES:
@@ -732,7 +736,7 @@ class Session:
         except ClipboardError as e:
             await self.send({"t": "error", "message": str(e)})
             return
-        await self.send({"t": "notice", "message": "PCのクリップボードに入れました"})
+        await self.send({"t": "notice", "message": "PC のクリップボードにコピーしました"})
 
     async def _window_list(self) -> list[dict]:
         monitors = await asyncio.to_thread(self.backend.monitors)
@@ -742,18 +746,56 @@ class Session:
             for w in windows
         ]
 
+    async def window_thumbs(self, msg: dict[str, Any]) -> None:
+        """ウィンドウの小さい絵を、頼まれた順に1つずつ送る。取れなかったものは、`none` を付けて知らせる。
+        一覧は先に出せるように、1つ取れるたびに送る（映像を止めないよう、取るのは別のスレッドで行う）。"""
+        ids = msg.get("ids")
+        if not isinstance(ids, list):
+            return
+        width = _int(msg.get("w"))
+        width = protocol.THUMB_DEFAULT_WIDTH if width is None else min(max(width, protocol.THUMB_MIN_WIDTH), protocol.THUMB_MAX_WIDTH)
+        # 取るのに時間がかかるので、操作の受け取りを止めないよう、別の仕事として動かす。新しく頼まれたら、前のは止める
+        await self.stop_thumbs()
+        wanted = [wid for wid in (_int(item) for item in ids[: protocol.THUMB_MAX_IDS]) if wid is not None]
+        self._thumb_task = asyncio.create_task(self._send_thumbs(wanted, width))
+
+    async def stop_thumbs(self) -> None:
+        task, self._thumb_task = self._thumb_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _send_thumbs(self, wanted: list[int], width: int) -> None:
+        for wid in wanted:
+            jpeg = None
+            size = (0, 0)
+            try:
+                raw = await asyncio.to_thread(self.backend.window_thumb_raw, wid, width)
+                if raw is not None:
+                    jpeg = await asyncio.to_thread(files.bgra_to_jpeg, raw[0], raw[1], raw[2])
+                    size = (raw[0], raw[1])
+            except Exception:  # 1つ取れなくても、ほかのウィンドウは続ける
+                log.exception("ウィンドウの絵を取れませんでした: %s", wid)
+            if jpeg is None:
+                await self.send({"t": "window_thumb", "id": wid, "none": True})
+            else:
+                await self.send({
+                    "t": "window_thumb", "id": wid, "w": size[0], "h": size[1],
+                    "jpeg": base64.b64encode(jpeg).decode("ascii"),
+                })
+
     async def bring(self, msg: dict[str, Any]) -> None:
         """ウィンドウを、仮想モニターに持ってくる（表示は、今のまま）。切断したら、元に戻す。"""
         wid = _int(msg.get("id"))
         info = self.backend.window_info(wid) if wid is not None else None
         if info is None:
-            await self.send({"t": "error", "message": "そのウィンドウは見つかりません。一覧を読み直してください"})
+            await self.send({"t": "error", "message": "そのウィンドウは見つかりません。一覧を更新してください"})
             return
         monitor = await self._ensure_virtual()
         if monitor is None:
             return
         if not await asyncio.to_thread(self.backend.bring_window, wid, monitor["work"]):
-            await self.send({"t": "error", "message": "そのウィンドウは、仮想ディスプレイに移せませんでした"})
+            await self.send({"t": "error", "message": "そのウィンドウは仮想ディスプレイに移せませんでした"})
             return
         await asyncio.to_thread(self.backend.focus_window, wid)
         await self.send({"t": "brought", "id": wid, "title": info["title"]})
@@ -779,7 +821,7 @@ class Session:
             mid = msg.get("id")
             monitor = next((m for m in self.backend.monitors() if m["name"] == mid), None)
             if monitor is None:
-                await self.send({"t": "error", "message": "そのモニターは見つかりません。一覧を読み直してください"})
+                await self.send({"t": "error", "message": "そのモニターは見つかりません。一覧を更新してください"})
                 return
             info = monitor_info(monitor)
             async with self._lock:
@@ -803,12 +845,12 @@ class Session:
                 await self._switch_with_fallback(None, None, monitor, "仮想画面")
             return
         if mode != "window":
-            await self.send({"t": "error", "message": f"知らない表示の範囲です: {mode!r}"})
+            await self.send({"t": "error", "message": f"使えない表示の範囲です: {mode!r}"})
             return
 
         wid = _int(msg.get("id"))
         if wid is None or self.backend.window_info(wid) is None:
-            await self.send({"t": "error", "message": "そのウィンドウは見つかりません。一覧を読み直してください"})
+            await self.send({"t": "error", "message": "そのウィンドウは見つかりません。一覧を更新してください"})
             return
         fit_w, fit_h = _num(msg.get("fit_w")), _num(msg.get("fit_h"))
         # 相手のアプリが固まっていると戻ってこないことがあるので、ウィンドウの操作は、別のスレッドで呼ぶ
@@ -818,7 +860,7 @@ class Session:
             if monitor is None:
                 return
             if not await asyncio.to_thread(self.backend.bring_window, wid, monitor["work"]):
-                await self.send({"t": "error", "message": "そのウィンドウは、仮想ディスプレイに移せませんでした"})
+                await self.send({"t": "error", "message": "そのウィンドウは仮想ディスプレイに移せませんでした"})
                 return
         elif fit_w and fit_h and fit_w > 0 and fit_h > 0:
             # ウィンドウが出ているモニターの作業領域に、大きさを合わせる
@@ -832,7 +874,7 @@ class Session:
         info = self.backend.window_info(wid)
         monitor, region = self._locate(info["rect"]) if info else (None, None)
         if info is None or region is None:
-            await self.send({"t": "error", "message": "そのウィンドウは、モニターに出ていないため表示できません"})
+            await self.send({"t": "error", "message": "そのウィンドウはモニターに出ていないので、映せません"})
             return
         async with self._lock:
             await self.send({"t": "mode", "mode": "window", "id": wid, "title": info["title"]})
@@ -852,7 +894,7 @@ class Session:
                 async with self._lock:
                     if self.window != wid:
                         continue
-                    await self.send({"t": "error", "message": "ウィンドウが閉じられたため、画面全体に戻しました"})
+                    await self.send({"t": "error", "message": "ウィンドウが閉じられたので、画面全体に戻しました"})
                     await self.send({"t": "mode", "mode": "screen"})
                     await self._switch(None, None)
                 continue
@@ -1071,6 +1113,7 @@ def make_handler(
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            await session.stop_thumbs()
             await session.stop_audio()
             await session.files.close()
             await session.stop_stream()

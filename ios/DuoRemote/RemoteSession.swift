@@ -37,9 +37,9 @@ enum VideoQuality: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .high: "高（元の大きさ、60fps）"
-        case .medium: "中（1080、60fps）"
-        case .low: "低（720、30fps）"
+        case .high: "高（元の解像度・60fps）"
+        case .medium: "中（1080p・60fps）"
+        case .low: "低（720p・30fps）"
         }
     }
 
@@ -101,6 +101,12 @@ final class RemoteSession: ObservableObject {
     /// PCのウィンドウの一覧。requestWindows() で読み直す
     @Published private(set) var windows: [RemoteWindow] = []
     @Published private(set) var isLoadingWindows = false
+    /// ウィンドウの小さい絵（`windows` の id ごと）。requestWindowThumbs() で頼む
+    @Published private(set) var windowThumbs: [Int: UIImage] = [:]
+    /// 頼んだが、まだ届かないもの
+    @Published private(set) var windowThumbPending: Set<Int> = []
+    /// 取れなかったもの（最小化しているウィンドウなど）。文字だけの表示にする
+    @Published private(set) var windowThumbMissing: Set<Int> = []
     /// 表示しているウィンドウ。nilなら画面全体
     @Published private(set) var currentWindow: RemoteWindow?
     @Published private(set) var viewMode: ViewMode = .screen
@@ -178,7 +184,7 @@ final class RemoteSession: ObservableObject {
                 guard let self else { return }
                 self.audioOn = false
                 self.audioFailures += 1
-                self.show(notice: "音: \(message)")
+                self.show(notice: "音声: \(message)")
             }
         }
     }
@@ -197,7 +203,7 @@ final class RemoteSession: ObservableObject {
             list.append(host)
         }
         guard !list.isEmpty, list.allSatisfy({ Self.url(host: $0, port: port) != nil }) else {
-            errorMessage = "接続先の形式が正しくありません"
+            errorMessage = "接続先が正しくありません"
             return
         }
         target = (list, port, token)
@@ -418,11 +424,11 @@ final class RemoteSession: ObservableObject {
 
         if errorMessage == nil {
             if wasConnecting {
-                errorMessage = "接続できませんでした。PCのサーバーが動いているか、アドレスとトークンを確認してください"
+                errorMessage = "接続できませんでした。サーバーが起動しているか、ホストとトークンを確認してください"
             } else if closedNormally {
-                errorMessage = "PCとの接続が切れました（別の端末がつながったか、サーバーが止まりました）"
+                errorMessage = "接続が切断されました。別の端末が接続したか、サーバーが停止した可能性があります"
             } else {
-                errorMessage = "接続が切れました。つなぎ直せませんでした"
+                errorMessage = "接続が切断され、再接続できませんでした"
             }
         }
         target = nil
@@ -452,6 +458,9 @@ final class RemoteSession: ObservableObject {
         imeOn = nil
         windows = []
         isLoadingWindows = false
+        windowThumbs = [:]
+        windowThumbPending = []
+        windowThumbMissing = []
         monitors = []
         isLoadingMonitors = false
         noticeTask?.cancel()
@@ -491,11 +500,11 @@ final class RemoteSession: ObservableObject {
     /// iPhoneのクリップボードの文字を、PCのクリップボードに入れる
     func sendClipboard() {
         guard let text = UIPasteboard.general.string, !text.isEmpty else {
-            show(notice: "iPhoneのクリップボードに、文字がありません")
+            show(notice: "iPhone のクリップボードが空です")
             return
         }
         guard text.unicodeScalars.count <= Self.maxClipLength else {
-            show(notice: "文字が長すぎます（\(Self.maxClipLength)文字まで）")
+            show(notice: "テキストが長すぎます（最大 \(Self.maxClipLength) 文字）")
             return
         }
         send(["t": "clip_set", "s": text])
@@ -547,6 +556,16 @@ final class RemoteSession: ObservableObject {
     func requestWindows() {
         isLoadingWindows = true
         send(["t": "list_windows"])
+    }
+
+    /// ウィンドウの小さい絵を頼む。届いたものから順に、windowThumbs に入る。
+    /// 前に届いた絵は、新しいのが届くまで残す（一覧が、ちらつかないように）
+    func requestWindowThumbs(_ ids: [Int], width: Int = 360) {
+        let ids = Array(ids.prefix(40))
+        guard !ids.isEmpty else { return }
+        windowThumbPending = Set(ids)
+        windowThumbMissing.subtract(ids)
+        send(["t": "window_thumb", "ids": ids, "w": width])
     }
 
     /// ウィンドウ1つだけを表示する。fitがあれば、ウィンドウの大きさをその縦横比に変える（iPhoneの画面のポイント数）。
@@ -663,7 +682,7 @@ final class RemoteSession: ObservableObject {
             startHeartbeat(for: source)
             if audioWanted { requestAudio() }
             if reconnected {
-                show(notice: "つなぎ直しました")
+                show(notice: "再接続しました")
                 // サーバーは本物の画面全体から始めるので、見ていた表示（仮想画面、ウィンドウ）に戻す
                 switch lastDisplay {
                 case .desktop(let fit)?:
@@ -695,7 +714,7 @@ final class RemoteSession: ObservableObject {
                 var message: [String: Any] = ["t": "quality"]
                 message.merge(next.helloFields) { _, new in new }
                 send(message)
-                show(notice: "通信に合わせて、画質を\(next.shortLabel)にしました")
+                show(notice: "通信状況に合わせて画質を\(next.shortLabel)に変更しました")
             }
         case "audio_state":
             if json["on"] as? Bool == true, audioWanted,
@@ -708,16 +727,16 @@ final class RemoteSession: ObservableObject {
                 audioOn = false
                 if audioWanted, let reason = json["reason"] as? String {
                     audioFailures += 1
-                    show(notice: "音: \(reason)")
+                    show(notice: "音声: \(reason)")
                 }
             }
         case "clip":
             let text = json["s"] as? String ?? ""
             if text.isEmpty {
-                show(notice: "PCのクリップボードに、文字がありません")
+                show(notice: "PC のクリップボードが空です")
             } else {
                 UIPasteboard.general.string = text
-                show(notice: "iPhoneのクリップボードに入れました")
+                show(notice: "iPhone のクリップボードにコピーしました")
             }
         case "ime_state":
             imeOn = json["on"] as? Bool
@@ -733,6 +752,20 @@ final class RemoteSession: ObservableObject {
                 )
             }
             isLoadingWindows = false
+            // 消えたウィンドウの絵は、捨てる
+            let alive = Set(windows.map(\.id))
+            windowThumbs = windowThumbs.filter { alive.contains($0.key) }
+            windowThumbMissing.formIntersection(alive)
+        case "window_thumb":
+            guard let id = json["id"] as? Int else { break }
+            windowThumbPending.remove(id)
+            if let text = json["jpeg"] as? String, let data = Data(base64Encoded: text), let image = UIImage(data: data) {
+                windowThumbs[id] = image
+                windowThumbMissing.remove(id)
+            } else {
+                windowThumbs[id] = nil
+                windowThumbMissing.insert(id)
+            }
         case "mode":
             switch json["mode"] as? String {
             case "window":
@@ -766,10 +799,10 @@ final class RemoteSession: ObservableObject {
             if let message = json["message"] as? String { show(notice: message) }
         case "brought":
             let title = json["title"] as? String ?? "ウィンドウ"
-            show(notice: "「\(title)」を仮想画面に持ってきました")
+            show(notice: "「\(title)」を仮想画面に移動しました")
             requestWindows() // 一覧の「出ている場所」を、読み直す
         case "error":
-            let message = (json["message"] as? String) ?? "サーバーからエラーが返りました"
+            let message = (json["message"] as? String) ?? "サーバーでエラーが発生しました"
             if state == .connected {
                 show(notice: message)
             } else {

@@ -299,7 +299,7 @@ def test_virtual_capture_falls_back_to_screen_with_reason(monkeypatch):
         error = await recv_json(ws, "error")
         # 理由（ffmpeg のエラーの、最後の1行）が、利用者に見える
         assert "仮想画面を映せませんでした" in error["message"] and "Failed to configure output pad" in error["message"]
-        assert "本物の画面に戻します" in error["message"]
+        assert "メイン画面に戻します" in error["message"]
         assert (await recv_json(ws, "mode"))["mode"] == "screen"
         await send(ws, t="ping", n=4)  # 接続は続いている
         assert (await recv_json(ws, "pong"))["n"] == 4
@@ -322,7 +322,7 @@ def test_stream_that_dies_later_returns_to_screen_without_closing(monkeypatch):
         await send(ws, t="mode", mode="desktop")
         await recv_json(ws, "mode")
         error = await recv_json(ws, "error")  # 0.2秒後に、映像が止まった
-        assert "本物の画面に戻します" in error["message"] and "DXGI_ERROR_ACCESS_LOST" in error["message"]
+        assert "メイン画面に戻します" in error["message"] and "DXGI_ERROR_ACCESS_LOST" in error["message"]
         await send(ws, t="ping", n=5)
         assert (await recv_json(ws, "pong"))["n"] == 5
         await ws.close()

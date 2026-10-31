@@ -67,7 +67,7 @@ struct MonitorPicker: View {
                             ContentUnavailableView(
                                 "モニターがありません",
                                 systemImage: "display",
-                                description: Text("下に引くか、右上のボタンで読み直します")
+                                description: Text("下にスワイプして更新")
                             )
                         }
                     }
@@ -88,12 +88,12 @@ struct MonitorPicker: View {
                             session.showScreen()
                             dismiss()
                         } label: {
-                            Label("本物の画面を表示", systemImage: "display")
+                            Label("メイン画面を表示", systemImage: "display")
                         }
                     }
                 }
             }
-            .navigationTitle("モニターを選ぶ")
+            .navigationTitle("モニターを選択")
             .navigationBarTitleDisplayMode(.inline)
             .refreshable { session.requestMonitors() }
             .toolbar {
@@ -101,7 +101,7 @@ struct MonitorPicker: View {
                     Button("閉じる") { dismiss() }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button("読み直す", systemImage: "arrow.clockwise") { session.requestMonitors() }
+                    Button("更新", systemImage: "arrow.clockwise") { session.requestMonitors() }
                 }
             }
         }
@@ -122,7 +122,7 @@ struct MonitorPicker: View {
         let symbol = monitor.virtual ? "rectangle.on.rectangle" : "display"
         var parts: [String] = []
         if monitor.width > 0, monitor.height > 0 { parts.append("\(monitor.width) × \(monitor.height)") }
-        if monitor.primary { parts.append("主モニター") }
+        if monitor.primary { parts.append("メイン") }
         if monitor.virtual { parts.append("仮想") }
         let detail = parts.joined(separator: " ・ ")
         return HStack(spacing: 12) {

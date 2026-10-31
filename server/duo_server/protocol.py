@@ -15,6 +15,10 @@ FLAG_FILE = 0x04  # ファイルの中身のフレーム（先頭4バイトの�
 
 MAX_TEXT_LENGTH = 4096
 MAX_CLIP_LENGTH = 100_000  # クリップボードの文字の上限（文字で数える）
+THUMB_MAX_IDS = 40  # ウィンドウの小さい絵を、1回で頼める数の上限
+THUMB_MIN_WIDTH = 80  # 小さい絵の横幅（ピクセル）の下限と上限
+THUMB_MAX_WIDTH = 480
+THUMB_DEFAULT_WIDTH = 240
 
 
 def pack_frame(payload: bytes, keyframe: bool, ts_ms: int) -> bytes:

@@ -153,6 +153,29 @@ def to_jpeg_if_smaller(image: bytes, ffmpeg: str | None = None) -> bytes | None:
     return jpeg if len(jpeg) * 2 <= len(image) else None
 
 
+def bgra_to_jpeg(width: int, height: int, data: bytes, ffmpeg: str | None = None) -> bytes | None:
+    """上から順の BGRA（幅 x 高さ）を JPEG にする。ウィンドウの小さい絵に使う。できなければ None。"""
+    import subprocess
+
+    if width <= 0 or height <= 0 or len(data) != width * height * 4:
+        return None
+    try:
+        result = subprocess.run(
+            [ffmpeg or FFMPEG, "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgra",
+             "-s", f"{width}x{height}", "-i", "pipe:0", "-frames:v", "1", "-pix_fmt", "yuvj420p",
+             "-q:v", "5", "-f", "image2", "-c:v", "mjpeg", "pipe:1"],
+            input=data, capture_output=True, timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        log.warning("ウィンドウの絵を JPEG にできませんでした: %s", e)
+        return None
+    jpeg = result.stdout
+    if result.returncode != 0 or not jpeg.startswith(b"\xff\xd8"):
+        return None
+    return jpeg
+
+
 def dib_to_png(dib: bytes) -> bytes | None:
     """DIB（24ビットか32ビット）を PNG にする。透明度は使わない（クリップボードの32ビットは、当てにならない）。
     ほかの形のときは None。"""
@@ -271,7 +294,7 @@ class FileTransfer:
         item.received += len(data)
         if item.received > item.size:
             self._discard(fid)
-            await self._error(f"ファイルの大きさが、知らされた大きさ（{item.size}バイト）より大きくなりました")
+            await self._error(f"ファイルが、知らされた大きさ（{item.size}バイト）を超えました")
             return
         try:
             item.fh.write(data)
@@ -334,7 +357,7 @@ class FileTransfer:
         except (ClipboardError, OSError) as e:
             await self._error(f"保存はできましたが、クリップボードには入れられませんでした（{e}）")
             return
-        await self._send({"t": "notice", "message": "PCのクリップボードに入れました"})
+        await self._send({"t": "notice", "message": "PC のクリップボードにコピーしました"})
 
     # --- PC → iPhone
 
@@ -439,7 +462,7 @@ class FileTransfer:
                     break
                 await self._send_bytes(protocol.pack_file(fid, chunk))
         except OSError as e:
-            await self._error(f"ファイル「{name}」を読んでいる途中で失敗しました（{e}）")
+            await self._error(f"ファイル「{name}」を読めませんでした（{e}）")
             return
         await self._send({"t": "file_end", "id": fid})
 
