@@ -65,6 +65,8 @@ final class RemoteSession: ObservableObject {
     static let maxReconnectAttempts = 6
     /// 接続を始めてから、welcome を待つ時間
     static let connectTimeout: Duration = .seconds(10)
+    /// 候補が2つ以上あるとき、最初の候補だけは短く待つ（だめなら、すぐ次の候補を試す）
+    static let firstCandidateTimeout: Duration = .seconds(4)
     /// 接続中に ping を送る間隔と、pong が来なければ切れたとみなす時間
     static let pingInterval: Duration = .seconds(5)
     static let pingTimeout: TimeInterval = 10
@@ -87,6 +89,8 @@ final class RemoteSession: ObservableObject {
     @Published private(set) var imeOn: Bool?
     /// 往復の時間（ミリ秒）。ping を送ってから pong が来るまで
     @Published private(set) var latencyMs: Int?
+    /// 今つながっているホスト（候補の1つ）。つながっていないときはnil
+    @Published private(set) var activeHost: String?
     private var noticeTask: Task<Void, Never>?
 
     let renderer = H264Renderer()
@@ -103,7 +107,15 @@ final class RemoteSession: ObservableObject {
     private var receiveTask: Task<Void, Never>?
 
     /// つなぎ直すときに使う、接続先
-    private var target: (url: URL, token: String)?
+    private var target: (hosts: [String], port: Int, token: String)?
+    /// 今試している候補の番号（target.hosts の中）
+    private var hostIndex = 0
+    /// 最後にwelcomeまで届いた候補の番号。つなぎ直すときは、ここから試す
+    private var lastGoodIndex = 0
+    /// 今回の順番で、すでに試した候補の数
+    private var triedInRound = 0
+    /// 今の接続で、welcome が届いた
+    private var welcomed = false
     private var reconnectAttempts = 0
     private var reconnectTask: Task<Void, Never>?
     /// サーバーに断られた（トークンが違うなど）。このときは、つなぎ直さない
@@ -135,24 +147,52 @@ final class RemoteSession: ObservableObject {
         }
     }
 
-    func connect(host: String, port: Int, token: String, quality: VideoQuality) {
+    /// hosts は、試す順のホストの並び。空のものと重なりは除く。
+    /// 最初の候補でつながらなければ、すぐ次の候補を試す
+    func connect(hosts: [String], port: Int, token: String, quality: VideoQuality) {
         disconnect()
         errorMessage = nil
         self.quality = quality
 
-        guard let url = URL(string: "ws://\(host):\(port)/") else {
+        var list: [String] = []
+        for host in hosts where !host.isEmpty && !list.contains(host) {
+            list.append(host)
+        }
+        guard !list.isEmpty, list.allSatisfy({ Self.url(host: $0, port: port) != nil }) else {
             errorMessage = "接続先の形式が正しくありません"
             return
         }
-        target = (url, token)
+        target = (list, port, token)
+        lastGoodIndex = 0
+        beginRound()
         state = .connecting
         open()
     }
 
+    private static func url(host: String, port: Int) -> URL? {
+        URL(string: "ws://\(host):\(port)/")
+    }
+
+    /// 候補を試す順番を、最後につながった候補から始め直す
+    private func beginRound() {
+        hostIndex = lastGoodIndex
+        triedInRound = 0
+    }
+
+    /// 次の候補に移れるなら、移って true を返す
+    private func advanceCandidate() -> Bool {
+        guard let target, triedInRound + 1 < target.hosts.count else { return false }
+        triedInRound += 1
+        hostIndex = (hostIndex + 1) % target.hosts.count
+        return true
+    }
+
     private func open() {
-        guard let target else { return }
+        guard let target, target.hosts.indices.contains(hostIndex),
+              let url = Self.url(host: target.hosts[hostIndex], port: target.port) else { return }
         rejected = false
-        let task = URLSession.shared.webSocketTask(with: target.url)
+        welcomed = false
+        let task = URLSession.shared.webSocketTask(with: url)
         task.maximumMessageSize = 16 * 1024 * 1024
         self.task = task
         task.resume()
@@ -184,10 +224,13 @@ final class RemoteSession: ObservableObject {
             }
         }
 
-        // welcome が来なければ、接続に失敗したことにする
+        // welcome が来なければ、接続に失敗したことにする。
+        // 候補が複数あるときは、各回の最初の候補だけ、短く待つ
+        let timeout = (triedInRound == 0 && target.hosts.count > 1)
+            ? Self.firstCandidateTimeout : Self.connectTimeout
         connectWatchdog?.cancel()
         connectWatchdog = Task { [weak self] in
-            try? await Task.sleep(for: Self.connectTimeout)
+            try? await Task.sleep(for: timeout)
             guard let self, !Task.isCancelled, self.task === task, self.state != .connected else { return }
             self.fail(task)
         }
@@ -246,6 +289,7 @@ final class RemoteSession: ObservableObject {
         guard target != nil else { return }
         reconnectAttempts = 0
         state = .reconnecting
+        beginRound()
         open()
     }
 
@@ -257,6 +301,7 @@ final class RemoteSession: ObservableObject {
         close(code: .goingAway)
         reconnectAttempts = 0
         state = .reconnecting
+        beginRound()
         open()
     }
 
@@ -265,6 +310,7 @@ final class RemoteSession: ObservableObject {
         reconnectTask?.cancel()
         reconnectTask = nil
         target = nil
+        activeHost = nil
         reconnectAttempts = 0
         suspended = false
         currentWindow = nil
@@ -302,6 +348,14 @@ final class RemoteSession: ObservableObject {
         receiveTask = nil
         close(code: .goingAway)
 
+        // welcome が来る前に失敗したら、まだ試していない候補を、すぐ試す
+        // （断られたとき、サーバーが正常に閉じたときは、別の候補でも同じなので試さない）
+        if !welcomed, !rejected, !closedNormally, advanceCandidate() {
+            currentWindow = window // つなぎ直しの途中なら、同じウィンドウの表示に戻す
+            open()
+            return
+        }
+
         if !wasConnecting, !rejected, !closedNormally, target != nil,
            reconnectAttempts < Self.maxReconnectAttempts {
             currentWindow = window // つなぎ直したら、同じウィンドウの表示に戻す
@@ -319,6 +373,7 @@ final class RemoteSession: ObservableObject {
             }
         }
         target = nil
+        activeHost = nil
         reconnectAttempts = 0
         currentWindow = nil
         viewMode = .screen
@@ -334,6 +389,7 @@ final class RemoteSession: ObservableObject {
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard let self, !Task.isCancelled, self.state == .reconnecting else { return }
+            self.beginRound()
             self.open()
         }
     }
@@ -519,6 +575,11 @@ final class RemoteSession: ObservableObject {
             }
             virtualAvailable = json["virtual"] as? Bool ?? false
             let reconnected = state == .reconnecting
+            welcomed = true
+            lastGoodIndex = hostIndex
+            if let hosts = target?.hosts, hosts.indices.contains(hostIndex) {
+                activeHost = hosts[hostIndex]
+            }
             state = .connected
             errorMessage = nil
             reconnectAttempts = 0

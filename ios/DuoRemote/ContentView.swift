@@ -7,6 +7,10 @@ struct ContentView: View {
 
     // 接続先は端末に覚えておく。トークンはキーチェーンにしまう
     @AppStorage("host") private var host = ""
+    /// 外から（Tailscale）つなぐときのホスト。省略できる
+    @AppStorage("hostRemote") private var hostRemote = ""
+    /// 前回つながったホスト（0: 家、1: 外）。次は、こちらから試す
+    @AppStorage("lastHostIndex") private var lastHostIndex = 0
     @AppStorage("port") private var port = "8765"
     @State private var token = ""
     @State private var showToken = false
@@ -63,6 +67,10 @@ struct ContentView: View {
         }
         // 接続中は、触らなくても画面がロックされないようにする
         .onChange(of: session.state) { _, _ in updateIdleTimer() }
+        .onChange(of: session.activeHost) { _, active in
+            guard let active else { return }
+            if active == host { lastHostIndex = 0 } else if active == hostRemote { lastHostIndex = 1 }
+        }
         // 裏に回ったら接続を閉じ、戻ったらつなぎ直す
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -332,6 +340,9 @@ struct ContentView: View {
             } else if session.viewMode == .desktop {
                 Text("表示中: 仮想画面")
             }
+            if let active = session.activeHost {
+                Text("接続先: \(hostDescription(active))")
+            }
             Text(screenDescription)
             Toggle("PCの音を鳴らす", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
             Toggle("他のアプリの音と混ぜる", systemImage: "speaker.badge.exclamationmark", isOn: $audioMix)
@@ -431,7 +442,14 @@ struct ContentView: View {
 
                 card(title: "接続先", systemImage: "network") {
                     field(systemImage: "server.rack") {
-                        TextField("ホスト（例: 100.x.x.x）", text: $host)
+                        TextField("家（Wi-Fi）のホスト（例: 192.168.x.x）", text: $host)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                    }
+                    Divider().overlay(Color.white.opacity(0.1))
+                    field(systemImage: "globe") {
+                        TextField("外から（Tailscale）のホスト（省略できます）", text: $hostRemote)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
@@ -492,11 +510,12 @@ struct ContentView: View {
                     Button {
                         // 貼り付けたときに付いてくる空白や、全角の英数字を直してから使う
                         host = Self.cleaned(host)
+                        hostRemote = Self.cleaned(hostRemote)
                         port = Self.cleaned(port)
                         token = Self.cleaned(token)
                         Keychain.save("token", token)
                         session.setAudio(audioOn, mixWithOthers: audioMix)
-                        session.connect(host: host, port: Int(port) ?? 8765, token: token, quality: quality)
+                        session.connect(hosts: hostCandidates(), port: Int(port) ?? 8765, token: token, quality: quality)
                     } label: {
                         HStack(spacing: 10) {
                             if session.state == .connecting {
@@ -513,7 +532,7 @@ struct ContentView: View {
                     }
                     .glassButton(prominent: true)
                     .controlSize(.large)
-                    .disabled(host.isEmpty || token.isEmpty || session.state == .connecting)
+                    .disabled((host.isEmpty && hostRemote.isEmpty) || token.isEmpty || session.state == .connecting)
 
                     if session.state == .connecting {
                         Button("やめる", role: .cancel) { session.disconnect() }
@@ -580,6 +599,20 @@ struct ContentView: View {
     static func cleaned(_ text: String) -> String {
         let halfWidth = text.applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? text
         return halfWidth.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 試すホストの並び。前回つながった方（家か外か）を先にする。空のものは除く
+    private func hostCandidates() -> [String] {
+        let all = [host, hostRemote]
+        let first = lastHostIndex == 1 ? 1 : 0
+        return [all[first], all[1 - first]].filter { !$0.isEmpty }
+    }
+
+    /// メニューに出す、今の接続先（「家（192.168.x.x）」など）
+    private func hostDescription(_ active: String) -> String {
+        if active == host { return "家（\(active)）" }
+        if active == hostRemote { return "外（\(active)）" }
+        return active
     }
 
     private func loadToken() {
