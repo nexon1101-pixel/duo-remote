@@ -92,6 +92,7 @@ class NullInput(_BringMixin):
         self.virtual_error: str | None = None  # 設定すると、virtual_on が失敗する
         self._virtual_width = 1536
         self.clipboard = ""
+        self.keep_awake_calls: list[bool] = []  # keep_awake に渡された値の記録
 
     def screen_size(self) -> tuple[int, int]:
         return self._size
@@ -218,6 +219,9 @@ class NullInput(_BringMixin):
         self.calls.append(("clip_set", s))
         self.clipboard = s
 
+    def keep_awake(self, on: bool) -> None:
+        self.keep_awake_calls.append(on)  # calls には入れない（入力の記録と分けておく）
+
 
 if sys.platform == "win32":
     import ctypes
@@ -291,6 +295,9 @@ if sys.platform == "win32":
     kernel32.OpenProcess.restype = wt.HANDLE
     kernel32.QueryFullProcessImageNameW.argtypes = (wt.HANDLE, wt.DWORD, wt.LPWSTR, ctypes.POINTER(wt.DWORD))
     kernel32.CloseHandle.argtypes = (wt.HANDLE,)
+    ES_CONTINUOUS, ES_SYSTEM_REQUIRED, ES_DISPLAY_REQUIRED = 0x80000000, 0x00000001, 0x00000002
+    kernel32.SetThreadExecutionState.argtypes = (wt.DWORD,)
+    kernel32.SetThreadExecutionState.restype = wt.DWORD
     user32.OpenClipboard.argtypes = (wt.HWND,)
     user32.GetClipboardData.argtypes = (wt.UINT,)
     user32.GetClipboardData.restype = wt.HANDLE
@@ -760,6 +767,13 @@ if sys.platform == "win32":
 
         def clip_set(self, s: str) -> None:
             _clip_set(s)
+
+        def keep_awake(self, on: bool) -> None:
+            """接続している間、スリープと画面の消灯（とロック）を防ぐ。呼んだスレッドに結びつくので、
+            入れるときと戻すときは、同じスレッドで呼ぶこと。"""
+            flags = ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED if on else ES_CONTINUOUS
+            if not kernel32.SetThreadExecutionState(flags):
+                log.warning("SetThreadExecutionState が失敗しました")
 
 
 def create_input():

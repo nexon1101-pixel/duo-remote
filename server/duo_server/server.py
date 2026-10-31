@@ -48,6 +48,9 @@ MAX_AUDIO_BUFFERED_BYTES = 128 * 1024
 # クライアントが選べるビットレートの範囲（kbps）
 MIN_BITRATE_KBPS = 500
 MAX_BITRATE_KBPS = 20000
+MIN_FPS, MAX_FPS = 5, 120
+# stats を送る間隔（秒）
+STATS_INTERVAL_SEC = 2.0
 
 # ウィンドウだけを撮るとき、最初の1枚が届くまで、描き直しを頼む間隔と回数
 NUDGE_INTERVAL_SEC = 0.3
@@ -96,6 +99,23 @@ def _unit(v: Any) -> float | None:
 
 def _int(v: Any) -> int | None:
     return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def clamp_fps(v: float) -> int:
+    return min(max(int(v), MIN_FPS), MAX_FPS)
+
+
+def clamp_bitrate(v: float) -> int:
+    return min(max(int(v), MIN_BITRATE_KBPS), MAX_BITRATE_KBPS)
+
+
+def monitor_info(m: dict) -> dict:
+    """モニターを、クライアントに知らせる形にする。id は、Windows のデバイス名（接続し直しても変わらない）。"""
+    x, y, w, h = m["rect"]
+    return {
+        "id": m["name"], "name": m["name"].removeprefix("\\\\.\\"), "w": w, "h": h,
+        "primary": bool(m["primary"]), "virtual": bool(m.get("virtual")),
+    }
 
 
 def clamp_region(
@@ -231,6 +251,9 @@ class Session:
         self._nudge: asyncio.Task | None = None  # ウィンドウに描き直しを頼む（最初の1枚が届くまで）
         self._lock = asyncio.Lock()
         self._t0 = time.monotonic()
+        # stats 用の数え上げ（送ったフレーム数、捨てたフレーム数、送った映像のバイト数）
+        self._sent = self._dropped = self._bytes = 0
+        self._stats_mark = (0, 0, 0, time.monotonic())
 
     async def send(self, obj: dict[str, Any]) -> None:
         await self.ws.send(protocol.dumps(obj))
@@ -279,6 +302,8 @@ class Session:
                     raise item
                 keyframe, unit, ts = item
                 await self.ws.send(protocol.pack_frame(unit, keyframe, ts))
+                self._sent += 1
+                self._bytes += len(unit)
         finally:
             reader.cancel()
             await asyncio.gather(reader, return_exceptions=True)
@@ -297,10 +322,12 @@ class Session:
                     while not queue.empty():
                         queue.get_nowait()
                         dropped += 1
+                        self._dropped += 1
                 if dropping:
                     # キーフレームの途中からは表示できないので、次のキーフレームまで待つ
                     if not keyframe:
                         dropped += 1
+                        self._dropped += 1
                         continue
                     dropping = False
                     log.info("映像を %d フレーム捨てました", dropped)
@@ -308,6 +335,23 @@ class Session:
                 queue.put_nowait((keyframe, unit, ts))
         except Exception as e:  # ffmpegが止まったときなど。送る側で投げ直す
             queue.put_nowait(e)
+
+    def take_stats(self) -> dict[str, Any]:
+        """前に呼んでからの、送ったフレーム数、捨てたフレーム数、送った映像の量（kbps）。"""
+        sent0, dropped0, bytes0, t0 = self._stats_mark
+        now = time.monotonic()
+        self._stats_mark = (self._sent, self._dropped, self._bytes, now)
+        elapsed = max(now - t0, 1e-3)
+        return {
+            "t": "stats", "sent": self._sent - sent0, "dropped": self._dropped - dropped0,
+            "kbps": round((self._bytes - bytes0) * 8 / 1000 / elapsed),
+        }
+
+    async def send_stats(self) -> None:
+        """約2秒ごとに stats を送る（映像を止めている間も送る）。"""
+        while True:
+            await asyncio.sleep(STATS_INTERVAL_SEC)
+            await self.send(self.take_stats())
 
     def _buffered_bytes(self) -> int:
         transport = getattr(self.ws, "transport", None)
@@ -434,7 +478,10 @@ class Session:
                     return self.window, region, monitor
             return None, None, None
         if self.monitor is not None:
-            found = self._find_virtual()
+            if self.monitor.get("virtual"):
+                found = self._find_virtual()
+            else:
+                found = next((m for m in self.backend.monitors() if m["name"] == self.monitor["name"]), None)
             return (None, None, found) if found is not None else (None, None, None)
         return None, None, None
 
@@ -599,6 +646,11 @@ class Session:
                 await self.set_mode(msg)
             finally:
                 await self._resume_video()
+        elif t == "list_monitors":
+            monitors = await asyncio.to_thread(self.backend.monitors)
+            await self.send({"t": "monitors", "list": [monitor_info(m) for m in monitors]})
+        elif t == "quality":
+            await self.set_quality(msg)
         elif t == "bring":
             try:
                 await self.bring(msg)
@@ -669,8 +721,37 @@ class Session:
         await asyncio.to_thread(self.backend.focus_window, wid)
         await self.send({"t": "brought", "id": wid, "title": info["title"]})
 
+    async def set_quality(self, msg: dict[str, Any]) -> None:
+        """接続したまま、画質を変える。省略したものは今のまま。変わったときだけ、今の表示で撮り直す。"""
+        s = self.settings
+        fps, height, bitrate = _num(msg.get("fps")), _num(msg.get("max_height")), _num(msg.get("bitrate"))
+        new = (
+            s.fps if fps is None else clamp_fps(fps),
+            s.max_height if height is None else max(int(height), 0),
+            s.bitrate_kbps if bitrate is None else clamp_bitrate(bitrate),
+        )
+        if new == (s.fps, s.max_height, s.bitrate_kbps):
+            return
+        s.fps, s.max_height, s.bitrate_kbps = new
+        async with self._lock:
+            await self._switch_with_fallback(*self._current_target(), "映像")
+
     async def set_mode(self, msg: dict[str, Any]) -> None:
         mode = msg.get("mode")
+        if mode == "monitor":
+            mid = msg.get("id")
+            monitor = next((m for m in self.backend.monitors() if m["name"] == mid), None)
+            if monitor is None:
+                await self.send({"t": "error", "message": "そのモニターは見つかりません。一覧を読み直してください"})
+                return
+            info = monitor_info(monitor)
+            async with self._lock:
+                await self.send({"t": "mode", "mode": "monitor", "id": info["id"], "name": info["name"]})
+                if monitor["primary"]:
+                    await self._switch(None, None)  # 主モニターは、screen と同じ
+                else:
+                    await self._switch_with_fallback(None, None, monitor, "このモニター")
+            return
         if mode == "screen":
             async with self._lock:
                 await self.send({"t": "mode", "mode": "screen"})
@@ -852,18 +933,45 @@ def make_handler(
                 await ws.send(protocol.dumps({"t": "ime_state", "on": state}))
             await asyncio.sleep(IME_POLL_SEC)
 
+    # つながっている接続の数。1つ以上の間、PCがスリープしないようにする。
+    # SetThreadExecutionState は、呼んだスレッドに結びつくので、必ず、イベントループのスレッド（ここ）で直接呼ぶ
+    connections = {"n": 0}
+
+    def connection_opened() -> None:
+        connections["n"] += 1
+        if connections["n"] == 1:
+            try:
+                backend.keep_awake(True)
+            except Exception:
+                log.exception("スリープを防げませんでした")
+
+    def connection_closed() -> None:
+        connections["n"] -= 1
+        if connections["n"] == 0:
+            try:
+                backend.keep_awake(False)
+            except Exception:
+                log.exception("スリープを防ぐ設定を戻せませんでした")
+
     async def handler(ws: ServerConnection) -> None:
         hello = await authenticate(ws)
         if hello is None:
             return
+        connection_opened()
+        try:
+            await serve_session(ws, hello)
+        finally:
+            connection_closed()
+
+    async def serve_session(ws: ServerConnection, hello: dict[str, Any]) -> None:
 
         fps = int(_num(hello.get("fps"), settings.fps) or settings.fps)
         max_height = int(_num(hello.get("max_height"), settings.max_height) or 0)
         bitrate = int(_num(hello.get("bitrate"), settings.bitrate_kbps) or settings.bitrate_kbps)
         per_conn = Settings(
             settings.token,
-            min(max(fps, 5), 120),
-            min(max(bitrate, MIN_BITRATE_KBPS), MAX_BITRATE_KBPS),
+            clamp_fps(fps),
+            clamp_bitrate(bitrate),
             max(max_height, 0),
             settings.window_capture,
         )
@@ -902,6 +1010,7 @@ def make_handler(
                 asyncio.create_task(receive(session)),
                 asyncio.create_task(watch_ime(ws)),
                 asyncio.create_task(session.watch_window()),
+                asyncio.create_task(session.send_stats()),
             ]
             done, _ = await asyncio.wait(
                 [*tasks, session.failed, session.kicked], return_when=asyncio.FIRST_COMPLETED
