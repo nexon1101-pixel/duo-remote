@@ -112,6 +112,7 @@ footer { text-align: center; margin-top: 24px; }
     <div class="row"><span class="label">ホスト</span><span class="value" id="hosts"></span></div>
     <div class="row"><span class="label">ポート</span><span class="value" id="portShow"></span>
       <button data-copy="portShow">コピー</button></div>
+    <div class="small" id="udpNote"></div>
     <div class="row"><span class="label">トークン</span><span class="value" id="tokenShow">●●●●●●●●</span>
       <button id="tokenEye">表示</button><button id="tokenCopy">コピー</button>
       <button class="danger" id="tokenNew">作り直す</button></div>
@@ -229,6 +230,7 @@ function renderStatus() {
   $("adminBtn").hidden = st.admin;
   $("autostart").checked = st.autostart;
   $("portShow").textContent = st.port;
+  $("udpNote").textContent = "UDP も同じポート（" + (st.udp_port || st.port) + "）";
   const hosts = $("hosts"); hosts.textContent = "";
   const details = st.address_details || st.addresses.map((a) => ({ address: a, name: "", recommended: false, tailscale: a.startsWith("100.") }));
   if (!details.length) hosts.textContent = "見つかりません";

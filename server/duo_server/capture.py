@@ -107,14 +107,17 @@ def build_ffmpeg_cmd(
     region: tuple[int, int, int, int] | None = None,
     window: int | None = None,
     codec: str = "h264",
+    short_gop: bool = False,
 ) -> list[str]:
     """画面を撮ってH.264にするffmpegのコマンドを作る。
+    short_gop が True なら、キーフレームの間隔を短くする（約0.5秒。UDP で送るとき。docs/protocol.md の「UDP での映像と音」）。
     regionは撮る範囲（モニターの左上からの x, y, 幅, 高さ。画素）。Noneなら画面全体。
     windowを渡すと、画面を切り抜くのではなく、そのウィンドウだけを撮る（Windows Graphics Capture。
     ほかのウィンドウが上に重なっても映らない）。このとき output_idx と region は使わない。
     codecが "hevc" なら H.265 にする（NVENC のときだけ。同じ画質で、通信量が H.264 の半分くらい）。"""
     hevc = codec == "hevc" and encoder == "h264_nvenc"
-    gop = max(fps * 2, 1)
+    gop = max(fps // 2, 1) if short_gop else max(fps * 2, 1)
+    gop_sec = "0.5" if short_gop else "2"
     if window is not None:
         # width=-2、height=-2: 幅と高さを偶数に切り下げる（圧縮に偶数が要る）
         grab = f"gfxcapture=hwnd={window}:max_framerate={fps}:capture_cursor=1:width=-2:height=-2"
@@ -127,7 +130,7 @@ def build_ffmpeg_cmd(
 
     # ウィンドウだけを撮るときは、中身が変わったときにしか映像が来ない（ffmpeg 8.1）。
     # 枚数でキーフレームを入れると、止まったウィンドウでは何分も来ないので、時間で入れる（前から2秒たった次の1枚）
-    keyframes = ["-force_key_frames", "expr:gte(t,n_forced*2)"] if window is not None else []
+    keyframes = ["-force_key_frames", f"expr:gte(t,n_forced*{gop_sec})"] if window is not None else []
 
     if encoder == "h264_nvenc":
         # 拡大縮小がなければ、GPUのまま圧縮に渡す
