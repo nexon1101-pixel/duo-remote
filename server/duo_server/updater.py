@@ -138,8 +138,8 @@ def _apply_git(log: Callable[[str], None], root: Path, timeout: float) -> None:
     if res.returncode != 0:
         tail = "\n".join(out.strip().splitlines()[-5:])
         raise UpdateError(
-            "git pull に失敗しました。手元で変更したファイルがあると失敗します。"
-            "変更を戻すか退避してから、もう一度試してください。\n" + tail
+            "git pull に失敗しました。手元で変えたファイルがあるかもしれません。"
+            "戻すか退避してから、もう一度試してください。\n" + tail
         )
 
 
@@ -154,14 +154,14 @@ def _apply_zip(log: Callable[[str], None], root: Path, timeout: float) -> None:
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile as e:
-        raise UpdateError("ダウンロードしたファイルが ZIP として読めませんでした") from e
+        raise UpdateError("ダウンロードしたファイルを ZIP として開けませんでした") from e
 
     with zf, tempfile.TemporaryDirectory(prefix="duo-update-") as tmp:
         # 先に全部の名前を確かめる。危ないものが1つでもあれば、何も書かない
         entries: list[tuple[zipfile.ZipInfo, str]] = []
         for info in zf.infolist():
             if _unsafe_name(info.filename):
-                raise UpdateError(f"ZIP の中に不正なパスがあります: {info.filename}")
+                raise UpdateError(f"ZIP の中に危ないパスがあります: {info.filename}")
             if info.is_dir():
                 continue
             parts = PurePosixPath(info.filename.replace("\\", "/")).parts
@@ -177,7 +177,7 @@ def _apply_zip(log: Callable[[str], None], root: Path, timeout: float) -> None:
                 continue
             dest = (root / rel).resolve()
             if root_resolved != dest and root_resolved not in dest.parents:
-                raise UpdateError(f"ZIP の中に不正なパスがあります: {info.filename}")
+                raise UpdateError(f"ZIP の中に危ないパスがあります: {info.filename}")
             dest.parent.mkdir(parents=True, exist_ok=True)
             tmp_file = Path(tmp) / f"{count}.part"
             with zf.open(info) as src, open(tmp_file, "wb") as dst:

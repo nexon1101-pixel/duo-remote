@@ -294,7 +294,7 @@ class FileTransfer:
         item.received += len(data)
         if item.received > item.size:
             self._discard(fid)
-            await self._error(f"ファイルの大きさが、知らされた大きさ（{item.size}バイト）より大きくなりました")
+            await self._error(f"ファイルが、知らされた大きさ（{item.size}バイト）を超えました")
             return
         try:
             item.fh.write(data)
@@ -462,7 +462,7 @@ class FileTransfer:
                     break
                 await self._send_bytes(protocol.pack_file(fid, chunk))
         except OSError as e:
-            await self._error(f"ファイル「{name}」を読んでいる途中で失敗しました（{e}）")
+            await self._error(f"ファイル「{name}」を読めませんでした（{e}）")
             return
         await self._send({"t": "file_end", "id": fid})
 

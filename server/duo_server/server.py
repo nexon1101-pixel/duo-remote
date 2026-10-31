@@ -400,13 +400,13 @@ class Session:
         rate, channels = _int(msg.get("rate")) or 48000, _int(msg.get("channels")) or 2
         codec = msg.get("codec") or "pcm"
         if codec not in ALLOWED_CODECS or (codec == "opus" and rate != OPUS_RATE):
-            await self.send({"t": "audio_state", "on": False, "reason": "その音の形には対応していません"})
+            await self.send({"t": "audio_state", "on": False, "reason": "その音の形は使えません"})
             return
         if rate not in ALLOWED_RATES or channels not in ALLOWED_CHANNELS:
-            await self.send({"t": "audio_state", "on": False, "reason": "その音の形には対応していません"})
+            await self.send({"t": "audio_state", "on": False, "reason": "その音の形は使えません"})
             return
         if self.audio_factory is None:
-            await self.send({"t": "audio_state", "on": False, "reason": "このサーバーでは、音を送れません"})
+            await self.send({"t": "audio_state", "on": False, "reason": "このサーバーでは音を送れません"})
             return
         stream = self.audio_factory(rate, channels, "opus") if codec == "opus" else self.audio_factory(rate, channels)
         try:
@@ -486,7 +486,7 @@ class Session:
                 log.error("映像が止まり続けるため、本物の画面に戻します: %s", e)
                 try:
                     await self.send({
-                        "t": "error", "message": f"映像の取得が止まったため、本物の画面に戻します（{_reason(e)}）",
+                        "t": "error", "message": f"映像が止まり続けたので、本物の画面に戻します（{_reason(e)}）",
                     })
                     await self.send({"t": "mode", "mode": "screen"})
                     self._restarts.clear()
@@ -795,7 +795,7 @@ class Session:
         if monitor is None:
             return
         if not await asyncio.to_thread(self.backend.bring_window, wid, monitor["work"]):
-            await self.send({"t": "error", "message": "そのウィンドウは、仮想ディスプレイに移せませんでした"})
+            await self.send({"t": "error", "message": "そのウィンドウは仮想ディスプレイに移せませんでした"})
             return
         await asyncio.to_thread(self.backend.focus_window, wid)
         await self.send({"t": "brought", "id": wid, "title": info["title"]})
@@ -860,7 +860,7 @@ class Session:
             if monitor is None:
                 return
             if not await asyncio.to_thread(self.backend.bring_window, wid, monitor["work"]):
-                await self.send({"t": "error", "message": "そのウィンドウは、仮想ディスプレイに移せませんでした"})
+                await self.send({"t": "error", "message": "そのウィンドウは仮想ディスプレイに移せませんでした"})
                 return
         elif fit_w and fit_h and fit_w > 0 and fit_h > 0:
             # ウィンドウが出ているモニターの作業領域に、大きさを合わせる
@@ -874,7 +874,7 @@ class Session:
         info = self.backend.window_info(wid)
         monitor, region = self._locate(info["rect"]) if info else (None, None)
         if info is None or region is None:
-            await self.send({"t": "error", "message": "そのウィンドウは、モニターに出ていないため表示できません"})
+            await self.send({"t": "error", "message": "そのウィンドウはモニターに出ていないので、映せません"})
             return
         async with self._lock:
             await self.send({"t": "mode", "mode": "window", "id": wid, "title": info["title"]})
@@ -894,7 +894,7 @@ class Session:
                 async with self._lock:
                     if self.window != wid:
                         continue
-                    await self.send({"t": "error", "message": "ウィンドウが閉じられたため、画面全体に戻しました"})
+                    await self.send({"t": "error", "message": "ウィンドウが閉じられたので、画面全体に戻しました"})
                     await self.send({"t": "mode", "mode": "screen"})
                     await self._switch(None, None)
                 continue
