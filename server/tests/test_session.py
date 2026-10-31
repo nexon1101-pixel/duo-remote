@@ -611,3 +611,55 @@ def test_codec_is_chosen_from_hello():
             assert welcome["codec"] == "h264"  # このサーバー（テスト）は H.265 を作れない
 
     asyncio.run(run_with_server(body))
+
+
+def test_window_thumb_sends_jpeg_or_none():
+    """ウィンドウの小さい絵は、取れたものは JPEG（base64）で、取れなかったものは none で、頼んだ順に届く。"""
+    import base64
+    import shutil
+
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg がない")
+
+    backend = make_backend()
+    # 幅16 x 高さ8 の、明るい赤（BGRA）。202 は絵がない
+    backend.windows[101]["thumb"] = (16, 8, bytes([40, 40, 220, 255]) * (16 * 8))
+
+    async def body(url, backend):
+        async with connect(url) as ws:
+            await ws.send(hello())
+            await recv_until(ws, "welcome")
+            await ws.send(json.dumps({"t": "window_thumb", "ids": [101, 202, 999, "x"], "w": 100}))
+            first = await recv_until(ws, "window_thumb")
+            assert first["id"] == 101 and (first["w"], first["h"]) == (16, 8)
+            assert base64.b64decode(first["jpeg"]).startswith(b"\xff\xd8")
+            assert await recv_until(ws, "window_thumb") == {"t": "window_thumb", "id": 202, "none": True}
+            assert await recv_until(ws, "window_thumb") == {"t": "window_thumb", "id": 999, "none": True}
+            assert ("thumb", 101, 100) in backend.calls
+
+    asyncio.run(run_with_server(body, backend=backend))
+
+
+def test_window_thumb_width_is_clamped_and_ids_are_limited():
+    backend = make_backend()
+
+    async def body(url, backend):
+        async with connect(url) as ws:
+            await ws.send(hello())
+            await recv_until(ws, "welcome")
+            ids = list(range(1000, 1000 + protocol.THUMB_MAX_IDS + 5))
+            await ws.send(json.dumps({"t": "window_thumb", "ids": ids, "w": 99999}))
+            for wid in ids[: protocol.THUMB_MAX_IDS]:
+                assert (await recv_until(ws, "window_thumb"))["id"] == wid
+            thumbs = [c for c in backend.calls if c[0] == "thumb"]
+            assert len(thumbs) == protocol.THUMB_MAX_IDS
+            assert all(c[2] == protocol.THUMB_MAX_WIDTH for c in thumbs)
+
+    asyncio.run(run_with_server(body, backend=backend))
+
+
+def test_is_blank_bgra():
+    from duo_server.input_win import is_blank_bgra
+
+    assert is_blank_bgra(bytes(4 * 100))
+    assert not is_blank_bgra(bytes([30, 30, 30, 255]) * 100)

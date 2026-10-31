@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
 import hmac
 import logging
@@ -251,6 +252,7 @@ class Session:
         self.audio_factory = audio_factory
         self._audio = None
         self._audio_task: asyncio.Task | None = None
+        self._thumb_task: asyncio.Task | None = None
         self.files = files.FileTransfer(self.send, ws.send, backend)
         self.settings = settings
         self.backend = backend
@@ -672,6 +674,8 @@ class Session:
         t = msg.get("t")
         if t == "list_windows":
             await self.send({"t": "windows", "list": await self._window_list()})
+        elif t == "window_thumb":
+            await self.window_thumbs(msg)
         elif t == "mode":
             try:
                 await self.set_mode(msg)
@@ -741,6 +745,44 @@ class Session:
             {"id": w["id"], "title": w["title"], "app": w["app"], "where": self._where(w["rect"], monitors)}
             for w in windows
         ]
+
+    async def window_thumbs(self, msg: dict[str, Any]) -> None:
+        """ウィンドウの小さい絵を、頼まれた順に1つずつ送る。取れなかったものは、`none` を付けて知らせる。
+        一覧は先に出せるように、1つ取れるたびに送る（映像を止めないよう、取るのは別のスレッドで行う）。"""
+        ids = msg.get("ids")
+        if not isinstance(ids, list):
+            return
+        width = _int(msg.get("w"))
+        width = protocol.THUMB_DEFAULT_WIDTH if width is None else min(max(width, protocol.THUMB_MIN_WIDTH), protocol.THUMB_MAX_WIDTH)
+        # 取るのに時間がかかるので、操作の受け取りを止めないよう、別の仕事として動かす。新しく頼まれたら、前のは止める
+        await self.stop_thumbs()
+        wanted = [wid for wid in (_int(item) for item in ids[: protocol.THUMB_MAX_IDS]) if wid is not None]
+        self._thumb_task = asyncio.create_task(self._send_thumbs(wanted, width))
+
+    async def stop_thumbs(self) -> None:
+        task, self._thumb_task = self._thumb_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _send_thumbs(self, wanted: list[int], width: int) -> None:
+        for wid in wanted:
+            jpeg = None
+            size = (0, 0)
+            try:
+                raw = await asyncio.to_thread(self.backend.window_thumb_raw, wid, width)
+                if raw is not None:
+                    jpeg = await asyncio.to_thread(files.bgra_to_jpeg, raw[0], raw[1], raw[2])
+                    size = (raw[0], raw[1])
+            except Exception:  # 1つ取れなくても、ほかのウィンドウは続ける
+                log.exception("ウィンドウの絵を取れませんでした: %s", wid)
+            if jpeg is None:
+                await self.send({"t": "window_thumb", "id": wid, "none": True})
+            else:
+                await self.send({
+                    "t": "window_thumb", "id": wid, "w": size[0], "h": size[1],
+                    "jpeg": base64.b64encode(jpeg).decode("ascii"),
+                })
 
     async def bring(self, msg: dict[str, Any]) -> None:
         """ウィンドウを、仮想モニターに持ってくる（表示は、今のまま）。切断したら、元に戻す。"""
@@ -1071,6 +1113,7 @@ def make_handler(
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            await session.stop_thumbs()
             await session.stop_audio()
             await session.files.close()
             await session.stop_stream()

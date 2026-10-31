@@ -7,8 +7,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.17.4"
-    CURRENT_PROJECT_VERSION: "30"
+    MARKETING_VERSION: "0.17.5"
+    CURRENT_PROJECT_VERSION: "31"
 targets:
   DuoRemote:
     type: application

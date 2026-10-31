@@ -101,6 +101,12 @@ final class RemoteSession: ObservableObject {
     /// PCのウィンドウの一覧。requestWindows() で読み直す
     @Published private(set) var windows: [RemoteWindow] = []
     @Published private(set) var isLoadingWindows = false
+    /// ウィンドウの小さい絵（`windows` の id ごと）。requestWindowThumbs() で頼む
+    @Published private(set) var windowThumbs: [Int: UIImage] = [:]
+    /// 頼んだが、まだ届かないもの
+    @Published private(set) var windowThumbPending: Set<Int> = []
+    /// 取れなかったもの（最小化しているウィンドウなど）。文字だけの表示にする
+    @Published private(set) var windowThumbMissing: Set<Int> = []
     /// 表示しているウィンドウ。nilなら画面全体
     @Published private(set) var currentWindow: RemoteWindow?
     @Published private(set) var viewMode: ViewMode = .screen
@@ -452,6 +458,9 @@ final class RemoteSession: ObservableObject {
         imeOn = nil
         windows = []
         isLoadingWindows = false
+        windowThumbs = [:]
+        windowThumbPending = []
+        windowThumbMissing = []
         monitors = []
         isLoadingMonitors = false
         noticeTask?.cancel()
@@ -547,6 +556,16 @@ final class RemoteSession: ObservableObject {
     func requestWindows() {
         isLoadingWindows = true
         send(["t": "list_windows"])
+    }
+
+    /// ウィンドウの小さい絵を頼む。届いたものから順に、windowThumbs に入る。
+    /// 前に届いた絵は、新しいのが届くまで残す（一覧が、ちらつかないように）
+    func requestWindowThumbs(_ ids: [Int], width: Int = 360) {
+        let ids = Array(ids.prefix(40))
+        guard !ids.isEmpty else { return }
+        windowThumbPending = Set(ids)
+        windowThumbMissing.subtract(ids)
+        send(["t": "window_thumb", "ids": ids, "w": width])
     }
 
     /// ウィンドウ1つだけを表示する。fitがあれば、ウィンドウの大きさをその縦横比に変える（iPhoneの画面のポイント数）。
@@ -733,6 +752,20 @@ final class RemoteSession: ObservableObject {
                 )
             }
             isLoadingWindows = false
+            // 消えたウィンドウの絵は、捨てる
+            let alive = Set(windows.map(\.id))
+            windowThumbs = windowThumbs.filter { alive.contains($0.key) }
+            windowThumbMissing.formIntersection(alive)
+        case "window_thumb":
+            guard let id = json["id"] as? Int else { break }
+            windowThumbPending.remove(id)
+            if let text = json["jpeg"] as? String, let data = Data(base64Encoded: text), let image = UIImage(data: data) {
+                windowThumbs[id] = image
+                windowThumbMissing.remove(id)
+            } else {
+                windowThumbs[id] = nil
+                windowThumbMissing.insert(id)
+            }
         case "mode":
             switch json["mode"] as? String {
             case "window":
