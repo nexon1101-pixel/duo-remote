@@ -376,6 +376,9 @@ struct ContentView: View {
                     }
                 }
             }
+            Menu("ショートカット", systemImage: "command") {
+                ShortcutMenuItems(session: session)
+            }
             Menu("クリップボード", systemImage: "doc.on.clipboard") {
                 Button("iPhone → PC", systemImage: "arrow.up.doc") { session.sendClipboard() }
                 Button("PC → iPhone", systemImage: "arrow.down.doc") { session.requestClipboard() }
