@@ -182,6 +182,7 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
             "addresses": control.local_addresses(),
             "address_details": control.address_details(),
             "port": control.read_settings(config)["port"],
+            "udp_port": control.read_settings(config)["port"],  # UDP も、WebSocket と同じ番号
             "autostart": control.autostart_enabled(),
         }
 

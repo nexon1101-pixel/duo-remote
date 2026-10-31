@@ -14,10 +14,11 @@ from typing import Any, Callable, Protocol
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed
 
-from . import files, protocol
+from . import files, protocol, udp as udp_mod
 from .audio import ALLOWED_CHANNELS, ALLOWED_CODECS, ALLOWED_RATES, OPUS_RATE, AudioError
 from .capture import StreamError, output_size
 from .input_win import ClipboardError, from_windows_newlines, to_windows_newlines
+from .udp import UdpEndpoint, UdpPeer
 from .virtual_display import VirtualDisplayError, monitor_of
 
 log = logging.getLogger(__name__)
@@ -58,6 +59,10 @@ STATS_INTERVAL_SEC = 2.0
 NUDGE_INTERVAL_SEC = 0.3
 NUDGE_ATTEMPTS = 20
 
+# UDP の KEEPALIVE が切れていないかを調べる間隔（秒）。切れる時間は udp.KEEPALIVE_TIMEOUT_SEC
+UDP_WATCH_SEC = 0.5
+TRANSPORTS = ("tcp", "udp", "auto")
+
 # 操作の入力のメッセージ。数えて、ログに出す（タッチやキーが PC に届いているかを見分けるため）
 INPUT_TYPES = frozenset({"move", "move_rel", "button", "scroll", "key", "text", "ime"})
 
@@ -77,6 +82,9 @@ class Settings:
     codec: str = "h264"
     # サーバーが H.265 を作れるか（NVENC の hevc_nvenc があるか）
     hevc_available: bool = False
+    # キーフレームの間隔を短くする（約0.5秒）。hello の transport が udp か auto のときだけ。
+    # ffmpeg の間隔は、撮り始めに決まるので、接続の途中では変えない（TCP に戻しても、短いまま）
+    short_gop: bool = False
 
 
 class Stream(Protocol):
@@ -246,9 +254,14 @@ class Session:
 
     def __init__(
         self, ws: ServerConnection, settings: Settings, backend, stream_factory: StreamFactory,
-        audio_factory: AudioFactory | None = None,
+        audio_factory: AudioFactory | None = None, udp: UdpEndpoint | None = None,
     ) -> None:
         self.ws = ws
+        self.udp = udp
+        self.peer: UdpPeer | None = None  # UDP を使えるときだけ（welcome に udp_key を付けた接続）
+        self.use_udp = False  # 映像と音を、UDP で送っている
+        self._need_key = False  # WebSocket に戻した直後は、次のキーフレームから送る
+        self._audio_codec = "pcm"
         self.audio_factory = audio_factory
         self._audio = None
         self._audio_task: asyncio.Task | None = None
@@ -330,7 +343,15 @@ class Session:
                 if isinstance(item, BaseException):
                     raise item
                 keyframe, unit, ts = item
-                await self.ws.send(protocol.pack_frame(unit, keyframe, ts))
+                if self._need_key:
+                    if not keyframe:
+                        self._dropped += 1
+                        continue
+                    self._need_key = False
+                if self.use_udp and self.udp is not None and self.peer is not None:
+                    self.udp.send_frame(self.peer, udp_mod.KIND_VIDEO, ts, keyframe, unit)
+                else:
+                    await self.ws.send(protocol.pack_frame(unit, keyframe, ts))
                 self._sent += 1
                 self._bytes += len(unit)
         finally:
@@ -383,6 +404,8 @@ class Session:
             await self.send(self.take_stats())
 
     def _buffered_bytes(self) -> int:
+        if self.use_udp and self.udp is not None:
+            return self.udp.buffered_bytes()
         transport = getattr(self.ws, "transport", None)
         try:
             return transport.get_write_buffer_size() if transport is not None else 0
@@ -416,6 +439,7 @@ class Session:
             await self.send({"t": "audio_state", "on": False, "reason": str(e)})
             return
         self._audio = stream
+        self._audio_codec = codec
         await self.send({"t": "audio_state", "on": True, "rate": rate, "channels": channels, "codec": codec})
         self._audio_task = asyncio.create_task(self._send_audio(stream))
 
@@ -425,7 +449,14 @@ class Session:
                 if self._buffered_bytes() > MAX_AUDIO_BUFFERED_BYTES:
                     continue  # 通信が追いつかないので、この音は捨てる
                 ts = int((time.monotonic() - self._t0) * 1000)
-                await self.ws.send(protocol.pack_audio(chunk, ts))
+                # 音は分けない。Opus の1パケットが入るときだけ UDP で送る（PCM は大きいので WebSocket のまま）
+                if (
+                    self.use_udp and self.udp is not None and self.peer is not None
+                    and self._audio_codec == "opus" and len(chunk) <= udp_mod.MAX_CHUNK
+                ):
+                    self.udp.send_frame(self.peer, udp_mod.KIND_AUDIO, ts, False, chunk)
+                else:
+                    await self.ws.send(protocol.pack_audio(chunk, ts))
         except asyncio.CancelledError:
             raise
         except ConnectionClosed:
@@ -445,6 +476,36 @@ class Session:
             await asyncio.gather(task, return_exceptions=True)
         if stream is not None:
             await stream.stop()
+
+    # --- UDP
+
+    async def set_transport(self, msg: dict[str, Any]) -> None:
+        """クライアントが頼む、映像と音の送り方の切り替え。udp は、BIND が合って、ACK を返したあとだけ。"""
+        mode = msg.get("mode")
+        if mode == "udp":
+            if self.peer is None or not self.peer.bound:
+                await self.send({"t": "error", "message": "UDP がつながっていないため、WebSocket のままにします"})
+                return
+            self.peer.last_seen = max(self.peer.last_seen, time.monotonic())
+            self.use_udp = True
+            log.info("映像と音を UDP で送ります")
+        elif mode == "tcp":
+            if self.use_udp:
+                self.use_udp = False
+                self._need_key = True
+                log.info("映像と音を WebSocket に戻します")
+
+    async def watch_udp(self) -> None:
+        """UDP で送っている間、KEEPALIVE が切れたら、WebSocket に戻して、クライアントに知らせる。"""
+        peer = self.peer
+        assert peer is not None
+        while True:
+            await asyncio.sleep(UDP_WATCH_SEC)
+            if self.use_udp and peer.expired():
+                log.warning("UDP の KEEPALIVE が %d 秒なかったので、WebSocket に戻します", udp_mod.KEEPALIVE_TIMEOUT_SEC)
+                self.use_udp = False
+                self._need_key = True  # 戻した映像は、キーフレームから始める
+                await self.send({"t": "transport", "mode": "tcp"})
 
     def kick(self) -> None:
         if not self.kicked.done():
@@ -696,6 +757,8 @@ class Session:
             await self.send({"t": "notice", "message": f"ウィンドウを元に戻しました（{len(restored)}個）"})
         elif t == "audio":
             await self.set_audio(msg)
+        elif t == "transport":
+            await self.set_transport(msg)
         elif t in files.MESSAGES:
             await self.files.handle(msg)
         elif t == "clip_get":
@@ -932,7 +995,8 @@ async def _close_quietly(ws: ServerConnection, code: int, reason: str) -> None:
 
 
 def make_handler(
-    settings: Settings, backend, stream_factory: StreamFactory, audio_factory: AudioFactory | None = None
+    settings: Settings, backend, stream_factory: StreamFactory, audio_factory: AudioFactory | None = None,
+    udp: UdpEndpoint | None = None,
 ):
     active: dict[str, Session | None] = {"session": None}
     background: set[asyncio.Task] = set()
@@ -1046,7 +1110,12 @@ def make_handler(
             connection_closed()
 
     async def serve_session(ws: ServerConnection, hello: dict[str, Any]) -> None:
-
+        wanted = hello.get("transport")
+        wanted = wanted if wanted in TRANSPORTS else "tcp"
+        if wanted == "udp" and udp is None:
+            await reject(ws, "このサーバーでは UDP を使えません")
+            return
+        use_udp_offer = wanted in ("udp", "auto") and udp is not None
         fps = int(_num(hello.get("fps"), settings.fps) or settings.fps)
         max_height = int(_num(hello.get("max_height"), settings.max_height) or 0)
         bitrate = int(_num(hello.get("bitrate"), settings.bitrate_kbps) or settings.bitrate_kbps)
@@ -1058,8 +1127,9 @@ def make_handler(
             settings.window_capture,
             choose_codec(hello.get("codecs"), settings.hevc_available),
             settings.hevc_available,
+            short_gop=use_udp_offer,
         )
-        session = Session(ws, per_conn, backend, stream_factory, audio_factory)
+        session = Session(ws, per_conn, backend, stream_factory, audio_factory, udp)
         cancel_cleanup()  # 切れていた間に、戻す予定だったものは、続きから使う
 
         # 同時に1台だけ。前の接続は切る。
@@ -1082,12 +1152,15 @@ def make_handler(
         try:
             await session.open_stream()
             w, h = session.size
-            await ws.send(protocol.dumps(
-                {
-                    "t": "welcome", "v": protocol.VERSION, "w": w, "h": h, "codec": session.settings.codec, "mode": "screen",
-                    "virtual": bool(backend.virtual_available()),
-                }
-            ))
+            welcome = {
+                "t": "welcome", "v": protocol.VERSION, "w": w, "h": h, "codec": session.settings.codec, "mode": "screen",
+                "virtual": bool(backend.virtual_available()),
+            }
+            if use_udp_offer:
+                session.peer = udp.new_peer()
+                welcome["udp_port"] = udp.port
+                welcome["udp_key"] = session.peer.key
+            await ws.send(protocol.dumps(welcome))
             log.info("接続しました: %s（%dx%d, %dfps）", ws.remote_address, w, h, per_conn.fps)
             session.start_video()
             tasks = [
@@ -1096,6 +1169,8 @@ def make_handler(
                 asyncio.create_task(session.watch_window()),
                 asyncio.create_task(session.send_stats()),
             ]
+            if session.peer is not None:
+                tasks.append(asyncio.create_task(session.watch_udp()))
             done, _ = await asyncio.wait(
                 [*tasks, session.failed, session.kicked], return_when=asyncio.FIRST_COMPLETED
             )
@@ -1115,6 +1190,8 @@ def make_handler(
             await asyncio.gather(*tasks, return_exceptions=True)
             await session.stop_thumbs()
             await session.stop_audio()
+            if session.peer is not None:
+                udp.drop_peer(session.peer)
             await session.files.close()
             await session.stop_stream()
             # 押したまま切れると、PCでボタンやキーが押されたままになるので、離す

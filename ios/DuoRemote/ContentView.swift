@@ -55,6 +55,8 @@ struct ContentView: View {
     /// Duo の開き具合と、折り目の位置
     @State private var fold = FoldState()
     @AppStorage("dockWhenHalfOpen") private var dockWhenHalfOpen = true
+    /// ゲームモード（上半分に映像、下半分に入力の板）
+    @AppStorage("gameMode") private var gameMode = false
     @AppStorage(DockedInput.showKeysKey) private var dockShowKeys = true
     @AppStorage(DockedInput.showPadKey) private var dockShowPad = true
     /// アプリのキーボードを、普通の iPhone のキーボードのように下に固定する
@@ -148,7 +150,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             if let fold = dockedFold {
-                DockedInput(menuButton: AnyView(menu(compact: true)), windowsButton: AnyView(windowsButton(compact: true)))
+                dockedPanel
                     .padding(.horizontal, 10 + max(safeInsets.leading, safeInsets.trailing))
                     .padding(.top, 8)
                     .padding(.bottom, 8 + safeInsets.bottom)
@@ -167,7 +169,7 @@ struct ContentView: View {
                     .allowsHitTesting(false)
             }
 
-            if showTrackpad && halfOpenFold == nil && !padAtBottom {
+            if showTrackpad && halfOpenFold == nil && !padAtBottom && !gameMode {
                 OverlayTrackpad(session: session, onClose: { showTrackpad = false }, onDock: { padAtBottom = true })
                     .padding(.top, safeInsets.top)
                     .padding(.leading, safeInsets.leading)
@@ -176,7 +178,7 @@ struct ContentView: View {
                     .transition(.opacity)
             }
 
-            if inputMode == .overlay && halfOpenFold == nil && !keyboardAtBottom {
+            if inputMode == .overlay && halfOpenFold == nil && !keyboardAtBottom && !gameMode {
                 OverlayKeyboard(session: session, onClose: {
                     if inputMode == .overlay { inputMode = .touch }
                 }, onDock: {
@@ -189,7 +191,10 @@ struct ContentView: View {
             }
 
             VStack(spacing: 0) {
-                if halfOpenFold != nil {
+                if gameMode {
+                    // ゲームモードのボタンは、下の板の帯にある
+                    EmptyView()
+                } else if halfOpenFold != nil {
                     // 半開きで、キーボードもトラックパッドもしまったときは、出し直すボタンだけを置く
                     if dockedFold == nil {
                         DockedInputRestoreButton()
@@ -343,11 +348,27 @@ struct ContentView: View {
         return rect
     }
 
-    /// 半開きで、下の画面にキーボードかトラックパッドを出しているときの、折り目の位置。
-    /// 両方しまっていれば nil（映像を画面いっぱいに出す）
+    /// 下の画面（半開き）か下半分（ゲームモード）に入力の板を出すときの、映像と板の境目。
+    /// 半開きなら折り目の位置。ゲームモードで半開きでなければ、画面の高さの半分（高さ 0 の線）。
+    /// 半開きで、キーボードとトラックパッドを両方しまっていれば nil（映像を画面いっぱいに出す）
     private var dockedFold: CGRect? {
+        if gameMode {
+            if let rect = halfOpenFold { return rect }
+            guard fullSize.height > 0 else { return nil }
+            return CGRect(x: 0, y: fullSize.height / 2, width: fullSize.width, height: 0)
+        }
         guard dockShowKeys || dockShowPad else { return nil }
         return halfOpenFold
+    }
+
+    /// 下の板。ゲームモードならゲームモードの板、そうでなければ半開きの入力
+    @ViewBuilder
+    private var dockedPanel: some View {
+        if gameMode {
+            GameModePanel(menuButton: AnyView(menu(compact: true)), windowsButton: AnyView(windowsButton(compact: true)))
+        } else {
+            DockedInput(menuButton: AnyView(menu(compact: true)), windowsButton: AnyView(windowsButton(compact: true)))
+        }
     }
 
     /// この端末の、いまの画面の大きさ（実機が報告する値）。折りたたみの開閉や回転で変わる
@@ -472,6 +493,7 @@ struct ContentView: View {
             rows.append(("接続先", hostDescription(active)))
         }
         rows.append(("画面", screenDescription.replacingOccurrences(of: "画面: ", with: "")))
+        rows.append(("通信", session.transportName))
         rows.append(("映像", (session.codec == "hevc" ? "H.265" : "H.264")
                      + (session.autoLevel.map { "（自動: \($0.shortLabel)）" } ?? "")))
         return rows
@@ -502,6 +524,7 @@ struct ContentView: View {
             }
             Divider()
             Toggle("PC の音声を再生", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
+            Toggle("ゲームモード", systemImage: "gamecontroller", isOn: $gameMode)
             Menu("入力方法", systemImage: "keyboard") {
                 Picker("入力方法", selection: $inputMode) {
                     ForEach(InputMode.allCases) { mode in

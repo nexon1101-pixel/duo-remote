@@ -18,6 +18,7 @@ from .capture import (
 )
 from .input_win import create_input
 from .server import Settings, make_handler
+from .udp import UdpEndpoint
 
 log = logging.getLogger(__name__)
 
@@ -95,6 +96,7 @@ async def run(args: argparse.Namespace) -> None:
             cmd = build_ffmpeg_cmd(
                 ffmpeg=args.ffmpeg, fps=s.fps, bitrate_kbps=s.bitrate_kbps, encoder=encoder,
                 max_height=s.max_height, src_height=src[1], window=window, codec=s.codec,
+                short_gop=s.short_gop,
             )
             return FfmpegStream(cmd, s.codec)
         # 主モニターは --output-idx、そのほか（仮想ディスプレイなど）は、調べた DXGI の番号
@@ -104,13 +106,20 @@ async def run(args: argparse.Namespace) -> None:
         cmd = build_ffmpeg_cmd(
             ffmpeg=args.ffmpeg, fps=s.fps, bitrate_kbps=s.bitrate_kbps, encoder=encoder,
             max_height=s.max_height, src_height=src[1], region=relative, output_idx=output_idx, codec=s.codec,
+            short_gop=s.short_gop,
         )
         return FfmpegStream(cmd, s.codec)
 
     def audio_factory(rate: int, channels: int, codec: str = "pcm") -> AudioStream:
         return AudioStream(args.ffmpeg, rate, channels, codec=codec)
 
-    handler = make_handler(settings, backend, stream_factory, audio_factory)
+    # UDP は、WebSocket と同じ番号で待つ。開けなくても、UDP なしで動き続ける
+    udp = None
+    try:
+        udp = await UdpEndpoint.open(args.host, port)
+    except OSError as e:
+        log.warning("UDP のポート %d を開けませんでした。UDP なしで動きます: %s", port, e)
+    handler = make_handler(settings, backend, stream_factory, audio_factory, udp)
     # 仮想ディスプレイのドライバーが入っているかを、先に調べておく（調べるのに1秒ほどかかる）
     virtual = await asyncio.to_thread(backend.virtual_available)
     if virtual and await asyncio.to_thread(backend.virtual_cleanup_leftover):
@@ -129,8 +138,11 @@ async def run(args: argparse.Namespace) -> None:
             if created or args.show_token:
                 print(f"トークン: {settings.token}")
                 print(f"（{args.config} に保存してあります。他の人に見せないでください）")
+            print(f"UDP: {'ポート ' + str(port) + ' で待ちます' if udp else '使えません（WebSocket だけで動きます）'}")
             await wait_for_stop(args.control_stdin)
     finally:
+        if udp is not None:
+            udp.close()
         # 持ってきたウィンドウを元に戻し、仮想ディスプレイを無効に戻す
         backend.shutdown()
 
