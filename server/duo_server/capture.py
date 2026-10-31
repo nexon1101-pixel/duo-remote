@@ -1,6 +1,6 @@
 """画面の取得と動画への圧縮。
 
-ffmpegを子プロセスとして動かし、標準出力に出るH.264（Annex B形式）を
+ffmpegを子プロセスとして動かし、標準出力に出るH.264かH.265（HEVC）（Annex B形式）を
 フレーム単位に切り分けて取り出す。
 """
 from __future__ import annotations
@@ -16,36 +16,47 @@ log = logging.getLogger(__name__)
 _START3 = b"\x00\x00\x01"
 NAL_IDR = 5
 NAL_AUD = 9
+# H.265（HEVC）の NAL タイプ
+HEVC_AUD = 35
+HEVC_KEY = (19, 20, 21)  # IDR_W_RADL、IDR_N_LP、CRA
+HEVC_PARAMETER_SETS = (32, 33, 34)  # VPS、SPS、PPS
+
+CODECS = ("h264", "hevc")
 
 
-def iter_nals(data: bytes):
-    """(NALヘッダーの位置, NALタイプ) を順に返す。"""
+def iter_nals(data: bytes, codec: str = "h264"):
+    """(NALヘッダーの位置, NALタイプ) を順に返す。HEVC のタイプは、ヘッダーの1バイト目の 1〜6 ビット目。"""
+    hevc = codec == "hevc"
     i = 0
     while True:
         j = data.find(_START3, i)
         if j == -1 or j + 3 >= len(data):
             return
-        yield j + 3, data[j + 3] & 0x1F
+        header = data[j + 3]
+        yield j + 3, (header >> 1) & 0x3F if hevc else header & 0x1F
         i = j + 3
 
 
-def is_keyframe(access_unit: bytes) -> bool:
-    return any(t == NAL_IDR for _, t in iter_nals(access_unit))
+def is_keyframe(access_unit: bytes, codec: str = "h264") -> bool:
+    keys = HEVC_KEY if codec == "hevc" else (NAL_IDR,)
+    return any(t in keys for _, t in iter_nals(access_unit, codec))
 
 
 class AccessUnitSplitter:
-    """H.264のバイト列を、AUD（NALタイプ9）を目印に1フレームずつに切り分ける。"""
+    """H.264 か H.265 のバイト列を、AUD（H.264 は NALタイプ9、H.265 は35）を目印に1フレームずつに切り分ける。"""
 
-    def __init__(self, max_buffer: int = 16 * 1024 * 1024) -> None:
+    def __init__(self, max_buffer: int = 16 * 1024 * 1024, codec: str = "h264") -> None:
         self._buf = b""
         self._max = max_buffer
+        self._codec = codec
+        self._aud = HEVC_AUD if codec == "hevc" else NAL_AUD
 
     def feed(self, data: bytes) -> list[bytes]:
         self._buf += data
         buf = self._buf
         starts: list[int] = []
-        for off, nal_type in iter_nals(buf):
-            if nal_type == NAL_AUD:
+        for off, nal_type in iter_nals(buf, self._codec):
+            if nal_type == self._aud:
                 s = off - 3
                 if s > 0 and buf[s - 1] == 0:  # 4バイトの開始コード
                     s -= 1
@@ -95,11 +106,14 @@ def build_ffmpeg_cmd(
     src_height: int = 0,
     region: tuple[int, int, int, int] | None = None,
     window: int | None = None,
+    codec: str = "h264",
 ) -> list[str]:
     """画面を撮ってH.264にするffmpegのコマンドを作る。
     regionは撮る範囲（モニターの左上からの x, y, 幅, 高さ。画素）。Noneなら画面全体。
     windowを渡すと、画面を切り抜くのではなく、そのウィンドウだけを撮る（Windows Graphics Capture。
-    ほかのウィンドウが上に重なっても映らない）。このとき output_idx と region は使わない。"""
+    ほかのウィンドウが上に重なっても映らない）。このとき output_idx と region は使わない。
+    codecが "hevc" なら H.265 にする（NVENC のときだけ。同じ画質で、通信量が H.264 の半分くらい）。"""
+    hevc = codec == "hevc" and encoder == "h264_nvenc"
     gop = max(fps * 2, 1)
     if window is not None:
         # width=-2、height=-2: 幅と高さを偶数に切り下げる（圧縮に偶数が要る）
@@ -122,7 +136,7 @@ def build_ffmpeg_cmd(
             h = max_height - (max_height % 2)
             graph += f",hwdownload,format=bgra,scale=-2:{h}:flags=fast_bilinear,format=nv12"
         enc = [
-            "-c:v", "h264_nvenc", "-preset", "p1", "-tune", "ll",
+            "-c:v", "hevc_nvenc" if hevc else "h264_nvenc", "-preset", "p1", "-tune", "ll",
             # フレームを溜めずに、すぐ出す
             "-delay", "0", "-zerolatency", "1",
             "-rc", "cbr", "-b:v", f"{bitrate_kbps}k",
@@ -146,7 +160,7 @@ def build_ffmpeg_cmd(
         *enc,
         *keyframes,
         "-bsf:v", "dump_extra=freq=keyframe",
-        "-f", "h264", "pipe:1",
+        "-f", "hevc" if hevc else "h264", "pipe:1",
     ]
 
 
@@ -160,6 +174,18 @@ def detect_encoder(ffmpeg: str = "ffmpeg") -> str:
     except (OSError, subprocess.SubprocessError):
         return "libx264"
     return "h264_nvenc" if "h264_nvenc" in out else "libx264"
+
+
+def detect_hevc(ffmpeg: str = "ffmpeg") -> bool:
+    """ffmpeg に、NVENC の H.265（hevc_nvenc）があるか調べる。CPU の H.265（libx265）は、その場で圧縮するには重いので使わない。"""
+    try:
+        out = subprocess.run(
+            [ffmpeg, "-hide_banner", "-encoders"],
+            capture_output=True, text=True, timeout=15,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "hevc_nvenc" in out
 
 
 def detect_window_capture(ffmpeg: str = "ffmpeg") -> bool:
@@ -181,8 +207,9 @@ class StreamError(RuntimeError):
 class FfmpegStream:
     """ffmpegを動かし、フレームを (キーフレームか, データ) の形で順に返す。"""
 
-    def __init__(self, cmd: list[str]) -> None:
+    def __init__(self, cmd: list[str], codec: str = "h264") -> None:
         self._cmd = cmd
+        self._codec = codec
         self._proc: asyncio.subprocess.Process | None = None
         self._stderr_tail: deque[str] = deque(maxlen=20)
         self._stderr_task: asyncio.Task | None = None
@@ -213,13 +240,13 @@ class FfmpegStream:
 
     async def frames(self) -> AsyncIterator[tuple[bool, bytes]]:
         assert self._proc and self._proc.stdout
-        splitter = AccessUnitSplitter()
+        splitter = AccessUnitSplitter(codec=self._codec)
         while True:
             chunk = await self._proc.stdout.read(65536)
             if not chunk:
                 break
             for unit in splitter.feed(chunk):
-                yield is_keyframe(unit), unit
+                yield is_keyframe(unit, self._codec), unit
         code = await self._proc.wait()
         tail = "\n".join(self._stderr_tail)
         raise StreamError(f"ffmpeg が終了しました（コード {code}）\n{tail}")

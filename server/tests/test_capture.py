@@ -149,3 +149,24 @@ def test_detect_window_capture(monkeypatch):
     assert capture.detect_window_capture() is False
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done(" ... gfxcapture   |->V  Capture graphics\n"))
     assert capture.detect_window_capture() is True
+
+
+def test_hevc_cmd_and_splitting():
+    from duo_server.capture import AccessUnitSplitter, is_keyframe
+
+    cmd = build_ffmpeg_cmd(encoder="h264_nvenc", codec="hevc", src_height=1080)
+    assert "hevc_nvenc" in cmd and cmd[cmd.index("-f", cmd.index("-bsf:v")) + 1] == "hevc"
+    # NVENC が使えないとき（libx264）は、H.265 にしない
+    assert "-c:v" in (c := build_ffmpeg_cmd(encoder="libx264", codec="hevc")) and c[c.index("-c:v") + 1] == "libx264"
+
+    # HEVC の NAL ヘッダーは2バイト。タイプは (1バイト目 >> 1) & 0x3F
+    aud = b"\x00\x00\x00\x01" + bytes([35 << 1, 1]) + b"\x50"
+    vps = b"\x00\x00\x00\x01" + bytes([32 << 1, 1]) + b"V"
+    idr = b"\x00\x00\x01" + bytes([19 << 1, 1]) + b"I"
+    trail = b"\x00\x00\x01" + bytes([1 << 1, 1]) + b"P"
+    key_unit, p_unit = aud + vps + idr, aud + trail
+    splitter = AccessUnitSplitter(codec="hevc")
+    assert splitter.feed(key_unit + p_unit + aud) == [key_unit, p_unit]
+    assert is_keyframe(key_unit, "hevc") and not is_keyframe(p_unit, "hevc")
+    # H.264 として読むと、別のタイプになる（取り違えないこと）
+    assert not is_keyframe(key_unit, "h264")

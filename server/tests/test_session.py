@@ -594,3 +594,20 @@ def test_window_capture_repaints_until_first_frame(monkeypatch):
             assert count >= 1 and backend.calls.count(("repaint", 101)) == count  # 届いたあとは頼まない
 
     asyncio.run(run_with_server(body, backend=make_backend(), stream_cls=SilentStream, window_capture=True))
+
+
+def test_codec_is_chosen_from_hello():
+    from duo_server.server import choose_codec
+
+    assert choose_codec(["hevc", "h264"], True) == "hevc"
+    assert choose_codec(["hevc", "h264"], False) == "h264"
+    assert choose_codec(None, True) == "h264"
+    assert choose_codec(["av1"], True) == "h264"
+
+    async def body(url, backend):
+        async with connect(url) as ws:
+            await ws.send(hello(codecs=["hevc", "h264"]))
+            welcome = json.loads(await ws.recv())
+            assert welcome["codec"] == "h264"  # このサーバー（テスト）は H.265 を作れない
+
+    asyncio.run(run_with_server(body))

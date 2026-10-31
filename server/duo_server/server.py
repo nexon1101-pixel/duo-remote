@@ -65,6 +65,10 @@ class Settings:
     max_height: int = 0
     # ウィンドウを表示するとき、画面を切り抜かず、ウィンドウだけを撮る（ffmpeg に gfxcapture があるとき）
     window_capture: bool = False
+    # 映像の形（h264 か hevc）。接続ごとに、hello の codecs と、サーバーが作れるもので決める
+    codec: str = "h264"
+    # サーバーが H.265 を作れるか（NVENC の hevc_nvenc があるか）
+    hevc_available: bool = False
 
 
 class Stream(Protocol):
@@ -178,6 +182,17 @@ def dispatch_input(msg: dict[str, Any], backend, held: set | None = None) -> dic
     else:
         log.debug("未対応のメッセージを無視します: %r", t)
     return None
+
+
+def choose_codec(wanted: Any, hevc_available: bool) -> str:
+    """hello の codecs（使いたい順）から、サーバーが作れる最初のものを選ぶ。なければ h264。"""
+    if isinstance(wanted, list):
+        for codec in wanted:
+            if codec == "hevc" and hevc_available:
+                return "hevc"
+            if codec == "h264":
+                return "h264"
+    return "h264"
 
 
 def release_held(backend, held: set) -> None:
@@ -866,6 +881,8 @@ def make_handler(
             min(max(bitrate, MIN_BITRATE_KBPS), MAX_BITRATE_KBPS),
             max(max_height, 0),
             settings.window_capture,
+            choose_codec(hello.get("codecs"), settings.hevc_available),
+            settings.hevc_available,
         )
         session = Session(ws, per_conn, backend, stream_factory, audio_factory)
         cancel_cleanup()  # 切れていた間に、戻す予定だったものは、続きから使う
@@ -892,7 +909,7 @@ def make_handler(
             w, h = session.size
             await ws.send(protocol.dumps(
                 {
-                    "t": "welcome", "v": protocol.VERSION, "w": w, "h": h, "codec": "h264", "mode": "screen",
+                    "t": "welcome", "v": protocol.VERSION, "w": w, "h": h, "codec": session.settings.codec, "mode": "screen",
                     "virtual": bool(backend.virtual_available()),
                 }
             ))
