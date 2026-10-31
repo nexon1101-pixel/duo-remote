@@ -27,6 +27,8 @@ from .control import SERVER_DIR, SettingsError
 DEFAULT_PORT = 8770
 LOCK_PATH = SERVER_DIR / "panel.lock"
 PANEL_BAT = SERVER_DIR / "panel.bat"
+# 前回の更新のログ（更新のあと、起動し直した管理画面で見せる）
+UPDATE_LOG_PATH = SERVER_DIR / "last_update.log"
 HTML_PATH = Path(__file__).with_name("panel.html")
 # 更新のあと、新しい管理画面を起動してから、自分が終わるまで待つ秒数
 RELAUNCH_WAIT = 2.0
@@ -152,9 +154,21 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
             "version": __version__,
             "admin": control.is_admin(),
             "addresses": control.local_addresses(),
+            "address_details": control.address_details(),
             "port": control.read_settings(config)["port"],
             "autostart": control.autostart_enabled(),
         }
+
+    def update_log() -> dict[str, Any]:
+        """今の更新の進み具合と、前回の更新のログ（ファイルに残したもの）。"""
+        snap = update.snapshot()
+        previous: list[str] = []
+        if not snap["running"] and not snap["lines"]:
+            try:
+                previous = UPDATE_LOG_PATH.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                pass
+        return {**snap, "previous": previous}
 
     def finish_and_exit(relaunch_args: list[str] | None) -> None:
         """サーバーを止め、必要なら新しい管理画面を起動してから、終わる合図を出す。"""
@@ -171,9 +185,14 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
         try:
             from . import updater
 
+            # 更新のあとは管理画面が起動し直すので、ログはファイルにも残し、新しい管理画面で見せる
+            UPDATE_LOG_PATH.write_text("", encoding="utf-8")
+
             def log(line: str) -> None:
                 with update.lock:
                     update.lines.append(str(line))
+                with UPDATE_LOG_PATH.open("a", encoding="utf-8") as f:
+                    f.write(f"{line}\n")
 
             try:
                 updater.apply(log)
@@ -187,6 +206,11 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
             update.done = error is None
             if error:
                 update.lines.append(f"失敗しました: {error}")
+                try:
+                    with UPDATE_LOG_PATH.open("a", encoding="utf-8") as f:
+                        f.write(f"失敗しました: {error}\n")
+                except OSError:
+                    pass
         if error is None:
             finish_and_exit(["--restart"])
 
@@ -274,7 +298,7 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
                 ("POST", "/api/autostart"): lambda: self._autostart(body),
                 ("GET", "/api/update"): lambda: self._update_check(),
                 ("POST", "/api/update"): lambda: self._update_start(),
-                ("GET", "/api/update/log"): lambda: (200, update.snapshot(), None),
+                ("GET", "/api/update/log"): lambda: (200, update_log(), None),
                 ("POST", "/api/admin"): lambda: self._admin(),
                 ("POST", "/api/quit"): lambda: self._quit(),
             }
@@ -437,6 +461,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     port = httpd.server_address[1]
     url = f"http://127.0.0.1:{port}/?k={key}"
+    control.refresh_autostart()
     LOCK_PATH.write_text(json.dumps({"port": port, "key": key, "pid": os.getpid()}), encoding="utf-8")
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:

@@ -43,6 +43,10 @@ header .grow { flex: 1; }
 .hostline { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
 .hostline .hostaddr { flex: 1; }
 .small { font-size: 12px; color: var(--sub); }
+/* 印と装置の名前は、アドレス（等幅）の中にあっても、普通の文字にする */
+.hostaddr .tag, .ifname { font-family: "Segoe UI Variable", "Segoe UI", "Yu Gothic UI", system-ui, sans-serif; }
+.ifname { font-size: 12px; color: var(--sub); margin-left: 8px; }
+.hostline:not(.recommended) .hostaddr { color: var(--sub); }
 .tag { font-size: 11px; padding: 0 8px; border-radius: 999px; background: var(--accent); color: var(--accent-text); margin-left: 6px; }
 button { font: inherit; padding: 5px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--btn);
   color: var(--text); cursor: pointer; }
@@ -134,6 +138,7 @@ footer { text-align: center; margin-top: 24px; }
       <button id="checkBtn">確かめる</button><button class="primary" id="updateBtn" hidden>更新する</button></div>
     <div class="small" id="method"></div>
     <pre class="log short" id="updateLog" hidden></pre>
+    <details id="prevUpdate" hidden><summary class="small">前回の更新のログ</summary><pre class="log short" id="prevUpdateLog"></pre></details>
     <div class="notice" id="updateDone" hidden></div>
   </section>
 
@@ -192,14 +197,18 @@ function renderStatus() {
   $("autostart").checked = st.autostart;
   $("portShow").textContent = st.port;
   const hosts = $("hosts"); hosts.textContent = "";
-  if (!st.addresses.length) hosts.textContent = "見つかりませんでした";
-  st.addresses.forEach((a) => {
+  const details = st.address_details || st.addresses.map((a) => ({ address: a, name: "", recommended: false, tailscale: a.startsWith("100.") }));
+  if (!details.length) hosts.textContent = "見つかりませんでした";
+  details.forEach((d) => {
     const line = document.createElement("div");
-    line.className = "hostline";
-    const text = document.createElement("span"); text.className = "hostaddr"; text.textContent = a; line.append(text);
-    if (a.startsWith("100.")) { const t = document.createElement("span"); t.className = "tag"; t.textContent = "Tailscale"; line.append(t); }
+    line.className = "hostline" + (d.recommended ? " recommended" : "");
+    const text = document.createElement("span"); text.className = "hostaddr"; text.textContent = d.address;
+    if (d.recommended) { const t = document.createElement("span"); t.className = "tag"; t.textContent = "家の Wi-Fi・有線ならこれ"; text.append(t); }
+    if (d.tailscale) { const t = document.createElement("span"); t.className = "tag"; t.textContent = "Tailscale（外から）"; text.append(t); }
+    if (d.name) { const n = document.createElement("span"); n.className = "ifname"; n.textContent = d.name; text.append(n); }
+    line.append(text);
     const b = document.createElement("button"); b.textContent = "コピー";
-    b.onclick = () => copyText(a); line.append(b);
+    b.onclick = () => copyText(d.address); line.append(b);
     hosts.append(line);
   });
 }
@@ -289,6 +298,13 @@ async function checkUpdate() {
   } catch (e) { $("newVer").textContent = "確かめられませんでした"; fail(e); }
 }
 $("checkBtn").onclick = checkUpdate;
+// 更新のあとに起動し直したとき、前の管理画面で出ていた更新のログを見せる
+(async () => {
+  try {
+    const u = await api("/api/update/log");
+    if (u.previous && u.previous.length) { $("prevUpdateLog").textContent = u.previous.join("\n"); $("prevUpdate").hidden = false; }
+  } catch (e) { /* 見せられなくても、ほかは動かす */ }
+})();
 
 $("updateBtn").onclick = async () => {
   if (!confirm("更新します。サーバーは止まり、管理画面は起動し直します。よろしいですか。")) return;

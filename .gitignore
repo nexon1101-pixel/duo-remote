@@ -2,6 +2,7 @@
 server/config.json
 server/duo_server.log*
 server/panel.lock
+server/last_update.log
 __pycache__/
 *.pyc
 .venv/

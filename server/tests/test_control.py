@@ -41,11 +41,36 @@ def test_console_python(tmp_path):
     assert control.console_python("/usr/bin/python3") == "/usr/bin/python3"
 
 
-def test_autostart_command():
-    cmd = control.autostart_command()
-    assert cmd[:2] == ["schtasks", "/Create"]
-    assert "ONLOGON" in cmd and "HIGHEST" in cmd
-    assert cmd[cmd.index("/TR") + 1].endswith('panel.bat" --autostart')
+def test_autostart_xml():
+    """72 時間で止めない、バッテリーでも動かす、最上位の特権、の設定が入る。"""
+    import xml.etree.ElementTree as ET
+
+    from pathlib import Path
+
+    xml = control.autostart_xml("PC\\user<&>", Path("C:/duo remote/server/panel.bat"))
+    ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    root = ET.fromstring(xml.split("?>", 1)[1])  # 先頭の UTF-16 の宣言は、文字列のままでは読めないので外す
+    assert root.find("t:Settings/t:ExecutionTimeLimit", ns).text == "PT0S"
+    assert root.find("t:Settings/t:DisallowStartIfOnBatteries", ns).text == "false"
+    assert root.find("t:Settings/t:StopIfGoingOnBatteries", ns).text == "false"
+    assert root.find("t:Principals/t:Principal/t:RunLevel", ns).text == "HighestAvailable"
+    assert root.find("t:Principals/t:Principal/t:UserId", ns).text == "PC\\user<&>"
+    assert root.find("t:Triggers/t:LogonTrigger/t:UserId", ns).text == "PC\\user<&>"
+    exe = root.find("t:Actions/t:Exec", ns)
+    assert exe.find("t:Command", ns).text.endswith("panel.bat")
+    assert exe.find("t:Arguments", ns).text == "--autostart"
+
+
+def test_address_details(monkeypatch):
+    monkeypatch.setattr(control, "_details_cache", None)
+    monkeypatch.setattr(control, "local_addresses", lambda: ["10.242.22.4", "192.168.0.200", "100.101.102.103"])
+    monkeypatch.setattr(control, "_primary_address", lambda: "192.168.0.200")
+    monkeypatch.setattr(control, "_interface_names", lambda: {"10.242.22.4": "ZeroTier One", "192.168.0.200": "Wi-Fi"})
+    monkeypatch.setattr(control.sys, "platform", "win32")
+    details = control.address_details()
+    assert details[0] == {"address": "192.168.0.200", "name": "Wi-Fi", "recommended": True, "tailscale": False}
+    assert {"address": "100.101.102.103", "name": "", "recommended": False, "tailscale": True} in details
+    assert details[1]["name"] == "ZeroTier One"
 
 
 def test_server_process_stops_on_stdin(tmp_path):
