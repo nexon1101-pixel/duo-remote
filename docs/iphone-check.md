@@ -1,11 +1,11 @@
-# iPhone の確認の表（0.19.0）
+# iPhone の確認の表（0.20.0）
 
 上から順に試して、うまくいかなかったものだけ、「何をしたら、何が起きたか」を書き足す（docs/tasks.md の F に）。1 でつまずいたら、そこで止める。
 
 ## 準備
 
 - [ ] PC: main を pull して、`server\panel.bat` で管理画面を開く。「つなぎ方」のアドレスとトークンを見る
-- [ ] iPhone: SideStore で、Releases の「最新のビルド」（latest）から DuoRemote を入れ直す。版が 0.19.0 か
+- [ ] iPhone: SideStore で、Releases の「最新のビルド」（latest）から DuoRemote を入れ直す。版が 0.20.0 か
 
 ## 1. つなぐ（いちばん大事）
 
