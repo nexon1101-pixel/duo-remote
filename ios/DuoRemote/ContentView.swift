@@ -59,6 +59,8 @@ struct ContentView: View {
     /// アプリのキーボードを、普通の iPhone のキーボードのように下に固定する
     @AppStorage(OverlayKeyboard.colorKeysKey) private var colorKeys = true
     @AppStorage(OverlayDockMode.key) private var dockModeRaw = ""
+    /// 「キーボードとトラックパッドを下部に固定」のとき、トラックパッドをしまっているか
+    @AppStorage("dockPadHidden") private var dockPadHidden = false
     /// 前の版の設定（キーボードを下に固定するか）。置き方を選ぶ前の人のために残す
     @AppStorage("overlayKeyboardAtBottom") private var legacyKeyboardAtBottom = false
 
@@ -71,7 +73,15 @@ struct ContentView: View {
     /// 下端に固定したキーボードを出すか
     private var bottomKeys: Bool { inputMode == .overlay && dockMode != .free }
     /// 下端に固定したトラックパッドを出すか
-    private var bottomPad: Bool { showTrackpad && dockMode == .both }
+    private var bottomPad: Bool { dockMode == .both && !dockPadHidden }
+    /// トラックパッドを出しているか。「下に固定」の置き方のときは、固定した方の出し入れを見る
+    private var padShown: Bool { dockMode == .both ? !dockPadHidden : showTrackpad }
+    private var padShownBinding: Binding<Bool> {
+        Binding(
+            get: { padShown },
+            set: { if dockMode == .both { dockPadHidden = !$0 } else { showTrackpad = $0 } }
+        )
+    }
 
     var body: some View {
         ZStack {
@@ -213,7 +223,7 @@ struct ContentView: View {
             }
             .animation(.spring(duration: 0.35), value: inputMode)
             .animation(.spring(duration: 0.35), value: dockModeRaw)
-            .animation(.spring(duration: 0.35), value: showTrackpad)
+            .animation(.spring(duration: 0.35), value: padShown)
         }
         // 画面の端までは使う。キーボードが出たときだけ、入力の欄がその上に上がる
         .ignoresSafeArea(.container)
@@ -377,17 +387,17 @@ struct ContentView: View {
     /// トラックパッドを出す・しまうボタン（重ねて出す形）
     private var trackpadButton: some View {
         Button {
-            showTrackpad.toggle()
+            padShownBinding.wrappedValue.toggle()
         } label: {
             Image(systemName: "rectangle.and.hand.point.up.left")
                 .font(.body.weight(.semibold))
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-                .foregroundStyle(showTrackpad ? Color.accentColor : .white)
+                .foregroundStyle(padShown ? Color.accentColor : .white)
                 .glass(in: Capsule(), interactive: true)
         }
         .padding(.vertical, 12)
-        .accessibilityLabel(showTrackpad ? "トラックパッドを隠す" : "トラックパッドを表示")
+        .accessibilityLabel(padShown ? "トラックパッドを隠す" : "トラックパッドを表示")
     }
 
     /// 右下のボタン。iPhoneのキーボードを出す・しまう。PCのIMEの状態も見せる
@@ -478,7 +488,7 @@ struct ContentView: View {
                         Text(layout.label).tag(layout)
                     }
                 }
-                Toggle("トラックパッドを表示", isOn: $showTrackpad)
+                Toggle("トラックパッドを表示", isOn: padShownBinding)
                 Picker("ピンチ操作", selection: $trackpadPinch) {
                     Text("映像を拡大・縮小").tag("video")
                     Text("PC 側で拡大・縮小（Ctrl+ホイール）").tag("pc")
