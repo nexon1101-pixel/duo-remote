@@ -164,7 +164,7 @@ async def run_check(
     try_virtual: bool = False, try_bring: bool = False, title: str | None = None, try_ime: bool = False,
     save_frame: Path | None = None, try_hevc: bool = False, try_opus: bool = False, try_monitors: bool = False,
     try_quality: bool = False, try_pull: bool = False, save_dir: Path | None = None, put_file: Path | None = None,
-    put_clipboard: bool = False,
+    put_clipboard: bool = False, try_mouse: bool = False,
 ) -> bool:
     r = Report()
     print(f"接続先: {url}")
@@ -180,6 +180,7 @@ async def run_check(
             ws, r, token, seconds, try_window, try_audio, try_virtual, try_bring, title, try_ime, save_frame,
             try_hevc=try_hevc, try_opus=try_opus, try_monitors=try_monitors, try_quality=try_quality,
             try_pull=try_pull, save_dir=save_dir, put_file=put_file, put_clipboard=put_clipboard,
+            try_mouse=try_mouse,
         )
     except ConnectionClosed as e:
         reason = e.rcvd.reason if e.rcvd and e.rcvd.reason else str(e)
@@ -222,6 +223,7 @@ async def _run_checks(
     try_bring: bool = False, title: str | None = None, try_ime: bool = False, save_frame: Path | None = None,
     *, try_hevc: bool = False, try_opus: bool = False, try_monitors: bool = False, try_quality: bool = False,
     try_pull: bool = False, save_dir: Path | None = None, put_file: Path | None = None, put_clipboard: bool = False,
+    try_mouse: bool = False,
 ) -> None:
     async with ws:
         # 1. 接続とトークン
@@ -505,6 +507,55 @@ async def _run_checks(
         if put_file is not None:
             await _check_put(ws, r, put_file, put_clipboard)
 
+        # 15. マウスの入力が、PCのカーソルを動かすか
+        if try_mouse:
+            await _check_mouse(ws, r)
+
+
+def _cursor_position() -> tuple[int, int] | None:
+    """PCのカーソルの位置（画素）。Windows 以外では None。このプログラムは、サーバーと同じPCで動かす。"""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    import ctypes.wintypes as wt
+
+    try:
+        ctypes.WinDLL("shcore").SetProcessDpiAwareness(2)  # サーバーと同じ、実際の画素で読む
+    except (OSError, AttributeError):
+        pass
+    pos = wt.POINT()
+    return (pos.x, pos.y) if ctypes.WinDLL("user32").GetCursorPos(ctypes.byref(pos)) else None
+
+
+def _screen_pixels() -> tuple[int, int]:
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32")
+    return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+
+
+async def _check_mouse(ws, r: Report) -> None:
+    """アプリから届く操作（move）が、PCのカーソルを動かすかを試す。iPhone がなくても、サーバーと Windows の間を確かめられる。
+    動かなければ、サーバーの画面（server\\duo_server.log）の WARNING を見る。"""
+    if _cursor_position() is None:
+        r.info("マウスの確認は、サーバーと同じ Windows のPCでだけできます")
+        return
+    width, height = _screen_pixels()
+    ok = True
+    for x, y in ((0.25, 0.25), (0.75, 0.6), (0.5, 0.5)):
+        await ws.send(json.dumps({"t": "move", "x": x, "y": y}))
+        await asyncio.sleep(0.4)
+        got = _cursor_position()
+        want = (round(x * (width - 1)), round(y * (height - 1)))
+        if got is None or abs(got[0] - want[0]) > 4 or abs(got[1] - want[1]) > 4:
+            ok = False
+            r.bad(f"カーソルが動きませんでした（送った先 {want[0]},{want[1]}、今の位置 {got[0] if got else '?'},{got[1] if got else '?'}）")
+        else:
+            r.good(f"カーソルが動きました（{want[0]},{want[1]}）")
+    if not ok:
+        r.info("サーバーが操作を受け取っているかは、server\\duo_server.log の「最初の操作を受け取りました」で分かる。"
+               "受け取っているのに動かないときは、Windows が入力を断っている（サーバーを管理者として動かす）")
+
 
 async def _back_to_screen(ws, r: Report) -> None:
     await ws.send(json.dumps({"t": "mode", "mode": "screen"}))
@@ -702,6 +753,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--save-dir", type=Path, help="--pull で受け取ったファイルを、このフォルダに保存する")
     p.add_argument("--put", type=Path, metavar="ファイル", help="このファイルをPCに送って、保存できるかも試す")
     p.add_argument("--put-clipboard", action="store_true", help="--put のファイルを、PCのクリップボードにも入れる")
+    p.add_argument("--mouse", action="store_true", help="マウスの操作（move）が、PCのカーソルを動かすかも試す（このPCで動かす。カーソルが動く）")
     p.add_argument(
         "--save-frame", type=Path,
         help="--window で受け取った映像の最後の1枚を、この画像（.png）に保存する（ほかのウィンドウが映っていないかを見るため）",
@@ -717,6 +769,7 @@ def main(argv: list[str] | None = None) -> None:
     ok = asyncio.run(run_check(
         f"ws://{args.host}:{port}/", cfg.get("token", ""), args.seconds, args.window, args.audio, args.virtual, args.bring, args.title, args.ime, args.save_frame,
         args.hevc, args.opus, args.monitors, args.quality, args.pull, args.save_dir, args.put, args.put_clipboard,
+        args.mouse,
     ))
     sys.exit(0 if ok else 1)
 

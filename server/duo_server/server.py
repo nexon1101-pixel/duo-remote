@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import hmac
 import logging
 import re
@@ -55,6 +56,9 @@ STATS_INTERVAL_SEC = 2.0
 # ウィンドウだけを撮るとき、最初の1枚が届くまで、描き直しを頼む間隔と回数
 NUDGE_INTERVAL_SEC = 0.3
 NUDGE_ATTEMPTS = 20
+
+# 操作の入力のメッセージ。数えて、ログに出す（タッチやキーが PC に届いているかを見分けるため）
+INPUT_TYPES = frozenset({"move", "move_rel", "button", "scroll", "key", "text", "ime"})
 
 VK_RETURN = 0x0D
 _NEWLINE = re.compile(r"\r\n|\r|\n")
@@ -204,6 +208,12 @@ def dispatch_input(msg: dict[str, Any], backend, held: set | None = None) -> dic
     return None
 
 
+def _input_summary(session: "Session") -> str:
+    """この接続で受け取った操作の数。「move 120、button 4」のように。1つもなければ「なし」。"""
+    counts = session.input_counts
+    return "、".join(f"{k} {v}" for k, v in sorted(counts.items())) if counts else "なし"
+
+
 def choose_codec(wanted: Any, hevc_available: bool) -> str:
     """hello の codecs（使いたい順）から、サーバーが作れる最初のものを選ぶ。なければ h264。"""
     if isinstance(wanted, list):
@@ -264,6 +274,7 @@ class Session:
         self._paused = False  # 画面の設定を変える間、撮影を止めている
         self._restarts: list[float] = []  # 撮影が止まって、撮り直した時刻
         self._recovery: asyncio.Task | None = None
+        self.input_counts: collections.Counter = collections.Counter()  # 受け取った操作の数（種類ごと）
         self._nudge: asyncio.Task | None = None  # ウィンドウに描き直しを頼む（最初の1枚が届くまで）
         self._lock = asyncio.Lock()
         self._t0 = time.monotonic()
@@ -688,6 +699,10 @@ class Session:
         elif t == "clip_set":
             await self.clip_set(msg)
         else:
+            if t in INPUT_TYPES:
+                if not self.input_counts:
+                    log.info("最初の操作を受け取りました: %s", t)
+                self.input_counts[t] += 1
             reply = dispatch_input(msg, self.backend, self.held)
             if reply:
                 await self.send(reply)
@@ -1071,11 +1086,14 @@ def make_handler(
             elif ws.close_code == 1000:
                 # iPhone の「切断」ボタン。すぐ元に戻す
                 await run_cleanup()
-                log.info("切断しました")
+                log.info("切断しました（受け取った操作: %s）", _input_summary(session))
             else:
                 # 通信が切れた、アプリが裏に回った、など。少し待ってから戻す
                 schedule_cleanup(RESTORE_GRACE_SEC)
-                log.info("切れました（%d秒以内につなぎ直せば、続きから使えます）", RESTORE_GRACE_SEC)
+                log.info(
+                    "切れました（%d秒以内につなぎ直せば、続きから使えます。受け取った操作: %s）",
+                    RESTORE_GRACE_SEC, _input_summary(session),
+                )
             session.finished.set()
 
     return handler
