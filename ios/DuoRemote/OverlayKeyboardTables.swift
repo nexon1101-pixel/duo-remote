@@ -5,10 +5,11 @@ import CoreGraphics
 /// スキャンコードは KeyMap.swift の対応表に合わせている。
 /// fn は、Fn を押している間に替わるキー（F1〜F12、矢印、Home/End/PgUp/PgDn、Ins/Del、PrtSc）。
 enum OverlayKeyboardTables {
-    /// US 配列
+    /// US 配列（数字の段は、Esc、`、1、2、3 … の順。`\` は、右端）
     static let us: [[OverlayKey]] = [
         [
             OverlayKey(label: "Esc", sc: 0x01),
+            OverlayKey(label: "`", shiftLabel: "~", sc: 0x29, fn: OverlayFnKey(label: "Del", sc: 0xE053)),
             OverlayKey(label: "1", shiftLabel: "!", sc: 0x02, fn: OverlayFnKey(label: "F1", sc: 0x3B)),
             OverlayKey(label: "2", shiftLabel: "@", sc: 0x03, fn: OverlayFnKey(label: "F2", sc: 0x3C)),
             OverlayKey(label: "3", shiftLabel: "#", sc: 0x04, fn: OverlayFnKey(label: "F3", sc: 0x3D)),
@@ -22,7 +23,6 @@ enum OverlayKeyboardTables {
             OverlayKey(label: "-", shiftLabel: "_", sc: 0x0C, fn: OverlayFnKey(label: "F11", sc: 0x57)),
             OverlayKey(label: "=", shiftLabel: "+", sc: 0x0D, fn: OverlayFnKey(label: "F12", sc: 0x58)),
             OverlayKey(label: "\\", shiftLabel: "|", sc: 0x2B, fn: OverlayFnKey(label: "Ins", sc: 0xE052)),
-            OverlayKey(label: "`", shiftLabel: "~", sc: 0x29, fn: OverlayFnKey(label: "Del", sc: 0xE053)),
         ],
         [
             OverlayKey(label: "Tab", sc: 0x0F, width: 1.5),
@@ -77,7 +77,7 @@ enum OverlayKeyboardTables {
             OverlayKey(label: "Space", sc: 0x39, width: 6),
             OverlayKey(label: "Win", sc: 0xE05C, width: 1.5, modifier: .win),
             OverlayKey(label: "Alt", sc: 0xE038, width: 1.5, modifier: .alt),
-            OverlayKey(label: "Fn", sc: nil, width: 1.5, modifier: .fn),
+            OverlayKey(label: "あ/A", sc: nil, width: 1.5, ime: true),
         ],
     ]
 
@@ -155,7 +155,7 @@ enum OverlayKeyboardTables {
             OverlayKey(label: "無変換", sc: 0x7B, width: 1.5),
             OverlayKey(label: "Space", sc: 0x39, width: 6),
             OverlayKey(label: "変換", sc: 0x79, width: 1.5),
-            OverlayKey(label: "Alt", sc: 0xE038, width: 1.5, modifier: .alt),
+            OverlayKey(label: "あ/A", sc: nil, width: 1.5, ime: true),
         ],
     ]
 }

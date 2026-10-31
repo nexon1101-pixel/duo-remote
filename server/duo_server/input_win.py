@@ -606,7 +606,11 @@ if sys.platform == "win32":
         arr = (INPUT * len(inputs))(*inputs)
         sent = user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
         if sent != len(inputs):
-            log.warning("SendInput が一部しか通りませんでした（%d/%d）", sent, len(inputs))
+            # 0 のときは、権限が足りない（相手のウィンドウが管理者で、サーバーはそうでない）ことが多い
+            log.warning(
+                "SendInput が一部しか通りませんでした（%d/%d、エラー %d）",
+                sent, len(inputs), ctypes.get_last_error(),
+            )
 
     def _mouse(flags: int, dx: int = 0, dy: int = 0, data: int = 0) -> INPUT:
         i = INPUT(type=INPUT_MOUSE)
@@ -696,6 +700,7 @@ if sys.platform == "win32":
             self._brought: dict = {}
             self._vd = VirtualDisplay()
             self._virtual_installed: bool | None = None  # 調べた結果を覚えておく（調べるのに1秒ほどかかる）
+            self._cursor_checks = 0
 
         # --- モニターと、仮想ディスプレイ
 
@@ -868,6 +873,26 @@ if sys.platform == "win32":
 
         def move(self, x: float, y: float) -> None:
             _send([self._move_input(x, y)])
+            self._verify_cursor(x, y)
+
+        def _verify_cursor(self, x: float, y: float) -> None:
+            """SendInput が通ったのに、カーソルが動かないことがある。最初の数回と、そのあと 200 回に 1 回、
+            カーソルの位置を読んで、ずれていたら警告を出す（どこで操作が止まっているかを、ログで見分けるため）。"""
+            self._cursor_checks += 1
+            if self._cursor_checks > 5 and self._cursor_checks % 200:
+                return
+            rx, ry, rw, rh = self._range()
+            expected = rx + x * (rw - 1), ry + y * (rh - 1)
+            pos = wt.POINT()
+            if not user32.GetCursorPos(ctypes.byref(pos)):
+                return
+            if abs(pos.x - expected[0]) > 4 or abs(pos.y - expected[1]) > 4:
+                log.warning(
+                    "カーソルが、送った位置に動いていません（送った先 %d,%d、今の位置 %d,%d）",
+                    expected[0], expected[1], pos.x, pos.y,
+                )
+            elif self._cursor_checks == 1:
+                log.info("カーソルが動くことを確かめました")
 
         def move_rel(self, dx: float, dy: float) -> None:
             """今のカーソルの位置から動かす。dx, dy は、表示している範囲の幅・高さに対する割合。

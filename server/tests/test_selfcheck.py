@@ -329,3 +329,14 @@ def test_selfcheck_put_to_clipboard_and_missing_file(tmp_path, capsys):
     assert "クリップボードにも入れるよう頼みました" in capsys.readouterr().out
     assert not asyncio.run(check_against_server("secret", False, put_file=tmp_path / "ない.txt"))
     assert "ファイルを読めませんでした" in capsys.readouterr().out
+
+
+def test_mouse_check_is_skipped_outside_windows(capsys):
+    """マウスの確認は Windows でだけできる。それ以外では、[NG] にせず、知らせるだけ。"""
+    import sys
+
+    if sys.platform == "win32":
+        pytest.skip("Windows では、実際にカーソルが動く")
+    ok = asyncio.run(check_against_server("secret", False, try_mouse=True))
+    out = capsys.readouterr().out
+    assert ok and "同じ Windows のPC" in out and "[NG]" not in out

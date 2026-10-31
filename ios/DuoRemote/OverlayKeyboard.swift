@@ -194,16 +194,20 @@ struct BottomKeyboard: View {
 struct OverlayKeysView: UIViewRepresentable {
     let session: RemoteSession
     let layout: OverlayKeyboardLayout
+    /// IME の状態が変わったら、キーの表示（あ / A）を描き直すために、ここで見ておく
+    @EnvironmentObject private var observed: RemoteSession
 
     func makeUIView(context: Context) -> OverlayKeysUIView {
         let view = OverlayKeysUIView()
         view.session = session
         view.layout = layout
+        view.imeOn = observed.imeOn
         return view
     }
 
     func updateUIView(_ uiView: OverlayKeysUIView, context: Context) {
         uiView.session = session
+        uiView.imeOn = observed.imeOn
         if uiView.layout != layout {
             uiView.layout = layout
         }
@@ -223,6 +227,10 @@ struct OverlayKeysView: UIViewRepresentable {
 /// - Win だけは、1回たたくと、Windowsキーを押して離す（スタートメニュー）
 final class OverlayKeysUIView: UIView {
     weak var session: RemoteSession?
+    /// PC の IME の状態（あ / A のキーに出す）。変わったら描き直す
+    var imeOn: Bool? {
+        didSet { if imeOn != oldValue { setNeedsDisplay() } }
+    }
     var layout: OverlayKeyboardLayout = .us {
         didSet {
             releaseAll()
@@ -310,6 +318,8 @@ final class OverlayKeysUIView: UIView {
         let unit = bounds.width / OverlayKeyboardLayout.rowWidth
         let mainFont = UIFont.systemFont(ofSize: max(unit * 0.36, 9), weight: .medium)
         let smallFont = UIFont.systemFont(ofSize: max(unit * 0.24, 7))
+        // 記号（`、;、, など）は、字が小さくて見つけにくいので、大きく太くする
+        let symbolFont = UIFont.systemFont(ofSize: max(unit * 0.46, 11), weight: .semibold)
 
         for f in frames {
             let key = rows[f.row][f.col]
@@ -318,6 +328,8 @@ final class OverlayKeysUIView: UIView {
             let fill: UIColor
             if pressed.contains("\(f.row),\(f.col)") {
                 fill = UIColor(white: 1, alpha: 0.5)
+            } else if key.ime && imeOn == true {
+                fill = UIColor.systemBlue.withAlphaComponent(0.6)
             } else if case .locked? = state {
                 fill = .systemBlue
             } else if state != nil {
@@ -336,7 +348,9 @@ final class OverlayKeysUIView: UIView {
 
             let main: String
             var small: String?
-            if fn, let alt = key.fn {
+            if key.ime {
+                main = imeOn == true ? "あ" : "A"
+            } else if fn, let alt = key.fn {
                 main = alt.label
             } else if shift, let s = key.shiftLabel {
                 main = s
@@ -345,13 +359,15 @@ final class OverlayKeysUIView: UIView {
                 main = key.label
                 small = key.shiftLabel
             }
+            let isSymbol = main.count == 1 && !(main.first?.isLetter ?? true) && !(main.first?.isNumber ?? true)
+            let font = isSymbol ? symbolFont : mainFont
             if let small {
                 drawLabel(small, font: smallFont, color: UIColor(white: 1, alpha: 0.55),
                      in: CGRect(x: box.minX, y: box.minY + 2, width: box.width, height: box.height * 0.35))
-                drawLabel(main, font: mainFont, color: .white,
+                drawLabel(main, font: font, color: .white,
                      in: CGRect(x: box.minX, y: box.minY + box.height * 0.3, width: box.width, height: box.height * 0.7))
             } else {
-                drawLabel(main, font: mainFont, color: .white, in: box)
+                drawLabel(main, font: font, color: .white, in: box)
             }
         }
     }
@@ -375,7 +391,9 @@ final class OverlayKeysUIView: UIView {
             touchKeys[id] = pos
             let key = layout.rows[pos.row][pos.col]
             haptic.impactOccurred()
-            if let m = key.modifier {
+            if key.ime {
+                session?.toggleIME()
+            } else if let m = key.modifier {
                 modifierDown(m, sc: key.sc)
             } else {
                 keyDown(key, touch: id)

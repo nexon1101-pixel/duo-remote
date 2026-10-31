@@ -1,27 +1,41 @@
 import SwiftUI
 
 /// 半開きの Duo の、下の画面。アプリのキーボードとトラックパッドを置く。
-/// 上の帯のボタンで、キーボードとトラックパッドを、それぞれ出したりしまったりできる。
-/// 下の画面は横に広く縦が短いので、キーボードは高さに合わせた大きさにし、横の余りにトラックパッドを置く
+/// 上の帯のボタンで、キーボードとトラックパッドを、それぞれ出したりしまったりできる。「…」のメニューも、この帯に置く。
+///
+/// 並べ方は、下の画面の形で決める。
+/// - 縦に余りがあるとき: ノートパソコンのように、キーボードを上に、トラックパッドを下に置く。トラックパッドは、残りの高さと横幅いっぱいまで広げる
+/// - 縦が足りないとき: キーボードを左に、トラックパッドを右に置く。トラックパッドは、キーボードと同じ高さ
+/// - 片方だけのとき: その1つを、できるだけ広くする
 struct DockedInput: View {
     @EnvironmentObject private var session: RemoteSession
     @AppStorage(OverlayKeyboard.layoutKey) private var layout = OverlayKeyboardLayout.us
     @AppStorage(Self.showKeysKey) private var showKeys = true
     @AppStorage(Self.showPadKey) private var showPad = true
 
+    /// 「…」のメニュー。上の画面の角に出すより、下の画面の帯にある方が、押しやすい
+    let menuButton: AnyView
+
     static let showKeysKey = "dockShowKeys"
     static let showPadKey = "dockShowPad"
 
-    /// トラックパッドの、いちばん狭い幅（ポイント）
-    private static let minTrackpadWidth: CGFloat = 140
-    private static let spacing: CGFloat = 10
+    private static let spacing: CGFloat = 8
     private static let toolbarHeight: CGFloat = 34
+    /// キーボードの周りの余白（上下左右の 6 ずつ）
+    private static let panelInset: CGFloat = 12
+    /// 縦に並べるとき、トラックパッドに残したい高さの下限（ポイント）
+    private static let minPadHeight: CGFloat = 120
+    /// 横に並べるとき、トラックパッドの幅の下限（ポイント）
+    private static let minPadWidth: CGFloat = 140
+    /// キーボードだけのとき、キーの縦を、自然な形から伸ばしてよい倍率
+    private static let maxStretch: CGFloat = 1.3
 
     var body: some View {
         VStack(spacing: 8) {
             toolbar
             GeometryReader { proxy in
                 content(in: proxy.size)
+                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
             }
         }
         .animation(.spring(duration: 0.35), value: showKeys)
@@ -30,34 +44,51 @@ struct DockedInput: View {
 
     @ViewBuilder
     private func content(in size: CGSize) -> some View {
-        let keysHeightPerWidth = OverlayKeyboard.keyAspect * CGFloat(layout.rows.count) / OverlayKeyboardLayout.rowWidth
-        // キーボードの周りの余白（padding の 6 の両側）
-        let inset: CGFloat = 12
-        // 高さいっぱいにしたときの幅
-        let fullWidth = max(size.height - inset, 1) / keysHeightPerWidth
-        // トラックパッドも出すときは、トラックパッドの分を残す
-        let limit = showPad ? size.width - inset - Self.spacing - Self.minTrackpadWidth : size.width - inset
-        let keysWidth = max(min(fullWidth, limit), 1)
-        let keysHeight = keysWidth * keysHeightPerWidth
+        let inset = Self.panelInset
+        // キーボードの、横幅1に対する高さ（自然な形）
+        let ratio = OverlayKeyboard.keyAspect * CGFloat(layout.rows.count) / OverlayKeyboardLayout.rowWidth
 
-        HStack(spacing: Self.spacing) {
-            if showKeys {
-                OverlayKeysView(session: session, layout: layout)
-                    .frame(width: keysWidth, height: keysHeight)
-                    .padding(6)
-                    .glass(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .transition(.move(edge: .leading).combined(with: .opacity))
+        if showKeys && showPad {
+            let keysWidth = max(size.width - inset, 1)
+            let keysHeight = keysWidth * ratio
+            let padHeight = size.height - keysHeight - inset - Self.spacing
+            if padHeight >= Self.minPadHeight {
+                // ノートパソコンのように、キーボードの下に、広いトラックパッド
+                VStack(spacing: Self.spacing) {
+                    keyboard(width: keysWidth, height: keysHeight)
+                    TrackpadPad(send: session.send)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            } else {
+                // 縦が足りないときは、横に並べる。トラックパッドは、キーボードと同じ高さ
+                let limit = size.width - inset - Self.spacing - Self.minPadWidth
+                let width = max(min(limit, (size.height - inset) / ratio), 1)
+                let height = width * ratio
+                HStack(spacing: Self.spacing) {
+                    keyboard(width: width, height: height)
+                    TrackpadPad(send: session.send)
+                        .frame(maxHeight: height + inset)
+                }
             }
-            if showPad {
-                TrackpadPad(send: session.send)
-                    .frame(maxHeight: showKeys ? keysHeight + inset : .infinity)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-            }
+        } else if showKeys {
+            let width = max(size.width - inset, 1)
+            let height = min(width * ratio * Self.maxStretch, max(size.height - inset, 1))
+            keyboard(width: width, height: height)
+        } else if showPad {
+            TrackpadPad(send: session.send)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: size.width, height: size.height)
     }
 
-    /// 上の帯。キーボードとトラックパッドの出し入れ、IME の切り替え、全部しまうボタン
+    private func keyboard(width: CGFloat, height: CGFloat) -> some View {
+        OverlayKeysView(session: session, layout: layout)
+            .frame(width: width, height: height)
+            .padding(6)
+            .glass(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .transition(.move(edge: .leading).combined(with: .opacity))
+    }
+
+    /// 上の帯。キーボードとトラックパッドの出し入れ、IME の切り替え、メニュー、全部しまうボタン
     private var toolbar: some View {
         HStack(spacing: 8) {
             toggle(systemImage: "keyboard", isOn: $showKeys, label: "キーボード")
@@ -75,6 +106,7 @@ struct DockedInput: View {
                 .glass(in: Capsule(), tint: session.imeOn == true ? .accentColor : nil, interactive: true)
             }
             .buttonStyle(.plain)
+            menuButton
             Button {
                 showKeys = false
                 showPad = false

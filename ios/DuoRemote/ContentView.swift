@@ -28,6 +28,8 @@ struct ContentView: View {
     @AppStorage(KeyCaptureView.zenkakuKey) private var zenkakuAsIME = false
     /// 右下のボタンで出すキーボード（iPhoneのキーボードか、アプリのキーボード）
     @AppStorage("keyboardKind") private var keyboardKind = InputMode.overlay
+    /// 重ねて出すトラックパッド（アプリのキーボードと同じく、動かせて、大きさを変えられる）
+    @AppStorage("showFloatingTrackpad") private var showTrackpad = false
     @AppStorage(OverlayKeyboard.layoutKey) private var overlayLayout = OverlayKeyboardLayout.us
     @AppStorage(OverlayKeyboard.opacityKey) private var overlayOpacity = 0.8
 
@@ -118,7 +120,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             if let fold = dockedFold {
-                DockedInput()
+                DockedInput(menuButton: AnyView(menu(compact: true)))
                     .padding(.horizontal, 10 + max(safeInsets.leading, safeInsets.trailing))
                     .padding(.top, 8)
                     .padding(.bottom, 8 + safeInsets.bottom)
@@ -135,6 +137,15 @@ struct ContentView: View {
                     .padding(.top, safeInsets.top)
                     .padding(.leading, safeInsets.leading)
                     .allowsHitTesting(false)
+            }
+
+            if showTrackpad && halfOpenFold == nil {
+                OverlayTrackpad(session: session) { showTrackpad = false }
+                    .padding(.top, safeInsets.top)
+                    .padding(.leading, safeInsets.leading)
+                    .padding(.trailing, safeInsets.trailing)
+                    .padding(.bottom, safeInsets.bottom)
+                    .transition(.opacity)
             }
 
             if inputMode == .overlay && halfOpenFold == nil && !keyboardAtBottom {
@@ -158,8 +169,9 @@ struct ContentView: View {
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 } else {
-                    HStack {
+                    HStack(spacing: 0) {
                         Spacer()
+                        trackpadButton
                         inputButton
                     }
                     if inputMode == .software {
@@ -214,7 +226,10 @@ struct ContentView: View {
             }
             .ignoresSafeArea()
         }
-        .overlay(alignment: .topTrailing) { menu }
+        .overlay(alignment: .topTrailing) {
+            // 半開きで、下の画面に帯が出ているときは、メニューは、その帯にある
+            if dockedFold == nil { menu() }
+        }
         .overlay(alignment: .top) {
             if let notice = session.notice {
                 Label(notice, systemImage: "info.circle.fill")
@@ -317,6 +332,22 @@ struct ContentView: View {
         }
     }
 
+    /// トラックパッドを出す・しまうボタン（重ねて出す形）
+    private var trackpadButton: some View {
+        Button {
+            showTrackpad.toggle()
+        } label: {
+            Image(systemName: "rectangle.and.hand.point.up.left")
+                .font(.body.weight(.semibold))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .foregroundStyle(showTrackpad ? Color.accentColor : .white)
+                .glass(in: Capsule(), interactive: true)
+        }
+        .padding(.vertical, 12)
+        .accessibilityLabel(showTrackpad ? "トラックパッドをしまう" : "トラックパッドを出す")
+    }
+
     /// 右下のボタン。iPhoneのキーボードを出す・しまう。PCのIMEの状態も見せる
     private var inputButton: some View {
         Button {
@@ -367,7 +398,8 @@ struct ContentView: View {
         )
     }
 
-    private var menu: some View {
+    /// 右上の「…」のメニュー。compact のときは、半開きの下の画面の帯に置く、小さな丸いボタンにする
+    private func menu(compact: Bool = false) -> some View {
         Menu {
             if let window = session.currentWindow {
                 Text("表示中: \(window.title)")
@@ -404,7 +436,8 @@ struct ContentView: View {
                         Text(layout.label).tag(layout)
                     }
                 }
-                Picker("アプリのキーボードの濃さ", selection: $overlayOpacity) {
+                Toggle("トラックパッドを出す（重ねて出す形）", isOn: $showTrackpad)
+                Picker("キーボードとトラックパッドの濃さ", selection: $overlayOpacity) {
                     Text("100%").tag(1.0)
                     Text("80%").tag(0.8)
                     Text("60%").tag(0.6)
@@ -472,12 +505,16 @@ struct ContentView: View {
             }
             Button("切断", systemImage: "xmark.circle", role: .destructive) { session.disconnect() }
         } label: {
-            Image(systemName: "ellipsis")
-                .glassCircle(size: 44)
-                .padding(12)
+            if compact {
+                Image(systemName: "ellipsis").glassCircle(size: 34)
+            } else {
+                Image(systemName: "ellipsis")
+                    .glassCircle(size: 44)
+                    .padding(12)
+            }
         }
-        .padding(.top, safeInsets.top)
-        .padding(.trailing, safeInsets.trailing)
+        .padding(.top, compact ? 0 : safeInsets.top)
+        .padding(.trailing, compact ? 0 : safeInsets.trailing)
     }
 
     /// 接続の画面の背景。暗い色に、ぼかした光を2つ置く
