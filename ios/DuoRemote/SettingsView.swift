@@ -27,6 +27,7 @@ struct SettingsView: View {
     @AppStorage("dockWhenHalfOpen") private var dockWhenHalfOpen = true
     // 表示
     @AppStorage(RemoteSession.useHEVCKey) private var useHEVC = true
+    @AppStorage(RemoteSession.transportKey) private var transport = "tcp"
     @AppStorage("showLatency") private var showLatency = true
     @AppStorage("edgeMargin") private var edgeMargin = 0
     // 音声
@@ -91,6 +92,11 @@ struct SettingsView: View {
                         ForEach(VideoQuality.allCases) { q in
                             Text(q.label).tag(q.rawValue)
                         }
+                    }
+                    Picker("通信方式（次回接続から）", selection: $transport) {
+                        Text("TCP").tag("tcp")
+                        Text("UDP").tag("udp")
+                        Text("自動（UDP を試す）").tag("auto")
                     }
                     Toggle("H.265 を使用（次回接続から）", isOn: $useHEVC)
                     Toggle("遅延を表示", isOn: $showLatency)

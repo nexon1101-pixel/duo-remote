@@ -472,6 +472,7 @@ struct ContentView: View {
             rows.append(("接続先", hostDescription(active)))
         }
         rows.append(("画面", screenDescription.replacingOccurrences(of: "画面: ", with: "")))
+        rows.append(("通信", session.transportName))
         rows.append(("映像", (session.codec == "hevc" ? "H.265" : "H.264")
                      + (session.autoLevel.map { "（自動: \($0.shortLabel)）" } ?? "")))
         return rows

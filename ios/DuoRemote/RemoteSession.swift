@@ -95,6 +95,8 @@ final class RemoteSession: ObservableObject {
     @Published private(set) var codec = "h264"
     /// 設定「H.265 を使う」
     static let useHEVCKey = "useHEVC"
+    /// 設定「通信方式」（auto、tcp、udp）
+    static let transportKey = "transportMode"
 
     /// 接続中に出すお知らせ（サーバーからのエラーなど）。数秒で消す
     @Published private(set) var notice: String?
@@ -129,6 +131,10 @@ final class RemoteSession: ObservableObject {
     let latency = LatencyStore()
     /// 今つながっているホスト（候補の1つ）。つながっていないときはnil
     @Published private(set) var activeHost: String?
+    /// 映像と音を、今どちらで受け取っているか（"TCP" か "UDP"）
+    @Published private(set) var transportName = "TCP"
+    /// UDP の受け取り（つなげたときだけ）
+    private var udpReceiver: UDPVideoReceiver?
     private var noticeTask: Task<Void, Never>?
 
     let renderer = H264Renderer()
@@ -251,6 +257,9 @@ final class RemoteSession: ObservableObject {
         // H.265 は、同じ画質で通信量が H.264 の半分くらい。この端末が速く読めて、設定でオフにしていなければ、先に頼む
         let useHEVC = UserDefaults.standard.object(forKey: Self.useHEVCKey) as? Bool ?? true
         hello["codecs"] = (useHEVC && H264Renderer.supportsHEVC) ? ["hevc", "h264"] : ["h264"]
+        // 通信方式。tcp のときは、何も付けない（取り決めの、初めの値）
+        let transport = UserDefaults.standard.string(forKey: Self.transportKey) ?? "tcp"
+        if transport == "udp" || transport == "auto" { hello["transport"] = transport }
         let helloData = (try? JSONSerialization.data(withJSONObject: hello)) ?? Data()
         let renderer = self.renderer
 
@@ -286,6 +295,41 @@ final class RemoteSession: ObservableObject {
             guard let self, !Task.isCancelled, self.task === task, self.state != .connected else { return }
             self.fail(task)
         }
+    }
+
+    /// `welcome` に `udp_port` と `udp_key` があれば、UDP で受け取る準備をする。
+    /// つながったら、サーバーに `transport`（udp）を送って、切り替える。
+    /// つながらなかったときは、`auto` なら、そのまま TCP で続ける。`udp` なら、知らせる（TCP のまま続ける）
+    private func startUDP(from json: [String: Any]) {
+        udpReceiver?.stop()
+        udpReceiver = nil
+        transportName = "TCP"
+        guard let port = json["udp_port"] as? Int, let key = json["udp_key"] as? String,
+              let hosts = target?.hosts, hosts.indices.contains(hostIndex) else { return }
+        let wanted = UserDefaults.standard.string(forKey: Self.transportKey) ?? "tcp"
+        guard wanted == "udp" || wanted == "auto" else { return }
+        let receiver = UDPVideoReceiver(
+            host: hosts[hostIndex], port: port, udpKey: key, video: renderer, audio: audio,
+            onBound: { [weak self] in
+                Task { @MainActor in
+                    guard let self, self.udpReceiver != nil else { return }
+                    self.transportName = "UDP"
+                    self.send(["t": "transport", "mode": "udp"])
+                }
+            },
+            onFailed: { [weak self] in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.udpReceiver = nil
+                    self.transportName = "TCP"
+                    if wanted == "udp" {
+                        self.show(notice: "UDP がつながりませんでした。TCP で続けます")
+                    }
+                }
+            }
+        )
+        udpReceiver = receiver
+        receiver?.start()
     }
 
     /// バイナリのフレーム（先頭: フラグ(1) + タイムスタンプ(4) + 中身）を、映像か音に振り分ける。
@@ -393,6 +437,9 @@ final class RemoteSession: ObservableObject {
         latency.ms = nil
         task?.cancel(with: code, reason: nil)
         task = nil
+        udpReceiver?.stop()
+        udpReceiver = nil
+        transportName = "TCP"
         fileTransfer.cancelAll()
         renderer.reset()
         audio.stop()
@@ -684,6 +731,7 @@ final class RemoteSession: ObservableObject {
             connectWatchdog?.cancel()
             connectWatchdog = nil
             startHeartbeat(for: source)
+            startUDP(from: json)
             if audioWanted { requestAudio() }
             if reconnected {
                 show(notice: "再接続しました")
@@ -763,6 +811,13 @@ final class RemoteSession: ObservableObject {
             if let previous = previousWindow, !alive.contains(previous.id) { previousWindow = nil }
             recentWindowIDs = recentWindowIDs.filter { alive.contains($0) }
             windowThumbMissing.formIntersection(alive)
+        case "transport":
+            // サーバーが、映像と音の送り方を変えた（UDP が途切れて、TCP に戻したときなど）
+            if json["mode"] as? String == "tcp" {
+                udpReceiver?.stop()
+                udpReceiver = nil
+                transportName = "TCP"
+            }
         case "window_thumb":
             guard let id = json["id"] as? Int else { break }
             windowThumbPending.remove(id)
