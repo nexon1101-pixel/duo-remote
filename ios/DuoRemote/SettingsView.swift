@@ -25,6 +25,8 @@ struct SettingsView: View {
     @AppStorage(OverlayKeyboard.colorKeysKey) private var colorKeys = true
     @AppStorage(OverlayKeyboard.hapticsKey) private var keyHaptics = true
     @AppStorage("dockWhenHalfOpen") private var dockWhenHalfOpen = true
+    @AppStorage("gameMode") private var gameMode = false
+    @AppStorage("controllerPreset") private var controllerPreset = ControllerPreset.arrows
     // 表示
     @AppStorage(RemoteSession.useHEVCKey) private var useHEVC = true
     @AppStorage(RemoteSession.transportKey) private var transport = "tcp"
@@ -84,6 +86,19 @@ struct SettingsView: View {
                     Toggle("半開き時に下の画面へキーボードを表示", isOn: $dockWhenHalfOpen)
                 } header: {
                     Text("Duo")
+                }
+
+                Section {
+                    Toggle("ゲームモード", isOn: $gameMode)
+                    Picker("コントローラのキー", selection: $controllerPreset) {
+                        ForEach(ControllerPreset.allCases) { preset in
+                            Text(preset.label).tag(preset)
+                        }
+                    }
+                } header: {
+                    Text("ゲーム")
+                } footer: {
+                    Text("上半分に映像、下半分にキーボード、コントローラ、トラックパッドを出します。")
                 }
 
                 Section("画質と表示") {
