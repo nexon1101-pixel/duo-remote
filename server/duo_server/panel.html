@@ -79,6 +79,11 @@ pre.log.short { height: 120px; margin-top: 10px; }
   padding: 10px 18px; border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,.35); opacity: 0; pointer-events: none;
   transition: opacity .2s; max-width: 90vw; z-index: 10; }
 .toast.show { opacity: 1; }
+.ask { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); display: flex; align-items: center; justify-content: center; z-index: 20; }
+.ask[hidden] { display: none; }
+.askbox { background: var(--card); color: var(--text); border-radius: 12px; padding: 20px 22px; max-width: 420px; margin: 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .3); }
+.askbtns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .toast.error { background: #a4262c; }
 footer { text-align: center; margin-top: 24px; }
 [hidden] { display: none !important; }
@@ -131,11 +136,11 @@ footer { text-align: center; margin-top: 24px; }
       <span>ログインしたときに自動で起動する</span></div>
     <div class="row"><span class="label">開くブラウザー</span>
       <select id="panelBrowser">
-        <option value="edge">Edge（アドレスバーのないウィンドウ）</option>
-        <option value="chrome">Chrome（タブ。PCを操作する Claude が、Claude in Chrome で触れる）</option>
+        <option value="edge">Edge（ウィンドウ）</option>
+        <option value="chrome">Chrome（タブ）</option>
         <option value="default">いつものブラウザー</option>
       </select>
-      <span class="small">次に panel.bat で開くときから使われます</span></div>
+      <span class="small">次に panel.bat で開くときから使われます。PCを操作する Claude に頼むときは Chrome にします</span></div>
   </section>
 
   <section class="card">
@@ -158,12 +163,28 @@ footer { text-align: center; margin-top: 24px; }
   <footer><button class="danger" id="quit">管理画面を終了</button></footer>
 </main>
 <div class="toast" id="toast"></div>
+<!-- 確かめる表示。ブラウザーの確認の小窓（confirm）は、PCを操作する Claude（Claude in Chrome）が押せず、タブが止まるので使わない -->
+<div class="ask" id="ask" hidden>
+  <div class="askbox" role="dialog" aria-modal="true">
+    <p id="askText"></p>
+    <div class="askbtns"><button id="askNo">やめる</button><button class="primary" id="askYes">続ける</button></div>
+  </div>
+</div>
 
 <script>
 "use strict";
 const KEY = new URLSearchParams(location.search).get("k") || "";
 const $ = (id) => document.getElementById(id);
 let st = null, cfg = null, lastSeq = 0, tokenVisible = false, busy = false, updating = false, failures = 0;
+
+// ページの中に出す確認。続けるなら true
+function ask(text) {
+  return new Promise((resolve) => {
+    $("askText").textContent = text; $("ask").hidden = false;
+    const done = (ok) => { $("ask").hidden = true; $("askYes").onclick = $("askNo").onclick = null; resolve(ok); };
+    $("askYes").onclick = () => done(true); $("askNo").onclick = () => done(false);
+  });
+}
 
 async function api(path, method = "GET", body) {
   const res = await fetch(path, {
@@ -272,7 +293,7 @@ $("save").onclick = async () => {
 $("tokenEye").onclick = () => { tokenVisible = !tokenVisible; renderToken(); };
 $("tokenCopy").onclick = () => cfg && copyText(cfg.settings.token);
 $("tokenNew").onclick = async () => {
-  if (!confirm("トークンを作り直します。iPhone のアプリにも、新しいトークンを入れ直してください。よろしいですか。")) return;
+  if (!(await ask("トークンを作り直します。iPhone のアプリにも、新しいトークンを入れ直してください。よろしいですか。"))) return;
   try {
     const r = await api("/api/token", "POST");
     cfg.settings.token = r.token; renderToken(); toast("トークンを作り直しました"); pollStatus();
@@ -294,8 +315,12 @@ $("panelBrowser").onchange = async (ev) => {
 };
 
 $("adminBtn").onclick = async () => {
-  if (!confirm("管理者として起動し直します。この画面は閉じて、新しい画面が開きます。よろしいですか。")) return;
-  try { await api("/api/admin", "POST"); toast("管理者として起動し直しています…"); } catch (e) { fail(e); }
+  if (!(await ask("管理者として起動し直します。この画面は閉じて、新しい画面が開きます。よろしいですか。"))) return;
+  try { await api("/api/admin", "POST"); } catch (e) { fail(e); return; }
+  // 起動し直した管理画面は、鍵が変わるので、このページからは操作できない
+  $("down").style.display = "block";
+  $("down").textContent = "管理者として起動し直しました。新しく開いた画面を使ってください。この画面は閉じてかまいません。";
+  failures = -1000;
 };
 
 // 更新
@@ -322,7 +347,7 @@ $("checkBtn").onclick = checkUpdate;
 })();
 
 $("updateBtn").onclick = async () => {
-  if (!confirm("更新します。サーバーは止まり、管理画面は起動し直します。よろしいですか。")) return;
+  if (!(await ask("更新します。サーバーは止まり、管理画面は起動し直します。よろしいですか。"))) return;
   try {
     await api("/api/update", "POST");
     updating = true; $("updateBtn").hidden = true; $("checkBtn").disabled = true;
@@ -369,7 +394,7 @@ async function pollLog() {
 $("copyLog").onclick = () => copyText($("log").textContent);
 
 $("quit").onclick = async () => {
-  if (!confirm("管理画面を終了します。サーバーも止まります。よろしいですか。")) return;
+  if (!(await ask("管理画面を終了します。サーバーも止まります。よろしいですか。"))) return;
   try { await api("/api/quit", "POST"); } catch (e) { fail(e); return; }
   $("down").style.display = "block"; $("down").textContent = "管理画面を終了しました。このウィンドウは閉じてかまいません。";
   failures = -1000;

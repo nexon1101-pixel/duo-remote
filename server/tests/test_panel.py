@@ -269,3 +269,18 @@ def test_open_window_falls_back(monkeypatch):
     monkeypatch.setattr(panel.subprocess, "Popen", lambda cmd: opened.append(tuple(cmd)))
     panel.open_window("http://y/", "chrome")
     assert opened[-1] == ("chrome.exe", "--new-tab", "http://y/")
+
+
+def test_relaunch_carries_browser(monkeypatch):
+    """--browser chrome で開いた管理画面は、起動し直しても Chrome で開く。"""
+    started = []
+    monkeypatch.setattr(panel.subprocess, "Popen", lambda cmd, **kw: started.append(cmd))
+    monkeypatch.setattr(panel, "CARRY_ARGS", ["--browser", "chrome"])
+    panel.relaunch(["--restart"])
+    assert started[0][-3:] == ["--restart", "--browser", "chrome"]
+
+
+def test_page_does_not_use_browser_dialogs():
+    """confirm() や alert() は、PCを操作する Claude が押せず、タブが止まるので使わない。"""
+    html = (panel.Path(panel.__file__).parent / "panel.html").read_text(encoding="utf-8")
+    assert "confirm(" not in html and "alert(" not in html and "prompt(" not in html
