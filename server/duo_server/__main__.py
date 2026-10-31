@@ -13,7 +13,7 @@ from websockets.asyncio.server import serve
 
 from . import __version__
 from .audio import AudioStream
-from .capture import FfmpegStream, build_ffmpeg_cmd, capture_target, detect_encoder
+from .capture import FfmpegStream, build_ffmpeg_cmd, capture_target, detect_encoder, detect_window_capture
 from .input_win import create_input
 from .server import Settings, make_handler
 
@@ -52,6 +52,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output-idx", type=int, default=0,
         help="撮るモニターの番号（ddagrab の output_idx）。モニターが2枚以上で、映像と操作がずれるときに変える",
     )
+    p.add_argument(
+        "--window-capture", choices=["auto", "on", "off"], default="auto",
+        help="ウィンドウを表示するとき、ウィンドウだけを撮るか（auto: ffmpeg に gfxcapture があれば撮る。off: 画面を切り抜く）",
+    )
     p.add_argument("--show-token", action="store_true", help="トークンを表示する")
     p.add_argument(
         "--control-stdin", action="store_true",
@@ -71,13 +75,24 @@ async def run(args: argparse.Namespace) -> None:
     )
     port = args.port or cfg.get("port", 8765)
     encoder = detect_encoder(args.ffmpeg) if args.encoder == "auto" else args.encoder
+    if args.window_capture == "auto":
+        settings.window_capture = sys.platform == "win32" and detect_window_capture(args.ffmpeg)
+    else:
+        settings.window_capture = args.window_capture == "on"
 
     backend = create_input()
     install_console_handler(backend)
 
     def stream_factory(
-        s: Settings, src: tuple[int, int], region: tuple[int, int, int, int] | None, monitor: dict | None
+        s: Settings, src: tuple[int, int], region: tuple[int, int, int, int] | None, monitor: dict | None,
+        window: int | None = None,
     ) -> FfmpegStream:
+        if window is not None:
+            cmd = build_ffmpeg_cmd(
+                ffmpeg=args.ffmpeg, fps=s.fps, bitrate_kbps=s.bitrate_kbps, encoder=encoder,
+                max_height=s.max_height, src_height=src[1], window=window,
+            )
+            return FfmpegStream(cmd)
         # 主モニターは --output-idx、そのほか（仮想ディスプレイなど）は、調べた DXGI の番号
         if monitor is not None and monitor.get("adapter") not in (None, 0):
             log.warning("このモニターは、別のグラフィックアダプター（%s）にあります", monitor["adapter"])
@@ -102,6 +117,11 @@ async def run(args: argparse.Namespace) -> None:
         async with serve(handler, args.host, port, max_size=1024 * 1024, close_timeout=2):
             print(f"duo_server {__version__} を起動しました: {args.host}:{port}（エンコーダー: {encoder}）")
             print(f"仮想ディスプレイ: {'使えます' if virtual else 'ドライバーが入っていません'}")
+            print(
+                "ウィンドウの表示: "
+                + ("ウィンドウだけを撮ります（Windows Graphics Capture）" if settings.window_capture
+                   else "画面を切り抜きます（ほかのウィンドウが重なると映ります。ffmpeg 8.1 以降で、ウィンドウだけを撮れます）")
+            )
             if created or args.show_token:
                 print(f"トークン: {settings.token}")
                 print(f"（{args.config} に保存してあります。他の人に見せないでください）")

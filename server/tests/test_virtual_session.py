@@ -61,7 +61,7 @@ async def with_server(body, backend, streams=None, stream_for=None):
     """stream_for: (モニター, 何個目の映像か) -> 映像。省略すると、いつも正常な映像。"""
     streams = streams if streams is not None else []
 
-    def factory(settings, src, region, monitor=None):
+    def factory(settings, src, region, monitor=None, window=None):
         s = stream_for(monitor, len(streams)) if stream_for else FakeVideo()
         s.src, s.region, s.monitor = src, region, monitor
         streams.append(s)

@@ -1,5 +1,8 @@
+import shutil
 import asyncio
 import json
+
+import pytest
 
 from websockets.asyncio.server import serve
 
@@ -148,3 +151,21 @@ def test_selfcheck_ime_toggle(capsys):
     assert asyncio.run(check_against_server("secret", False, title="メモ", ime=True))
     out = capsys.readouterr().out
     assert "IMEをオンにできました" in out and "IMEをオフにできました" in out and "[NG]" not in out
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg がない")
+def test_save_last_frame(tmp_path):
+    """受け取った H.264 の最後のフレームを、画像にできる。"""
+    import subprocess
+
+    from duo_server.selfcheck import save_last_frame
+
+    h264 = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10",
+         "-frames:v", "5", "-c:v", "libx264", "-f", "h264", "pipe:1"],
+        capture_output=True, check=True,
+    ).stdout
+    out = tmp_path / "frame.png"
+    assert save_last_frame([h264], out) is None
+    assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert save_last_frame([], tmp_path / "none.png") == "キーフレームが届いていません"
