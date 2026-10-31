@@ -2,34 +2,104 @@ import SwiftUI
 import UIKit
 
 /// ノートパソコンのような、映像とは別の場所に置くトラックパッド。
-/// 半開きの Duo の下の画面で、キーボードの横に置く。
+/// 半開きの Duo の下の画面と、重ねて出す形（OverlayTrackpad）で使う。
 ///
 /// - 1本指で動かす＝カーソルを動かす（速く動かすほど、多めに動く）
 /// - 1本指でタップ＝左クリック、2本指でタップ＝右クリック
 /// - 2本指で動かす＝スクロール（指を離したあとも、少し流れ続ける）
 /// - 長押ししてから動かす＝左ボタンを押したまま動かす（ドラッグ）
-/// - 左右のボタンは置かない（文字のボタンは、見た目がよくないので）
+/// - パッドの下の3割は、クリックの場所（文字は出さない）。左半分＝左ボタン、右半分＝右ボタン。
+///   押している間だけ、ボタンを押した状態にする。押したまま、上のパッドを別の指で動かすと、ドラッグになる
 struct TrackpadPad: View {
     /// 制御メッセージを送る（RemoteSession.send と同じ形）
     let send: @MainActor ([String: Any]) -> Void
 
-    var body: some View {
-        surface
-    }
+    /// クリックの場所の、パッド全体に対する高さの割合と、高さの下限（ポイント）
+    private static let zoneFraction: CGFloat = 0.3
+    private static let zoneMinHeight: CGFloat = 48
 
-    private var surface: some View {
+    var body: some View {
         let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
-        return ZStack {
+        ZStack {
             Color.clear
                 .glass(in: shape)
-            Image(systemName: "rectangle.and.hand.point.up.left")
-                .font(.system(size: 44, weight: .light))
-                .foregroundStyle(.white.opacity(0.18))
-                .allowsHitTesting(false)
-            TrackpadSurface(send: send)
+            GeometryReader { proxy in
+                // 上のパッド（カーソルを動かす）と、下のクリックの場所は、重ならないように、縦に分ける。
+                // 重なると、クリックの場所を押したとき、下のパッドが、カーソルを動かしてしまう
+                let zone = min(max(proxy.size.height * Self.zoneFraction, Self.zoneMinHeight), proxy.size.height * 0.5)
+                VStack(spacing: 0) {
+                    ZStack {
+                        Image(systemName: "rectangle.and.hand.point.up.left")
+                            .font(.system(size: 44, weight: .light))
+                            .foregroundStyle(.white.opacity(0.18))
+                            .allowsHitTesting(false)
+                        TrackpadSurface(send: send)
+                    }
+                    .frame(height: proxy.size.height - zone)
+                    ClickZones(send: send)
+                        .frame(height: zone)
+                }
+            }
         }
         .clipShape(shape)
         .contentShape(shape)
+    }
+}
+
+/// パッドの下の、左右のクリックの場所。文字は出さず、薄い線で分ける。押している間は、薄く光る
+private struct ClickZones: View {
+    let send: @MainActor ([String: Any]) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ClickZone(button: "left", send: send)
+            Rectangle()
+                .fill(Color.white.opacity(0.14))
+                .frame(width: 1)
+            ClickZone(button: "right", send: send)
+        }
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color.white.opacity(0.14))
+                .frame(height: 1)
+        }
+    }
+}
+
+/// クリックの場所の1つ。押している間だけ、ボタンを押した状態にする
+private struct ClickZone: View {
+    let button: String
+    let send: @MainActor ([String: Any]) -> Void
+
+    @State private var pressed = false
+    private let haptics = UIImpactFeedbackGenerator(style: .light)
+
+    var body: some View {
+        Rectangle()
+            .fill(pressed ? Color.white.opacity(0.14) : Color.clear)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !pressed else { return }
+                        pressed = true
+                        haptics.impactOccurred()
+                        send(["t": "button", "b": button, "d": "down"])
+                    }
+                    .onEnded { _ in
+                        guard pressed else { return }
+                        pressed = false
+                        send(["t": "button", "b": button, "d": "up"])
+                    }
+            )
+            .onDisappear {
+                // 押したまま消えたときに、PCのボタンが押されたままにならないようにする
+                guard pressed else { return }
+                pressed = false
+                send(["t": "button", "b": button, "d": "up"])
+            }
+            .accessibilityLabel(button == "left" ? "左クリック" : "右クリック")
+            .accessibilityAddTraits(.isButton)
     }
 }
 
