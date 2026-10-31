@@ -243,7 +243,7 @@ final class FileTransfer {
             let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey])
             if values?.isDirectory == true || values?.fileSize == nil {
                 if scoped { url.stopAccessingSecurityScopedResource() }
-                session?.show(notice: "「\(url.lastPathComponent)」は送れません")
+                session?.show(notice: "「\(url.lastPathComponent)」は送信できません")
                 continue
             }
             files.append(OutgoingFile(
@@ -260,7 +260,7 @@ final class FileTransfer {
         var accepted: [OutgoingFile] = []
         for file in files {
             if file.size > Self.maxFileSize {
-                session.show(notice: "「\(file.name)」は大きすぎます（200MBまで）")
+                session.show(notice: "「\(file.name)」はサイズが大きすぎます（最大 200MB）")
                 file.cleanup()
             } else {
                 accepted.append(file)
@@ -268,7 +268,7 @@ final class FileTransfer {
         }
         guard !accepted.isEmpty else { return }
         guard session.state == .connected else {
-            session.show(notice: "未接続です")
+            session.show(notice: "接続されていません")
             accepted.forEach { $0.cleanup() }
             return
         }
@@ -307,7 +307,7 @@ final class FileTransfer {
         ])
         let end = Self.jsonString(["t": "file_end", "id": Int(id)])
         let label = batchTotal > 1 ? "(\(batchDone)/\(batchTotal)) " : ""
-        session.show(notice: "送信中 \(label)\(file.name)")
+        session.show(notice: "送信中: \(label)\(file.name)")
         let size = file.size
         let name = file.name
         do {
@@ -315,13 +315,13 @@ final class FileTransfer {
             try await Self.stream(url: file.url, id: id, socket: socket) { [weak self] sent in
                 guard size > 0 else { return }
                 let percent = min(Int(sent * 100 / size), 99)
-                self?.session?.show(notice: "送信中 \(label)\(name) \(percent)%")
+                self?.session?.show(notice: "送信中: \(label)\(name) \(percent)%")
             }
             try await socket.send(.string(end))
         } catch {
             // つながりが切れたときは、受信の側が切断として扱う
             if !(error is CancellationError), !Task.isCancelled {
-                session.show(notice: "「\(name)」を送れませんでした")
+                session.show(notice: "「\(name)」を送信できませんでした")
             }
         }
     }
@@ -418,7 +418,7 @@ final class FileTransfer {
             if Self.receiver.begin(id: id, name: name, size: size, mime: mime) {
                 session?.show(notice: "PC から受信中: \(name)")
             } else {
-                session?.show(notice: "「\(name)」を受信できません")
+                session?.show(notice: "「\(name)」を受信できませんでした")
             }
         case "file_end":
             guard let rawID = json["id"] as? Int, let id = UInt32(exactly: rawID),
@@ -436,7 +436,7 @@ final class FileTransfer {
             session?.show(notice: "「\(done.name)」を受信しました")
             scheduleShare()
         case "file_saved":
-            session?.show(notice: "PC の ダウンロード\\DuoRemote に保存しました")
+            session?.show(notice: "PC の「ダウンロード\\DuoRemote」に保存しました")
         default:
             break
         }
@@ -515,7 +515,7 @@ struct FileSendPickers: ViewModifier {
                 case .success(let urls):
                     session.fileTransfer.sendFiles(urls, toClipboard: toClipboard)
                 case .failure:
-                    session.show(notice: "ファイルを選べませんでした")
+                    session.show(notice: "ファイルを開けませんでした")
                 }
             }
     }

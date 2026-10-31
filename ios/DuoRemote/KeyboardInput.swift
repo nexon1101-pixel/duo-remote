@@ -16,10 +16,10 @@ enum InputMode: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .touch: "タッチだけ"
-        case .software: "iPhoneのキーボード"
-        case .hardware: "Bluetoothキーボード"
-        case .overlay: "アプリのキーボード"
+        case .touch: "タッチのみ"
+        case .software: "iPhone のキーボード"
+        case .hardware: "Bluetooth キーボード"
+        case .overlay: "アプリ内キーボード"
         }
     }
 

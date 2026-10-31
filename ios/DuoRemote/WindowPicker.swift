@@ -20,7 +20,7 @@ struct WindowPicker: View {
 
     private var isGrid: Bool { style == "grid" }
 
-    private var sectionTitle: String { bringing ? "仮想画面に移すウィンドウ" : "ウィンドウ" }
+    private var sectionTitle: String { bringing ? "仮想画面へ移動するウィンドウ" : "ウィンドウ" }
 
     /// 今映しているウィンドウを先頭にした一覧
     private var ordered: [RemoteWindow] {
@@ -57,7 +57,7 @@ struct WindowPicker: View {
                             ContentUnavailableView(
                                 "ウィンドウがありません",
                                 systemImage: "macwindow",
-                                description: Text("下に引いて更新します")
+                                description: Text("下にスワイプして更新")
                             )
                         }
                     }
@@ -77,7 +77,7 @@ struct WindowPicker: View {
 
                 if isGrid && shownWindows.isEmpty && !session.windows.isEmpty {
                     Section {
-                        Text("「\(query)」は見つかりません")
+                        Text("「\(query)」に一致するウィンドウはありません")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -107,7 +107,7 @@ struct WindowPicker: View {
                             session.showScreen()
                             dismiss()
                         } label: {
-                            Label("PC の画面を表示", systemImage: "display")
+                            Label("メイン画面を表示", systemImage: "display")
                         }
                     }
                 }
@@ -115,18 +115,18 @@ struct WindowPicker: View {
                 if !bringing {
                     Section {
                         if session.virtualAvailable {
-                            Toggle("仮想画面に移して映す", isOn: $toVirtual)
+                            Toggle("仮想画面に移動して表示", isOn: $toVirtual)
                         }
-                        Toggle("この画面に合わせる", isOn: $fitWindow)
+                        Toggle("ウィンドウサイズを画面に合わせる", isOn: $fitWindow)
                             .disabled(session.virtualAvailable && toVirtual)
                     } footer: {
                         Text(footerText)
                     }
                 }
             }
-            .navigationTitle(bringing ? "ウィンドウを移す" : "ウィンドウを選ぶ")
+            .navigationTitle(bringing ? "仮想画面へ移動" : "ウィンドウを選択")
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "ウィンドウを探す")
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "検索")
             .refreshable { session.requestWindows() }
             .onAppear { requestThumbs() }
             .onChange(of: session.isLoadingWindows) { _, loading in
@@ -140,9 +140,9 @@ struct WindowPicker: View {
                 ToolbarItem(placement: .principal) {
                     Picker("表示", selection: $style) {
                         Image(systemName: "square.grid.2x2").tag("grid")
-                            .accessibilityLabel("プレビューで選ぶ")
+                            .accessibilityLabel("プレビュー表示")
                         Image(systemName: "list.bullet").tag("list")
-                            .accessibilityLabel("一覧で選ぶ")
+                            .accessibilityLabel("リスト表示")
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 110)
@@ -158,9 +158,9 @@ struct WindowPicker: View {
 
     private var footerText: String {
         if session.virtualAvailable && toVirtual {
-            return "選んだウィンドウを仮想画面に移して映します。切断すると元に戻ります。"
+            return "選択したウィンドウを仮想画面に移動して表示します。切断すると元の位置に戻ります。"
         }
-        return "選んだウィンドウを、この画面の縦横比に変えます。"
+        return "選択したウィンドウのサイズを、この画面の縦横比に合わせて変更します。"
     }
 
     private func choose(_ window: RemoteWindow) {
@@ -187,8 +187,8 @@ struct WindowPicker: View {
     private func placeName(_ place: String) -> String? {
         switch place {
         case "virtual": "仮想画面"
-        case "other": "ほかのモニター"
-        case "none": "表示されていない"
+        case "other": "別のモニター"
+        case "none": "非表示"
         default: nil
         }
     }

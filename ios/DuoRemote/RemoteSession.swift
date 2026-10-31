@@ -37,9 +37,9 @@ enum VideoQuality: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .high: "高（元の大きさ、60fps）"
-        case .medium: "中（1080、60fps）"
-        case .low: "低（720、30fps）"
+        case .high: "高（元の解像度・60fps）"
+        case .medium: "中（1080p・60fps）"
+        case .low: "低（720p・30fps）"
         }
     }
 
@@ -184,7 +184,7 @@ final class RemoteSession: ObservableObject {
                 guard let self else { return }
                 self.audioOn = false
                 self.audioFailures += 1
-                self.show(notice: "音: \(message)")
+                self.show(notice: "音声: \(message)")
             }
         }
     }
@@ -424,11 +424,11 @@ final class RemoteSession: ObservableObject {
 
         if errorMessage == nil {
             if wasConnecting {
-                errorMessage = "接続できません。サーバー、アドレス、トークンを確かめてください"
+                errorMessage = "接続できませんでした。サーバーが起動しているか、ホストとトークンを確認してください"
             } else if closedNormally {
-                errorMessage = "接続が切れました（別の端末が接続したか、サーバーが停止）"
+                errorMessage = "接続が切断されました。別の端末が接続したか、サーバーが停止した可能性があります"
             } else {
-                errorMessage = "再接続できませんでした"
+                errorMessage = "接続が切断され、再接続できませんでした"
             }
         }
         target = nil
@@ -504,7 +504,7 @@ final class RemoteSession: ObservableObject {
             return
         }
         guard text.unicodeScalars.count <= Self.maxClipLength else {
-            show(notice: "文字数が多すぎます（\(Self.maxClipLength)文字まで）")
+            show(notice: "テキストが長すぎます（最大 \(Self.maxClipLength) 文字）")
             return
         }
         send(["t": "clip_set", "s": text])
@@ -714,7 +714,7 @@ final class RemoteSession: ObservableObject {
                 var message: [String: Any] = ["t": "quality"]
                 message.merge(next.helloFields) { _, new in new }
                 send(message)
-                show(notice: "画質を\(next.shortLabel)にしました（自動）")
+                show(notice: "通信状況に合わせて画質を\(next.shortLabel)に変更しました")
             }
         case "audio_state":
             if json["on"] as? Bool == true, audioWanted,
@@ -727,7 +727,7 @@ final class RemoteSession: ObservableObject {
                 audioOn = false
                 if audioWanted, let reason = json["reason"] as? String {
                     audioFailures += 1
-                    show(notice: "音: \(reason)")
+                    show(notice: "音声: \(reason)")
                 }
             }
         case "clip":
@@ -799,10 +799,10 @@ final class RemoteSession: ObservableObject {
             if let message = json["message"] as? String { show(notice: message) }
         case "brought":
             let title = json["title"] as? String ?? "ウィンドウ"
-            show(notice: "「\(title)」を仮想画面に移しました")
+            show(notice: "「\(title)」を仮想画面に移動しました")
             requestWindows() // 一覧の「出ている場所」を、読み直す
         case "error":
-            let message = (json["message"] as? String) ?? "サーバーのエラー"
+            let message = (json["message"] as? String) ?? "サーバーでエラーが発生しました"
             if state == .connected {
                 show(notice: message)
             } else {

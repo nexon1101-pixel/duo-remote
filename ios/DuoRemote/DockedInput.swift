@@ -118,7 +118,7 @@ struct DockedInput: View {
                     .glassCircle(size: Self.toolbarHeight)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("キーボードとトラックパッドをしまう")
+            .accessibilityLabel("キーボードとトラックパッドを隠す")
         }
         .font(.callout.weight(.semibold))
         .foregroundStyle(.white)
@@ -159,6 +159,6 @@ struct DockedInputRestoreButton: View {
             .glass(in: Capsule(), interactive: true)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("キーボードとトラックパッドを出す")
+        .accessibilityLabel("キーボードとトラックパッドを表示")
     }
 }

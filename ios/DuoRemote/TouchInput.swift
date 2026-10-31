@@ -11,7 +11,7 @@ enum PointerMode: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .direct: "直接触る"
+        case .direct: "タッチ"
         case .trackpad: "トラックパッド"
         }
     }

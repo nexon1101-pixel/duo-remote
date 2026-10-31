@@ -72,7 +72,7 @@ struct OverlayKeyboard: View {
                     .background(Color.white.opacity(0.15), in: Circle())
                     .frame(width: 32, height: Self.barHeight)
             }
-            .accessibilityLabel("下に固定する")
+            .accessibilityLabel("下部に固定")
             Spacer()
             // 引いて動かせることが分かるように、シートと同じつまみを出す
             Capsule()
@@ -153,9 +153,9 @@ enum OverlayDockMode: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .free: "どちらも自由に動かす"
-        case .keyboard: "キーボードを下に固定"
-        case .both: "キーボードとトラックパッドを下に固定"
+        case .free: "自由に配置"
+        case .keyboard: "キーボードを下部に固定"
+        case .both: "キーボードとトラックパッドを下部に固定"
         }
     }
 
@@ -203,7 +203,7 @@ struct BottomKeyboard: View {
                         .frame(width: 22, height: 22)
                         .background(Color.white.opacity(0.15), in: Circle())
                 }
-                .accessibilityLabel("浮かせて動かす")
+                .accessibilityLabel("フローティング表示")
             }
             .padding(.horizontal, 14)
             .frame(height: Self.barHeight)

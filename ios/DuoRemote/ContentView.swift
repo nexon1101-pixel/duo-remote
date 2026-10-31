@@ -272,7 +272,7 @@ struct ContentView: View {
                     Text("再接続中…")
                         .font(.headline)
                         .foregroundStyle(.white)
-                    Button("やめる") { session.disconnect() }
+                    Button("キャンセル") { session.disconnect() }
                         .glassButton()
                 }
                 .padding(.horizontal, 32)
@@ -371,7 +371,7 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .padding(.vertical, compact ? 0 : 12)
-        .accessibilityLabel("ウィンドウを選ぶ")
+        .accessibilityLabel("ウィンドウを選択")
     }
 
     /// トラックパッドを出す・しまうボタン（重ねて出す形）
@@ -387,7 +387,7 @@ struct ContentView: View {
                 .glass(in: Capsule(), interactive: true)
         }
         .padding(.vertical, 12)
-        .accessibilityLabel(showTrackpad ? "トラックパッドをしまう" : "トラックパッドを出す")
+        .accessibilityLabel(showTrackpad ? "トラックパッドを隠す" : "トラックパッドを表示")
     }
 
     /// 右下のボタン。iPhoneのキーボードを出す・しまう。PCのIMEの状態も見せる
@@ -455,56 +455,56 @@ struct ContentView: View {
             }
             Text(screenDescription)
             Text("映像: \(session.codec == "hevc" ? "H.265" : "H.264")"
-                 + (session.autoLevel.map { "、画質: 自動で\($0.shortLabel)" } ?? ""))
-            Toggle("PCの音を鳴らす", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
-            Toggle("他のアプリの音と混ぜる", systemImage: "speaker.badge.exclamationmark", isOn: $audioMix)
+                 + (session.autoLevel.map { "、画質: 自動（\($0.shortLabel)）" } ?? ""))
+            Toggle("PC の音声を再生", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
+            Toggle("他のアプリの音声と同時に再生", systemImage: "speaker.badge.exclamationmark", isOn: $audioMix)
             Picker("入力", selection: $inputMode) {
                 ForEach(InputMode.allCases) { mode in
                     Label(mode.label, systemImage: mode.systemImage).tag(mode)
                 }
             }
             .pickerStyle(.inline)
-            Menu("操作の設定", systemImage: "slider.horizontal.3") {
-                Picker("画面の触り方", selection: $pointerMode) {
+            Menu("設定", systemImage: "slider.horizontal.3") {
+                Picker("タッチ操作", selection: $pointerMode) {
                     ForEach(PointerMode.allCases) { mode in
                         Text(mode.label).tag(mode)
                     }
                 }
                 .pickerStyle(.inline)
-                Toggle("command を Ctrl にする", isOn: $commandAsControl)
+                Toggle("Command キーを Ctrl として使う", isOn: $commandAsControl)
                 Toggle("半角/全角キーで IME を切り替える", isOn: $zenkakuAsIME)
-                Picker("キーボードの配列", selection: $overlayLayout) {
+                Picker("キーボード配列", selection: $overlayLayout) {
                     ForEach(OverlayKeyboardLayout.allCases) { layout in
                         Text(layout.label).tag(layout)
                     }
                 }
                 Toggle("トラックパッドを表示", isOn: $showTrackpad)
-                Picker("トラックパッドのピンチ", selection: $trackpadPinch) {
-                    Text("映像を拡大").tag("video")
-                    Text("PC を拡大（Ctrl+ホイール）").tag("pc")
+                Picker("ピンチ操作", selection: $trackpadPinch) {
+                    Text("映像を拡大・縮小").tag("video")
+                    Text("PC 側で拡大・縮小（Ctrl+ホイール）").tag("pc")
                 }
-                Picker("濃さ", selection: $overlayOpacity) {
+                Picker("不透明度", selection: $overlayOpacity) {
                     Text("100%").tag(1.0)
                     Text("80%").tag(0.8)
                     Text("60%").tag(0.6)
                     Text("40%").tag(0.4)
                 }
-                Toggle("キーの色分け", isOn: $colorKeys)
-                Picker("置き方", selection: dockModeBinding) {
+                Toggle("キーを色分け", isOn: $colorKeys)
+                Picker("配置", selection: dockModeBinding) {
                     ForEach(OverlayDockMode.allCases) { mode in
                         Text(mode.label).tag(mode)
                     }
                 }
-                Toggle("半開きで下にキーボード", isOn: $dockWhenHalfOpen)
-                Toggle("H.265（次の接続から）", isOn: $useHEVC)
+                Toggle("半開き時に下の画面へキーボードを表示", isOn: $dockWhenHalfOpen)
+                Toggle("H.265 を使用（次回接続から）", isOn: $useHEVC)
                 Toggle("遅延を表示", isOn: $showLatency)
-                Picker("画面の端の余白", selection: $edgeMargin) {
+                Picker("画面の余白", selection: $edgeMargin) {
                     Text("なし").tag(0)
                     Text("小（10）").tag(10)
                     Text("中（20）").tag(20)
                     Text("大（30）").tag(30)
                 }
-                Picker("画質（変えると再接続）", selection: qualityChoice) {
+                Picker("画質（変更すると再接続します）", selection: qualityChoice) {
                     Text("自動").tag(Self.autoChoice)
                     ForEach(VideoQuality.allCases) { q in
                         Text(q.label).tag(q.rawValue)
@@ -518,28 +518,28 @@ struct ContentView: View {
                 Button("iPhone → PC", systemImage: "arrow.up.doc") { session.sendClipboard() }
                 Button("PC → iPhone", systemImage: "arrow.down.doc") { session.requestClipboard() }
                 Divider()
-                Button("写真を PC に送る", systemImage: "photo") {
+                Button("写真を PC に送信", systemImage: "photo") {
                     sendToPCClipboard = false
                     showingPhotoPicker = true
                 }
-                Button("写真を PC のクリップボードに入れる", systemImage: "photo.on.rectangle") {
+                Button("写真を PC のクリップボードにコピー", systemImage: "photo.on.rectangle") {
                     sendToPCClipboard = true
                     showingPhotoPicker = true
                 }
-                Button("ファイルを PC に送る", systemImage: "doc") {
+                Button("ファイルを PC に送信", systemImage: "doc") {
                     sendToPCClipboard = false
                     showingFileImporter = true
                 }
-                Button("ファイルを PC のクリップボードに入れる", systemImage: "doc.on.clipboard") {
+                Button("ファイルを PC のクリップボードにコピー", systemImage: "doc.on.clipboard") {
                     sendToPCClipboard = true
                     showingFileImporter = true
                 }
             }
-            Button("ウィンドウを選ぶ", systemImage: "macwindow") {
+            Button("ウィンドウを選択", systemImage: "macwindow") {
                 session.requestWindows()
                 showingWindows = true
             }
-            Button("モニターを選ぶ", systemImage: "display.2") {
+            Button("モニターを選択", systemImage: "display.2") {
                 session.requestMonitors()
                 showingMonitors = true
             }
@@ -547,12 +547,12 @@ struct ContentView: View {
                 Button("仮想画面を表示", systemImage: "rectangle.on.rectangle") {
                     session.showDesktop(fit: fitSize)
                 }
-                Button("移したウィンドウを元に戻す", systemImage: "arrow.uturn.backward") {
+                Button("移動したウィンドウを元に戻す", systemImage: "arrow.uturn.backward") {
                     session.restoreWindows()
                 }
             }
             if session.viewMode != .screen {
-                Button("PC の画面を表示", systemImage: "display") { session.showScreen() }
+                Button("メイン画面を表示", systemImage: "display") { session.showScreen() }
             }
             Button("切断", systemImage: "xmark.circle", role: .destructive) { session.disconnect() }
         } label: {
@@ -594,14 +594,14 @@ struct ContentView: View {
 
                 card(title: "接続先", systemImage: "network") {
                     field(systemImage: "server.rack") {
-                        TextField("自宅のアドレス（192.168.x.x）", text: $host)
+                        TextField("自宅のホスト（例: 192.168.1.10）", text: $host)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
                     }
                     Divider().overlay(Color.white.opacity(0.1))
                     field(systemImage: "globe") {
-                        TextField("外出先のアドレス（Tailscale・任意）", text: $hostRemote)
+                        TextField("外出先のホスト（Tailscale、任意）", text: $hostRemote)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
@@ -632,7 +632,7 @@ struct ContentView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.borderless)
-                        .accessibilityLabel(showToken ? "トークンを隠す" : "トークンを表示する")
+                        .accessibilityLabel(showToken ? "トークンを非表示" : "トークンを表示")
                     }
                 }
 
@@ -644,7 +644,7 @@ struct ContentView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    Text("外出先では、画質を低くすると遅れにくくなります")
+                    Text("モバイル通信では、画質を下げると遅延が少なくなります")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -688,7 +688,7 @@ struct ContentView: View {
                     .disabled((host.isEmpty && hostRemote.isEmpty) || token.isEmpty || session.state == .connecting)
 
                     if session.state == .connecting {
-                        Button("やめる", role: .cancel) { session.disconnect() }
+                        Button("キャンセル", role: .cancel) { session.disconnect() }
                             .glassButton()
                     }
                 }
@@ -717,7 +717,7 @@ struct ContentView: View {
             Text("DuoRemote")
                 .font(.largeTitle.bold())
                 .foregroundStyle(.white)
-            Text("自宅の PC を iPhone で操作")
+            Text("iPhone から PC をリモート操作")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
@@ -763,8 +763,8 @@ struct ContentView: View {
 
     /// メニューに出す、今の接続先（「家（192.168.x.x）」など）
     private func hostDescription(_ active: String) -> String {
-        if active == host { return "家（\(active)）" }
-        if active == hostRemote { return "外（\(active)）" }
+        if active == host { return "自宅（\(active)）" }
+        if active == hostRemote { return "外出先（\(active)）" }
         return active
     }
 

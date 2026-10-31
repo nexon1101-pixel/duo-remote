@@ -483,10 +483,10 @@ class Session:
                     if not self.failed.done():
                         self.failed.set_exception(e)
                     return
-                log.error("映像が止まり続けるため、本物の画面に戻します: %s", e)
+                log.error("映像が止まり続けるため、メイン画面に戻します: %s", e)
                 try:
                     await self.send({
-                        "t": "error", "message": f"映像が止まり続けたので、本物の画面に戻します（{_reason(e)}）",
+                        "t": "error", "message": f"映像が止まり続けたので、メイン画面に戻します（{_reason(e)}）",
                     })
                     await self.send({"t": "mode", "mode": "screen"})
                     self._restarts.clear()
@@ -616,7 +616,7 @@ class Session:
             await self._switch(window, region, monitor)
         except StreamError as e:
             log.error("%sを映せませんでした: %s", what, e)
-            await self.send({"t": "error", "message": f"{what}を映せませんでした（{_reason(e)}）。本物の画面に戻します"})
+            await self.send({"t": "error", "message": f"{what}を映せませんでした（{_reason(e)}）。メイン画面に戻します"})
             await self.send({"t": "mode", "mode": "screen"})
             await self._switch(None, None)
 

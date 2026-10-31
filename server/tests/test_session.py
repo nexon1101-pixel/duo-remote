@@ -386,7 +386,7 @@ def test_window_that_cannot_be_captured_falls_back_to_screen():
             await recv_until(ws, "welcome")
             await ws.send(json.dumps({"t": "mode", "mode": "window", "id": 101}))
             assert (await recv_until(ws, "mode"))["mode"] == "window"
-            assert "本物の画面に戻します" in (await recv_until(ws, "error"))["message"]
+            assert "メイン画面に戻します" in (await recv_until(ws, "error"))["message"]
             assert (await recv_until(ws, "mode"))["mode"] == "screen"
             # 接続は続いている
             await ws.send(json.dumps({"t": "ping", "n": 5}))

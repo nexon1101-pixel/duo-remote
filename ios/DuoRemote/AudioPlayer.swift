@@ -36,7 +36,7 @@ final class AudioPlayer: @unchecked Sendable {
                 channels: AVAudioChannelCount(channels),
                 interleaved: false
             ) else {
-                fail("非対応の音声形式です")
+                fail("この音声形式には対応していません")
                 return
             }
             self.format = format
@@ -48,7 +48,7 @@ final class AudioPlayer: @unchecked Sendable {
                 )
                 guard let opus = AVAudioFormat(streamDescription: &description),
                       let converter = AVAudioConverter(from: opus, to: format) else {
-                    fail("Opus を読めません")
+                    fail("Opus 音声を再生できません")
                     return
                 }
                 opusFormat = opus
@@ -59,7 +59,7 @@ final class AudioPlayer: @unchecked Sendable {
                 try startEngine()
             } catch {
                 teardown()
-                fail("音を出せません（\(error.localizedDescription)）")
+                fail("音声を再生できません（\(error.localizedDescription)）")
                 return
             }
             observe()
