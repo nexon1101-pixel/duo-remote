@@ -22,10 +22,19 @@ struct WindowPicker: View {
 
     private var sectionTitle: String { bringing ? "仮想画面へ移動するウィンドウ" : "ウィンドウ" }
 
-    /// 今映しているウィンドウを先頭にした一覧
+    /// 今映しているウィンドウを先頭に、そのあとは、最近映した順にした一覧。映したことがないものは、PC の手前にある順
     private var ordered: [RemoteWindow] {
         let currentID = session.currentWindow?.id
-        return session.windows.filter { $0.id == currentID } + session.windows.filter { $0.id != currentID }
+        let rank = Dictionary(uniqueKeysWithValues: session.recentWindowIDs.enumerated().map { ($1, $0) })
+        let rest = session.windows.enumerated()
+            .filter { $0.element.id != currentID }
+            .sorted { a, b in
+                let ra = rank[a.element.id] ?? Int.max
+                let rb = rank[b.element.id] ?? Int.max
+                return ra != rb ? ra < rb : a.offset < b.offset
+            }
+            .map(\.element)
+        return session.windows.filter { $0.id == currentID } + rest
     }
 
     /// 探す文字で絞った一覧
@@ -168,6 +177,15 @@ struct WindowPicker: View {
             session.bringWindow(window)
             return
         }
+        Self.open(window, session: session, fitSize: fitSize)
+    }
+
+    /// ウィンドウを映す。設定（仮想画面に移すか、大きさを合わせるか）は、一覧の画面の設定と同じものを使う。
+    /// 「前のウィンドウに戻る」ボタンからも使う
+    static func open(_ window: RemoteWindow, session: RemoteSession, fitSize: CGSize) {
+        let defaults = UserDefaults.standard
+        let fitWindow = defaults.object(forKey: "fitWindow") as? Bool ?? true
+        let toVirtual = defaults.object(forKey: "toVirtual") as? Bool ?? true
         let useVirtual = session.virtualAvailable && toVirtual
         // 仮想画面に移すときは、仮想画面の縦横比を決めるために、大きさを送る
         let fit = (fitWindow || useVirtual) ? fitSize : nil

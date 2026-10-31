@@ -23,6 +23,7 @@ struct SettingsView: View {
     @AppStorage(TrackpadCoordinator.pinchModeKey) private var trackpadPinch = "video"
     @AppStorage(OverlayKeyboard.opacityKey) private var overlayOpacity = 0.8
     @AppStorage(OverlayKeyboard.colorKeysKey) private var colorKeys = true
+    @AppStorage(OverlayKeyboard.hapticsKey) private var keyHaptics = true
     @AppStorage("dockWhenHalfOpen") private var dockWhenHalfOpen = true
     // 表示
     @AppStorage(RemoteSession.useHEVCKey) private var useHEVC = true
@@ -71,6 +72,7 @@ struct SettingsView: View {
                         Text("40%").tag(0.4)
                     }
                     Toggle("キーを色分け", isOn: $colorKeys)
+                    Toggle("キーを押したときに振動", isOn: $keyHaptics)
                 } header: {
                     Text("アプリ内キーボードとトラックパッド")
                 } footer: {

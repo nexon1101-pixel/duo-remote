@@ -372,20 +372,35 @@ struct ContentView: View {
         }
     }
 
-    /// ウィンドウの一覧を開くボタン。切り替えは何度もするので、メニューの奥ではなく、すぐ押せる所に置く
+    /// ウィンドウの切り替えのボタン。一覧を開くボタンと、1つ前のウィンドウに戻るボタン（戻れるときだけ出る）。
+    /// 切り替えは何度もするので、メニューの奥ではなく、すぐ押せる所に置く。
     /// compact: 半開きの下の画面の帯に置く、背の低い形
     @ViewBuilder
     private func windowsButton(compact: Bool) -> some View {
         let tint: Color = session.viewMode == .window || session.viewMode == .desktop ? .accentColor : .white
-        Button {
-            session.requestWindows()
-            showingWindows = true
-        } label: {
-            Image(systemName: "macwindow.on.rectangle")
-                .modifier(BarButtonLabel(tint: tint, compact: compact))
+        HStack(spacing: UIMetrics.spacing) {
+            if let previous = session.previousWindow, previous.id != session.currentWindow?.id {
+                Button {
+                    WindowPicker.open(previous, session: session, fitSize: fitSize)
+                } label: {
+                    Image(systemName: "arrow.triangle.swap")
+                        .modifier(BarButtonLabel(tint: .white, compact: compact))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("前のウィンドウに切り替え: \(previous.title)")
+                .transition(.scale.combined(with: .opacity))
+            }
+            Button {
+                session.requestWindows()
+                showingWindows = true
+            } label: {
+                Image(systemName: "macwindow.on.rectangle")
+                    .modifier(BarButtonLabel(tint: tint, compact: compact))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("ウィンドウを選択")
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("ウィンドウを選択")
+        .animation(.spring(duration: 0.3), value: session.previousWindow?.id)
     }
 
     /// トラックパッドを出す・しまうボタン（重ねて出す形）

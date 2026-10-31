@@ -15,6 +15,7 @@ struct OverlayKeyboard: View {
     static let layoutKey = "overlayKeyboardLayout"
     static let opacityKey = "overlayKeyboardOpacity"
     static let colorKeysKey = "overlayKeyboardColorKeys"
+    static let hapticsKey = "overlayKeyboardHaptics"
 
     @AppStorage(Self.layoutKey) private var layout = OverlayKeyboardLayout.us
     @AppStorage(Self.opacityKey) private var opacity = 0.8
@@ -215,6 +216,8 @@ struct OverlayKeysView: UIViewRepresentable {
     @EnvironmentObject private var observed: RemoteSession
     /// キーの色分け（設定で切り替える）
     @AppStorage(OverlayKeyboard.colorKeysKey) private var colorKeys = true
+    /// キーを押したときの振動（設定で切り替える）
+    @AppStorage(OverlayKeyboard.hapticsKey) private var haptics = true
 
     func makeUIView(context: Context) -> OverlayKeysUIView {
         let view = OverlayKeysUIView()
@@ -222,6 +225,7 @@ struct OverlayKeysView: UIViewRepresentable {
         view.layout = layout
         view.imeOn = observed.imeOn
         view.colorKeys = colorKeys
+        view.hapticsOn = haptics
         return view
     }
 
@@ -229,6 +233,7 @@ struct OverlayKeysView: UIViewRepresentable {
         uiView.session = session
         uiView.imeOn = observed.imeOn
         uiView.colorKeys = colorKeys
+        uiView.hapticsOn = haptics
         if uiView.layout != layout {
             uiView.layout = layout
         }
@@ -252,6 +257,8 @@ final class OverlayKeysUIView: UIView {
     var imeOn: Bool? {
         didSet { if imeOn != oldValue { setNeedsDisplay() } }
     }
+    /// true のとき、キーを押すと振動する
+    var hapticsOn = true
     /// true のとき、キーの色分け
     var colorKeys = true {
         didSet { if colorKeys != oldValue { setNeedsDisplay() } }
@@ -440,7 +447,7 @@ final class OverlayKeysUIView: UIView {
             let id = ObjectIdentifier(touch)
             touchKeys[id] = pos
             let key = layout.rows[pos.row][pos.col]
-            haptic.impactOccurred()
+            if hapticsOn { haptic.impactOccurred() }
             if key.ime {
                 session?.toggleIME()
             } else if let m = key.modifier {
