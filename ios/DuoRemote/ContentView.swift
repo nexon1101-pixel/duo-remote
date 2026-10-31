@@ -348,6 +348,25 @@ struct ContentView: View {
         .padding(.bottom, inputMode == .software || (inputMode == .overlay && keyboardAtBottom) ? 0 : safeInsets.bottom)
     }
 
+    private static let autoChoice = "auto"
+
+    /// 画質の選び方。自動か、高・中・低の固定か。選んだ画質は、自動のときの上限にもなる
+    private var qualityChoice: Binding<String> {
+        Binding(
+            get: { autoQuality ? Self.autoChoice : quality.rawValue },
+            set: { choice in
+                let auto = choice == Self.autoChoice
+                let changedAuto = auto != autoQuality
+                autoQuality = auto
+                if let q = VideoQuality(rawValue: choice), q != quality {
+                    quality = q // onChange が、つなぎ直して反映する
+                } else if changedAuto {
+                    session.setQuality(quality, force: true)
+                }
+            }
+        )
+    }
+
     private var menu: some View {
         Menu {
             if let window = session.currentWindow {
@@ -393,7 +412,6 @@ struct ContentView: View {
                 }
                 Toggle("アプリのキーボードを下端に固定する", isOn: $keyboardAtBottom)
                 Toggle("半開きのとき、下にキーボードを出す", isOn: $dockWhenHalfOpen)
-                Toggle("画質を通信に合わせて自動で変える（選んだ画質より上にはしない。次の接続から）", isOn: $autoQuality)
                 Toggle("H.265 を使う（通信量が少ない。次の接続から）", isOn: $useHEVC)
                 Toggle("遅れを画面に出す", isOn: $showLatency)
                 Picker("画面の端の余白", selection: $edgeMargin) {
@@ -402,9 +420,10 @@ struct ContentView: View {
                     Text("中（20）").tag(20)
                     Text("大（30）").tag(30)
                 }
-                Picker("画質", selection: $quality) {
+                Picker("画質（選ぶと、つなぎ直します）", selection: qualityChoice) {
+                    Text("自動（通信に合わせる。上限は最後に選んだ高・中・低）").tag(Self.autoChoice)
                     ForEach(VideoQuality.allCases) { q in
-                        Text(q.label).tag(q)
+                        Text(q.label).tag(q.rawValue)
                     }
                 }
             }
@@ -530,9 +549,10 @@ struct ContentView: View {
                 }
 
                 card(title: "画質", systemImage: "sparkles.tv") {
-                    Picker("画質", selection: $quality) {
+                    Picker("画質", selection: qualityChoice) {
+                        Text("自動").tag(Self.autoChoice)
                         ForEach(VideoQuality.allCases) { q in
-                            Text(q.label).tag(q)
+                            Text(q.shortLabel).tag(q.rawValue)
                         }
                     }
                     .pickerStyle(.segmented)
@@ -678,7 +698,15 @@ struct LatencyBadge: View {
     @EnvironmentObject private var session: RemoteSession
 
     var body: some View {
-        if let ms = session.latencyMs {
+        LatencyBadgeContent(latency: session.latency)
+    }
+}
+
+private struct LatencyBadgeContent: View {
+    @ObservedObject var latency: LatencyStore
+
+    var body: some View {
+        if let ms = latency.ms {
             HStack(spacing: 5) {
                 Circle()
                     .fill(LatencyColor.color(ms: ms))

@@ -61,6 +61,12 @@ enum VideoQuality: String, CaseIterable, Identifiable {
     }
 }
 
+/// 往復の時間（ミリ秒）。ping を送ってから pong が来るまで。LatencyBadge だけが見る
+@MainActor
+final class LatencyStore: ObservableObject {
+    @Published var ms: Int?
+}
+
 /// サーバーとのWebSocket接続。通信の取り決めは docs/protocol.md を参照。
 @MainActor
 final class RemoteSession: ObservableObject {
@@ -108,7 +114,9 @@ final class RemoteSession: ObservableObject {
     /// PCのIMEがオンか。サーバーが知らせてこないときはnil
     @Published private(set) var imeOn: Bool?
     /// 往復の時間（ミリ秒）。ping を送ってから pong が来るまで
-    @Published private(set) var latencyMs: Int?
+    /// 往復の時間は、数秒おきに変わる。session の @Published にすると、そのたびに session を見ている画面
+    /// すべてが作り直され、開いているメニューが更新されてスクロールが戻る。専用の入れ物に分ける
+    let latency = LatencyStore()
     /// 今つながっているホスト（候補の1つ）。つながっていないときはnil
     @Published private(set) var activeHost: String?
     private var noticeTask: Task<Void, Never>?
@@ -334,9 +342,10 @@ final class RemoteSession: ObservableObject {
         open()
     }
 
-    /// 画質を変える。接続中なら、つなぎ直して反映する
-    func setQuality(_ quality: VideoQuality) {
-        guard quality != self.quality else { return }
+    /// 画質を変える。接続中なら、つなぎ直して反映する。
+    /// force は、画質は同じで、自動かどうかだけが変わったとき（自動は設定から読む）
+    func setQuality(_ quality: VideoQuality, force: Bool = false) {
+        guard quality != self.quality || force else { return }
         self.quality = quality
         autoQuality = nil // 選び直した画質から、自動の判断をやり直す
         guard state == .connected, target != nil else { return }
@@ -371,7 +380,7 @@ final class RemoteSession: ObservableObject {
         heartbeat?.cancel()
         heartbeat = nil
         pendingPings = [:]
-        latencyMs = nil
+        latency.ms = nil
         task?.cancel(with: code, reason: nil)
         task = nil
         fileTransfer.cancelAll()
@@ -673,13 +682,13 @@ final class RemoteSession: ObservableObject {
             }
         case "pong":
             if let n = json["n"] as? Int, let sent = pendingPings.removeValue(forKey: n) {
-                latencyMs = Int(Date().timeIntervalSince(sent) * 1000)
+                latency.ms = Int(Date().timeIntervalSince(sent) * 1000)
                 // これより前の ping は、返事が来なかったものとして忘れる
                 pendingPings = pendingPings.filter { $0.key > n }
             }
         case "stats":
             guard var auto = autoQuality, let dropped = json["dropped"] as? Int else { break }
-            let next = auto.update(dropped: dropped, latencyMs: latencyMs)
+            let next = auto.update(dropped: dropped, latencyMs: latency.ms)
             autoQuality = auto // 変えなかったときも、数えた状態（続けて悪かった回数など）を残す
             if let next {
                 autoLevel = next

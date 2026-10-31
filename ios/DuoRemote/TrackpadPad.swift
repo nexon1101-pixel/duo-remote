@@ -8,13 +8,28 @@ import UIKit
 /// - 1本指でタップ＝左クリック、2本指でタップ＝右クリック
 /// - 2本指で動かす＝スクロール（指を離したあとも、少し流れ続ける）
 /// - 長押ししてから動かす＝左ボタンを押したまま動かす（ドラッグ）
+/// - 下の「左」「右」ボタン＝左クリック、右クリック（押している間、ボタンを押したままにする）
 struct TrackpadPad: View {
     /// 制御メッセージを送る（RemoteSession.send と同じ形）
     let send: @MainActor ([String: Any]) -> Void
 
     var body: some View {
+        VStack(spacing: 8) {
+            surface
+            HStack(spacing: 8) {
+                TrackpadButton(title: "左", button: "left", send: send)
+                TrackpadButton(title: "右", button: "right", send: send)
+            }
+            .frame(height: Self.buttonHeight)
+        }
+    }
+
+    /// ボタンの高さ（ポイント）
+    private static let buttonHeight: CGFloat = 40
+
+    private var surface: some View {
         let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
-        ZStack {
+        return ZStack {
             Color.clear
                 .glass(in: shape)
             Image(systemName: "rectangle.and.hand.point.up.left")
@@ -25,6 +40,48 @@ struct TrackpadPad: View {
         }
         .clipShape(shape)
         .contentShape(shape)
+    }
+}
+
+/// 左・右クリックのボタン。押している間だけボタンを押した状態にするので、押したまま、上のパッドで動かすドラッグもできる
+private struct TrackpadButton: View {
+    let title: String
+    let button: String
+    let send: @MainActor ([String: Any]) -> Void
+
+    @State private var pressed = false
+    private let haptics = UIImpactFeedbackGenerator(style: .light)
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        Text(title)
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .glass(in: shape, tint: pressed ? .accentColor : nil)
+            .contentShape(shape)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !pressed else { return }
+                        pressed = true
+                        haptics.impactOccurred()
+                        send(["t": "button", "b": button, "d": "down"])
+                    }
+                    .onEnded { _ in
+                        guard pressed else { return }
+                        pressed = false
+                        send(["t": "button", "b": button, "d": "up"])
+                    }
+            )
+            .onDisappear {
+                // 押したまま消えたときに、PCのボタンが押されたままにならないようにする
+                guard pressed else { return }
+                pressed = false
+                send(["t": "button", "b": button, "d": "up"])
+            }
+            .accessibilityLabel(button == "left" ? "左クリック" : "右クリック")
+            .accessibilityAddTraits(.isButton)
     }
 }
 
