@@ -140,26 +140,12 @@ struct OverlayKeyboard: View {
 
 // MARK: - 下端に固定
 
-/// キーボードとトラックパッドの置き方
-enum OverlayDockMode: String, CaseIterable, Identifiable {
-    /// どちらも、映像の上で、自由に動かす
-    case free
-    /// キーボードだけ、下に固定する。トラックパッドは自由に動かす
-    case keyboard
-    /// キーボードとトラックパッドを、下に固定する（キーボードの下にトラックパッド）
-    case both
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .free: "自由に配置"
-        case .keyboard: "キーボードを下部に固定"
-        case .both: "キーボードとトラックパッドを下部に固定"
-        }
-    }
-
-    static let key = "overlayDockMode"
+/// 設定: キーボードを下部に固定するか。ここでは名前だけ持つ
+extension OverlayKeyboard {
+    /// キーボードを下部に固定するか（false ならフロート）
+    static let atBottomKey = "overlayKeyboardAtBottom"
+    /// トラックパッドを下部に固定するか（false ならフロート）
+    static let padAtBottomKey = "overlayPadAtBottom"
 }
 
 /// 普通の iPhone のキーボードのように、画面の下に横いっぱいで出すアプリのキーボード。

@@ -58,29 +58,25 @@ struct ContentView: View {
     @AppStorage(DockedInput.showPadKey) private var dockShowPad = true
     /// アプリのキーボードを、普通の iPhone のキーボードのように下に固定する
     @AppStorage(OverlayKeyboard.colorKeysKey) private var colorKeys = true
-    @AppStorage(OverlayDockMode.key) private var dockModeRaw = ""
-    /// 「キーボードとトラックパッドを下部に固定」のとき、トラックパッドをしまっているか
-    @AppStorage("dockPadHidden") private var dockPadHidden = false
-    /// 前の版の設定（キーボードを下に固定するか）。置き方を選ぶ前の人のために残す
-    @AppStorage("overlayKeyboardAtBottom") private var legacyKeyboardAtBottom = false
+    /// キーボードを下部に固定するか（false ならフロート）
+    @AppStorage(OverlayKeyboard.atBottomKey) private var keyboardAtBottom = false
+    /// トラックパッドを下部に固定するか（false ならフロート）
+    @AppStorage(OverlayKeyboard.padAtBottomKey) private var padAtBottom = false
+    /// 前の版の、3つから選ぶ置き方の設定。一度だけ、2つの設定に引き継ぐ
+    @AppStorage("overlayDockMode") private var legacyDockMode = ""
 
-    private var dockMode: OverlayDockMode {
-        OverlayDockMode(rawValue: dockModeRaw) ?? (legacyKeyboardAtBottom ? .keyboard : .free)
-    }
-    private var dockModeBinding: Binding<OverlayDockMode> {
-        Binding(get: { dockMode }, set: { dockModeRaw = $0.rawValue })
-    }
-    /// 下端に固定したキーボードを出すか
-    private var bottomKeys: Bool { inputMode == .overlay && dockMode != .free }
-    /// 下端に固定したトラックパッドを出すか
-    private var bottomPad: Bool { dockMode == .both && !dockPadHidden }
-    /// トラックパッドを出しているか。「下に固定」の置き方のときは、固定した方の出し入れを見る
-    private var padShown: Bool { dockMode == .both ? !dockPadHidden : showTrackpad }
-    private var padShownBinding: Binding<Bool> {
-        Binding(
-            get: { padShown },
-            set: { if dockMode == .both { dockPadHidden = !$0 } else { showTrackpad = $0 } }
-        )
+    /// 下部に固定したキーボードを出すか
+    private var bottomKeys: Bool { inputMode == .overlay && keyboardAtBottom }
+    /// 下部に固定したトラックパッドを出すか
+    private var bottomPad: Bool { showTrackpad && padAtBottom }
+
+    /// 前の版の「置き方」（free / keyboard / both）を、キーボードとトラックパッドの2つの設定に引き継ぐ
+    private func migrateDockMode() {
+        guard !legacyDockMode.isEmpty else { return }
+        keyboardAtBottom = legacyDockMode != "free"
+        padAtBottom = legacyDockMode == "both"
+        if padAtBottom { showTrackpad = true }
+        legacyDockMode = ""
     }
 
     var body: some View {
@@ -99,6 +95,11 @@ struct ContentView: View {
         .onAppear {
             loadToken()
             updateIdleTimer()
+            migrateDockMode()
+        }
+        // トラックパッドを下部に固定にしたときは、そのまま出す（出し入れは、トラックパッドのボタンで）
+        .onChange(of: padAtBottom) { _, atBottom in
+            if atBottom { showTrackpad = true }
         }
         // 接続中は、触らなくても画面がロックされないようにする
         .onChange(of: session.state) { _, _ in updateIdleTimer() }
@@ -165,8 +166,8 @@ struct ContentView: View {
                     .allowsHitTesting(false)
             }
 
-            if showTrackpad && halfOpenFold == nil && dockMode != .both {
-                OverlayTrackpad(session: session) { showTrackpad = false }
+            if showTrackpad && halfOpenFold == nil && !padAtBottom {
+                OverlayTrackpad(session: session, onClose: { showTrackpad = false }, onDock: { padAtBottom = true })
                     .padding(.top, safeInsets.top)
                     .padding(.leading, safeInsets.leading)
                     .padding(.trailing, safeInsets.trailing)
@@ -174,11 +175,11 @@ struct ContentView: View {
                     .transition(.opacity)
             }
 
-            if inputMode == .overlay && halfOpenFold == nil && dockMode == .free {
+            if inputMode == .overlay && halfOpenFold == nil && !keyboardAtBottom {
                 OverlayKeyboard(session: session, onClose: {
                     if inputMode == .overlay { inputMode = .touch }
                 }, onDock: {
-                    dockModeRaw = OverlayDockMode.keyboard.rawValue
+                    keyboardAtBottom = true
                 })
                 .padding(.top, safeInsets.top)
                 .padding(.leading, safeInsets.leading)
@@ -215,15 +216,15 @@ struct ContentView: View {
                             padHeight: min(max(fullSize.height * 0.18, 110), 170),
                             maxKeysHeight: fullSize.height * (bottomPad ? 0.35 : 0.45),
                             bottomInset: safeInsets.bottom,
-                            onUndock: { dockModeRaw = OverlayDockMode.free.rawValue }
+                            onUndock: { keyboardAtBottom = false }
                         )
                         .transition(.move(edge: .bottom))
                     }
                 }
             }
             .animation(.spring(duration: 0.35), value: inputMode)
-            .animation(.spring(duration: 0.35), value: dockModeRaw)
-            .animation(.spring(duration: 0.35), value: padShown)
+            .animation(.spring(duration: 0.35), value: keyboardAtBottom)
+            .animation(.spring(duration: 0.35), value: bottomPad)
         }
         // 画面の端までは使う。キーボードが出たときだけ、入力の欄がその上に上がる
         .ignoresSafeArea(.container)
@@ -387,17 +388,17 @@ struct ContentView: View {
     /// トラックパッドを出す・しまうボタン（重ねて出す形）
     private var trackpadButton: some View {
         Button {
-            padShownBinding.wrappedValue.toggle()
+            showTrackpad.toggle()
         } label: {
             Image(systemName: "rectangle.and.hand.point.up.left")
                 .font(.body.weight(.semibold))
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-                .foregroundStyle(padShown ? Color.accentColor : .white)
+                .foregroundStyle(showTrackpad ? Color.accentColor : .white)
                 .glass(in: Capsule(), interactive: true)
         }
         .padding(.vertical, 12)
-        .accessibilityLabel(padShown ? "トラックパッドを隠す" : "トラックパッドを表示")
+        .accessibilityLabel(showTrackpad ? "トラックパッドを隠す" : "トラックパッドを表示")
     }
 
     /// 右下のボタン。iPhoneのキーボードを出す・しまう。PCのIMEの状態も見せる
@@ -488,7 +489,7 @@ struct ContentView: View {
                         Text(layout.label).tag(layout)
                     }
                 }
-                Toggle("トラックパッドを表示", isOn: padShownBinding)
+                Toggle("トラックパッドを表示", isOn: $showTrackpad)
                 Picker("ピンチ操作", selection: $trackpadPinch) {
                     Text("映像を拡大・縮小").tag("video")
                     Text("PC 側で拡大・縮小（Ctrl+ホイール）").tag("pc")
@@ -500,10 +501,13 @@ struct ContentView: View {
                     Text("40%").tag(0.4)
                 }
                 Toggle("キーを色分け", isOn: $colorKeys)
-                Picker("配置", selection: dockModeBinding) {
-                    ForEach(OverlayDockMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
-                    }
+                Picker("キーボードの位置", selection: $keyboardAtBottom) {
+                    Text("フロート").tag(false)
+                    Text("下部に固定").tag(true)
+                }
+                Picker("トラックパッドの位置", selection: $padAtBottom) {
+                    Text("フロート").tag(false)
+                    Text("下部に固定").tag(true)
                 }
                 Toggle("半開き時に下の画面へキーボードを表示", isOn: $dockWhenHalfOpen)
                 Toggle("H.265 を使用（次回接続から）", isOn: $useHEVC)
