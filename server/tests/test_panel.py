@@ -44,6 +44,8 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(control, "is_admin", lambda: False)
     monkeypatch.setattr(control, "autostart_enabled", lambda: False)
     monkeypatch.setattr(panel, "RELAUNCH_WAIT", 0)
+    monkeypatch.setattr(panel, "UPDATE_LOG_PATH", tmp_path / "last_update.log")
+    monkeypatch.setattr(control, "address_details", lambda: [])
     config = tmp_path / "config.json"
     process = FakeProcess()
     handler = panel.make_app(process, KEY, config)
@@ -200,8 +202,12 @@ def test_update_apply_success(app, monkeypatch):
     assert app("POST", "/api/update") == (200, {"started": True})
     assert app.handler.exit_signal.wait(5)
     status, data = app("GET", "/api/update/log")
-    assert data == {"running": False, "lines": ["取ってきます", "入れ替えました"], "done": True, "error": None}
+    assert data == {
+        "running": False, "lines": ["取ってきます", "入れ替えました"], "done": True, "error": None, "previous": [],
+    }
     assert launched == [["--restart"]]
+    # 起動し直した管理画面は、ファイルに残った前回の更新のログを見せる
+    assert panel.UPDATE_LOG_PATH.read_text(encoding="utf-8").splitlines() == ["取ってきます", "入れ替えました"]
     assert ("stop", None) in app.process.calls
 
 
@@ -245,3 +251,21 @@ def test_lock_and_ping(tmp_path, app):
     assert panel.running_panel(lock)["port"] == app.port
     lock.write_text(json.dumps({"port": app.port, "key": "bad", "pid": 1}))
     assert panel.running_panel(lock) is None
+
+
+def test_browser_of(monkeypatch, tmp_path):
+    monkeypatch.setattr(control, "read_settings", lambda: {"panel_browser": "chrome"})
+    assert panel.browser_of(panel.parse_args([])) == "chrome"
+    assert panel.browser_of(panel.parse_args(["--browser", "default"])) == "default"
+
+
+def test_open_window_falls_back(monkeypatch):
+    opened = []
+    monkeypatch.setattr(panel, "find_chrome", lambda: None)
+    monkeypatch.setattr(panel.webbrowser, "open", lambda url: opened.append(("default", url)))
+    panel.open_window("http://x/", "chrome")
+    assert opened == [("default", "http://x/")]
+    monkeypatch.setattr(panel, "find_chrome", lambda: "chrome.exe")
+    monkeypatch.setattr(panel.subprocess, "Popen", lambda cmd: opened.append(tuple(cmd)))
+    panel.open_window("http://y/", "chrome")
+    assert opened[-1] == ("chrome.exe", "--new-tab", "http://y/")

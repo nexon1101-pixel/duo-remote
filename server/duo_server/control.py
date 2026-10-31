@@ -29,8 +29,11 @@ SETTING_LIMITS: dict[str, tuple[int, int]] = {
     "output_idx": (0, 15),
 }
 ENCODERS = ("auto", "h264_nvenc", "libx264")
+# 管理画面を開くブラウザー。edge: Edge のアプリ表示（アドレスバーのないウィンドウ）、chrome: Chrome のタブ、default: いつものブラウザー
+PANEL_BROWSERS = ("edge", "chrome", "default")
 DEFAULTS: dict[str, Any] = {
     "port": 8765, "fps": 60, "bitrate_kbps": 8000, "max_height": 0, "encoder": "auto", "output_idx": 0,
+    "panel_browser": "edge",
 }
 
 
@@ -55,6 +58,10 @@ def save_settings(changes: dict[str, Any], path: Path = DEFAULT_CONFIG) -> dict[
             if not low <= int(value) <= high:
                 raise SettingsError(f"{key} は {low}〜{high} にしてください")
             cfg[key] = int(value)
+        elif key == "panel_browser":
+            if value not in PANEL_BROWSERS:
+                raise SettingsError(f"panel_browser は {'、'.join(PANEL_BROWSERS)} のどれかにしてください")
+            cfg[key] = value
         elif key == "encoder":
             if value not in ENCODERS:
                 raise SettingsError(f"encoder は {'、'.join(ENCODERS)} のどれかにしてください")
@@ -112,6 +119,65 @@ def local_addresses() -> list[str]:
     except OSError:
         pass
     return found
+
+
+_details_cache: tuple[float, list[dict]] | None = None
+
+
+def address_details(cache_seconds: float = 30.0) -> list[dict]:
+    """iPhoneのアプリのホストに入れる候補を、つながっている装置の名前（Wi-Fi、イーサネット、Tailscale、ZeroTier など）と一緒に返す。
+    外への経路で使うアドレス（家の Wi-Fi や有線のことが多い）には recommended を付け、先頭に置く。
+    装置の名前は、Windows でだけ取る（取るのに時間がかかるので、しばらく覚えておく）。"""
+    global _details_cache
+    now = time.monotonic()
+    if _details_cache and now - _details_cache[0] < cache_seconds:
+        return _details_cache[1]
+    addresses = local_addresses()
+    names = _interface_names() if sys.platform == "win32" else {}
+    primary = _primary_address()
+    details = [
+        {"address": a, "name": names.get(a, ""), "recommended": a == primary,
+         "tailscale": _is_tailscale(a)}
+        for a in addresses
+    ]
+    details.sort(key=lambda d: not d["recommended"])
+    _details_cache = (now, details)
+    return details
+
+
+def _is_tailscale(address: str) -> bool:
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(address) in ipaddress.ip_network("100.64.0.0/10")
+    except ValueError:
+        return False
+
+
+def _primary_address() -> str | None:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
+def _interface_names() -> dict[str, str]:
+    """IPv4 アドレス -> 装置の名前（「Wi-Fi」「ZeroTier One [...]」など）。取れなければ空。"""
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-NetIPAddress -AddressFamily IPv4 | Select-Object IPAddress,InterfaceAlias | ConvertTo-Json -Compress"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        items = json.loads(result.stdout or "[]")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+    if isinstance(items, dict):
+        items = [items]
+    return {i.get("IPAddress", ""): i.get("InterfaceAlias", "") for i in items if isinstance(i, dict)}
 
 
 def is_admin() -> bool:
@@ -235,37 +301,106 @@ class ServerProcess:
 # --- ログインしたときの自動起動（タスク スケジューラ）
 
 TASK_NAME = "DuoRemote サーバー"
+PANEL_BAT = SERVER_DIR / "panel.bat"
 
 
-def autostart_command(panel_bat: Path = SERVER_DIR / "panel.bat") -> list[str]:
-    """ログイン時に管理画面を、サーバーを動かした状態で、画面を出さずに起動するタスクを作るコマンド。
-    仮想ディスプレイのために、最上位の特権で動かす。"""
-    return [
-        "schtasks", "/Create", "/F", "/TN", TASK_NAME,
-        "/TR", f'"{panel_bat}" --autostart',
-        "/SC", "ONLOGON", "/RL", "HIGHEST",
-    ]
+def autostart_xml(user: str, panel_bat: Path = PANEL_BAT) -> str:
+    """ログイン時に、管理画面とサーバーを、画面を出さずに起動するタスクの中身（タスク スケジューラの XML）。
+    schtasks の普通の指定では変えられない、次の設定を入れる。
+    - 最上位の特権で動かす（仮想ディスプレイのため）
+    - 動かし続ける時間に上限を付けない（初期値は 72 時間で止まる）
+    - バッテリーで動いているときも起動し、バッテリーになっても止めない"""
+    from xml.sax.saxutils import escape
+
+    return f'''<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>DuoRemote のサーバーの管理画面を、ログインしたときに起動する</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{escape(user)}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{escape(user)}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{escape(str(panel_bat))}</Command>
+      <Arguments>--autostart</Arguments>
+      <WorkingDirectory>{escape(str(panel_bat.parent))}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+'''
+
+
+def current_user() -> str:
+    domain = os.environ.get("USERDOMAIN", "")
+    name = os.environ.get("USERNAME", "")
+    return f"{domain}\\{name}" if domain else name
+
+
+def _schtasks(args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["schtasks", *args], capture_output=True, text=True, errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
 
 
 def autostart_enabled() -> bool:
     if sys.platform != "win32":
         return False
-    result = subprocess.run(
-        ["schtasks", "/Query", "/TN", TASK_NAME], capture_output=True,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-    return result.returncode == 0
+    return _schtasks(["/Query", "/TN", TASK_NAME]).returncode == 0
 
 
 def set_autostart(enabled: bool) -> str | None:
     """自動起動を設定する・外す。失敗したら、理由を返す（管理者でないと、最上位の特権のタスクは作れない）。"""
     if sys.platform != "win32":
         return "Windowsでしか使えません"
-    cmd = autostart_command() if enabled else ["schtasks", "/Delete", "/F", "/TN", TASK_NAME]
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, errors="replace",
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
+    if enabled:
+        import tempfile
+
+        # schtasks は、UTF-16 の XML を読む
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "task.xml"
+            path.write_text(autostart_xml(current_user()), encoding="utf-16")
+            result = _schtasks(["/Create", "/F", "/TN", TASK_NAME, "/XML", str(path)])
+    else:
+        result = _schtasks(["/Delete", "/F", "/TN", TASK_NAME])
     if result.returncode != 0:
         return (result.stderr or result.stdout).strip() or "設定できませんでした"
     return None
+
+
+def refresh_autostart() -> None:
+    """前の版（72 時間で止まる設定）で登録したタスクを、今の設定で登録し直す。管理者のときだけ行う。"""
+    if sys.platform == "win32" and is_admin() and autostart_enabled():
+        error = set_autostart(True)
+        if error:
+            print(f"自動起動のタスクを、登録し直せませんでした: {error}")
