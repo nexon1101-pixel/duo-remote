@@ -4,7 +4,7 @@ import GameController
 import UIKit
 
 /// iPhone につないだ本物のコントローラ（GameController フレームワーク）の状態を、PC の仮想のゲームパッドに送る。
-/// 「コントローラの種類」がガチで、PC に仮想のゲームパッドが使えるときだけ送る（つないだだけでは送らない）。
+/// 「コントローラの種類」がゲームパッドで、PC に仮想のゲームパッドが使えるときだけ送る（つないだだけでは送らない）。
 /// ゲームからの振動（rumble）も、ここで受けて、つないだコントローラを振動させる
 @MainActor
 final class PhysicalController: ObservableObject {
@@ -14,7 +14,7 @@ final class PhysicalController: ObservableObject {
     @Published private(set) var isConnected = false
 
     private weak var session: RemoteSession?
-    /// ガチで、PC に送ってよい
+    /// ゲームパッドで、PC に送ってよい
     private var inUse = false
     private var current: GCController?
 
@@ -40,7 +40,7 @@ final class PhysicalController: ObservableObject {
         refresh()
     }
 
-    /// 画面（ContentView）から呼ぶ。session と、ガチで送ってよいか（種類がガチで、PC が対応していて、つながっている）を伝える
+    /// 画面（ContentView）から呼ぶ。session と、ゲームパッドで送ってよいか（種類がゲームパッドで、PC が対応していて、つながっている）を伝える
     func configure(session: RemoteSession, inUse: Bool) {
         self.session = session
         guard inUse != self.inUse else { return }

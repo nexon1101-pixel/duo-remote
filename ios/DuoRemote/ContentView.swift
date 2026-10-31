@@ -102,7 +102,7 @@ struct ContentView: View {
             migrateDockMode()
             updatePhysicalController()
         }
-        // 本物のコントローラは、ガチで、PC が対応しているときだけ、PC に送る
+        // 本物のコントローラは、ゲームパッドで、PC が対応しているときだけ、PC に送る
         .onChange(of: controllerKind) { _, _ in updatePhysicalController() }
         .onChange(of: session.padAvailable) { _, _ in updatePhysicalController() }
         .onChange(of: session.padState) { _, _ in updatePhysicalController() }

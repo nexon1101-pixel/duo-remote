@@ -96,7 +96,7 @@ struct SettingsView: View {
                             Text(kind.label).tag(kind)
                         }
                     }
-                    Picker("コントローラのキー（簡易）", selection: $controllerPreset) {
+                    Picker("コントローラのキー（キーボード入力）", selection: $controllerPreset) {
                         ForEach(ControllerPreset.allCases) { preset in
                             Text(preset.label).tag(preset)
                         }
@@ -104,7 +104,7 @@ struct SettingsView: View {
                 } header: {
                     Text("ゲーム")
                 } footer: {
-                    Text("上半分に映像、下半分にキーボード、コントローラ、トラックパッドを出します。簡易は、キーボードのキーとして送ります。ガチは、PC の仮想のゲームパッド（Xbox 360）に送ります。PC に ViGEmBus が必要で、入っていないときは簡易で動きます。")
+                    Text("上半分に映像、下半分にキーボード、コントローラ、トラックパッドを出します。キーボード入力は、キーボードのキーとして送ります。ゲームパッドは、PC の仮想のゲームパッド（Xbox 360）に送ります。PC に ViGEmBus が必要で、入っていないときはキーボード入力で動きます。")
                 }
 
                 Section("画質と表示") {

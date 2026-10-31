@@ -86,7 +86,7 @@ struct GameModePanel: View {
             .glass(in: RoundedRectangle(cornerRadius: UIMetrics.panelRadius, style: .continuous))
     }
 
-    /// ガチを選んでいて、PC も対応しているときだけ、ガチで動かす。PC が対応していないときは、簡易で動かす
+    /// ゲームパッドを選んでいて、PC も対応しているときだけ、ゲームパッドで動かす。PC が対応していないときは、キーボード入力で動かす
     private var usesPad: Bool {
         controllerKind == .pad && session.padUsable
     }
@@ -127,10 +127,10 @@ struct GameModePanel: View {
     /// コントローラの板の隅の、小さい案内
     private var controllerNote: String? {
         if controllerKind == .pad && !session.padUsable {
-            return "PC にゲームパッドの部品（ViGEmBus）が入っていません。簡易で動きます"
+            return "PC にゲームパッドの部品（ViGEmBus）が入っていません。キーボード入力で動きます"
         }
         guard physical.isConnected else { return nil }
-        return usesPad ? "コントローラ接続中" : "コントローラ接続中（ガチにすると使えます）"
+        return usesPad ? "コントローラ接続中" : "コントローラ接続中（ゲームパッドにすると使えます）"
     }
 
     /// コントローラの隅の小さい歯車。種類と、キーの割り当てを切り替える
@@ -151,7 +151,7 @@ struct GameModePanel: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "gearshape")
-                Text(usesPad ? "ガチ" : preset.label)
+                Text(usesPad ? "ゲームパッド" : preset.label)
             }
             .font(.caption.weight(.semibold))
             .foregroundStyle(.white.opacity(0.8))

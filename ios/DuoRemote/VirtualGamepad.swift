@@ -5,9 +5,9 @@ import UIKit
 
 /// ゲームモードのコントローラの種類
 enum ControllerKind: String, CaseIterable, Identifiable {
-    /// 簡易。キーボードのキーとして送る（VirtualController.swift）
+    /// キーボード入力。キーボードのキーとして送る（VirtualController.swift）
     case simple
-    /// ガチ。仮想の Xbox 360 ゲームパッドに、状態を送る（VirtualGamepad.swift、PhysicalController.swift）
+    /// ゲームパッド。仮想の Xbox 360 ゲームパッドに、状態を送る（VirtualGamepad.swift、PhysicalController.swift）
     case pad
 
     static let storageKey = "controllerKind"
@@ -16,8 +16,8 @@ enum ControllerKind: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .simple: "簡易"
-        case .pad: "ガチ"
+        case .simple: "キーボード入力"
+        case .pad: "ゲームパッド"
         }
     }
 }
