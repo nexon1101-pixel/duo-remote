@@ -120,7 +120,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             if let fold = dockedFold {
-                DockedInput()
+                DockedInput(menuButton: AnyView(menu(compact: true)))
                     .padding(.horizontal, 10 + max(safeInsets.leading, safeInsets.trailing))
                     .padding(.top, 8)
                     .padding(.bottom, 8 + safeInsets.bottom)
@@ -226,7 +226,10 @@ struct ContentView: View {
             }
             .ignoresSafeArea()
         }
-        .overlay(alignment: .topTrailing) { menu }
+        .overlay(alignment: .topTrailing) {
+            // 半開きで、下の画面に帯が出ているときは、メニューは、その帯にある
+            if dockedFold == nil { menu() }
+        }
         .overlay(alignment: .top) {
             if let notice = session.notice {
                 Label(notice, systemImage: "info.circle.fill")
@@ -395,7 +398,8 @@ struct ContentView: View {
         )
     }
 
-    private var menu: some View {
+    /// 右上の「…」のメニュー。compact のときは、半開きの下の画面の帯に置く、小さな丸いボタンにする
+    private func menu(compact: Bool = false) -> some View {
         Menu {
             if let window = session.currentWindow {
                 Text("表示中: \(window.title)")
@@ -501,12 +505,16 @@ struct ContentView: View {
             }
             Button("切断", systemImage: "xmark.circle", role: .destructive) { session.disconnect() }
         } label: {
-            Image(systemName: "ellipsis")
-                .glassCircle(size: 44)
-                .padding(12)
+            if compact {
+                Image(systemName: "ellipsis").glassCircle(size: 34)
+            } else {
+                Image(systemName: "ellipsis")
+                    .glassCircle(size: 44)
+                    .padding(12)
+            }
         }
-        .padding(.top, safeInsets.top)
-        .padding(.trailing, safeInsets.trailing)
+        .padding(.top, compact ? 0 : safeInsets.top)
+        .padding(.trailing, compact ? 0 : safeInsets.trailing)
     }
 
     /// 接続の画面の背景。暗い色に、ぼかした光を2つ置く
