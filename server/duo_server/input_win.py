@@ -92,6 +92,11 @@ class NullInput(_BringMixin):
         self.virtual_error: str | None = None  # 設定すると、virtual_on が失敗する
         self._virtual_width = 1536
         self.clipboard = ""
+        # クリップボードの、ファイルと画像（テスト用）。画像は ("png", PNGのバイト列) か ("dib", DIBのバイト列)
+        self.clipboard_files: list[str] = []
+        self.clipboard_image: tuple[str, bytes] | None = None
+        # ファイルの保存先。Noneなら、files.default_download_dir()
+        self.download_dir = None
 
     def screen_size(self) -> tuple[int, int]:
         return self._size
@@ -217,6 +222,25 @@ class NullInput(_BringMixin):
     def clip_set(self, s: str) -> None:
         self.calls.append(("clip_set", s))
         self.clipboard = s
+        self.clipboard_files, self.clipboard_image = [], None
+
+    def clip_files(self) -> list[str]:
+        return list(self.clipboard_files)
+
+    def clip_image(self) -> tuple[str, bytes] | None:
+        return self.clipboard_image
+
+    def clip_set_files(self, paths: list[str]) -> None:
+        self.calls.append(("clip_set_files", list(paths)))
+        self.clipboard, self.clipboard_image = "", None
+        self.clipboard_files = list(paths)
+
+    def clip_set_image(self, path: str) -> None:
+        self.calls.append(("clip_set_image", path))
+        with open(path, "rb") as f:
+            data = f.read()
+        self.clipboard, self.clipboard_files = "", []
+        self.clipboard_image = ("png", data)
 
 
 if sys.platform == "win32":
@@ -400,6 +424,164 @@ if sys.platform == "win32":
         finally:
             if owner:
                 user32.DestroyWindow(owner)
+
+
+    CF_DIB = 8
+    CF_HDROP = 15
+    user32.RegisterClipboardFormatW.argtypes = (wt.LPCWSTR,)
+    user32.RegisterClipboardFormatW.restype = wt.UINT
+    user32.GetDC.argtypes = (wt.HWND,)
+    user32.GetDC.restype = wt.HDC
+    user32.ReleaseDC.argtypes = (wt.HWND, wt.HDC)
+    kernel32.GlobalSize.argtypes = (wt.HGLOBAL,)
+    kernel32.GlobalSize.restype = ctypes.c_size_t
+
+    def _clip_read_format(fmt: int) -> bytes | None:
+        """開いているクリップボードから、形式 fmt のデータをバイト列で読む。"""
+        if not user32.IsClipboardFormatAvailable(fmt):
+            return None
+        handle = user32.GetClipboardData(fmt)
+        if not handle:
+            return None
+        size = kernel32.GlobalSize(handle)
+        ptr = kernel32.GlobalLock(handle)
+        if not ptr:
+            return None
+        try:
+            return ctypes.string_at(ptr, size)
+        finally:
+            kernel32.GlobalUnlock(handle)
+
+    def _clip_files() -> list[str]:
+        _open_clipboard(None)
+        try:
+            raw = _clip_read_format(CF_HDROP)
+        finally:
+            user32.CloseClipboard()
+        from .files import parse_hdrop
+
+        return parse_hdrop(raw) if raw else []
+
+    def _clip_image() -> tuple[str, bytes] | None:
+        png_format = user32.RegisterClipboardFormatW("PNG")
+        _open_clipboard(None)
+        try:
+            png = _clip_read_format(png_format) if png_format else None
+            if png:
+                return "png", png
+            dib = _clip_read_format(CF_DIB)
+            return ("dib", dib) if dib else None
+        finally:
+            user32.CloseClipboard()
+
+    def _clip_put(items: list[tuple[int, bytes]]) -> None:
+        """クリップボードを空にして、(形式, データ) を入れる。"""
+        owner = user32.CreateWindowExW(0, "STATIC", None, 0, 0, 0, 0, 0, HWND_MESSAGE, None, None, None)
+        try:
+            _open_clipboard(owner)
+            try:
+                user32.EmptyClipboard()
+                for fmt, data in items:
+                    mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+                    if not mem:
+                        raise ClipboardError("PCのクリップボードに入れられませんでした（メモリ）")
+                    ptr = kernel32.GlobalLock(mem)
+                    ctypes.memmove(ptr, data, len(data))
+                    kernel32.GlobalUnlock(mem)
+                    if not user32.SetClipboardData(fmt, mem):
+                        kernel32.GlobalFree(mem)
+                        raise ClipboardError("PCのクリップボードに入れられませんでした")
+            finally:
+                user32.CloseClipboard()
+        finally:
+            if owner:
+                user32.DestroyWindow(owner)
+
+    def _clip_set_files(paths: list[str]) -> None:
+        from .files import build_hdrop
+
+        _clip_put([(CF_HDROP, build_hdrop(paths))])
+
+    class _BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [
+            ("biSize", wt.DWORD), ("biWidth", wt.LONG), ("biHeight", wt.LONG), ("biPlanes", wt.WORD),
+            ("biBitCount", wt.WORD), ("biCompression", wt.DWORD), ("biSizeImage", wt.DWORD),
+            ("biXPelsPerMeter", wt.LONG), ("biYPelsPerMeter", wt.LONG), ("biClrUsed", wt.DWORD),
+            ("biClrImportant", wt.DWORD),
+        ]
+
+    class _GdiplusStartupInput(ctypes.Structure):
+        _fields_ = [
+            ("GdiplusVersion", ctypes.c_uint32), ("DebugEventCallback", ctypes.c_void_p),
+            ("SuppressBackgroundThread", wt.BOOL), ("SuppressExternalCodecs", wt.BOOL),
+        ]
+
+    def _image_to_dib(path: str) -> bytes | None:
+        """画像ファイル（PNG、JPEG など）を、GDI+ で読んで、CF_DIB の形（32ビット）にする。できなければ None。"""
+        gdiplus = ctypes.WinDLL("gdiplus")
+        gdi32 = ctypes.WinDLL("gdi32")
+        c_vp = ctypes.c_void_p
+        gdiplus.GdiplusStartup.argtypes = (ctypes.POINTER(c_vp), ctypes.POINTER(_GdiplusStartupInput), c_vp)
+        gdiplus.GdiplusShutdown.argtypes = (c_vp,)
+        gdiplus.GdipCreateBitmapFromFile.argtypes = (wt.LPCWSTR, ctypes.POINTER(c_vp))
+        gdiplus.GdipGetImageWidth.argtypes = (c_vp, ctypes.POINTER(wt.UINT))
+        gdiplus.GdipGetImageHeight.argtypes = (c_vp, ctypes.POINTER(wt.UINT))
+        gdiplus.GdipCreateHBITMAPFromBitmap.argtypes = (c_vp, ctypes.POINTER(c_vp), wt.DWORD)
+        gdiplus.GdipDisposeImage.argtypes = (c_vp,)
+        gdi32.GetDIBits.argtypes = (wt.HDC, c_vp, wt.UINT, wt.UINT, c_vp, c_vp, wt.UINT)
+        gdi32.DeleteObject.argtypes = (c_vp,)
+        token = c_vp()
+        startup = _GdiplusStartupInput(1, None, False, False)
+        if gdiplus.GdiplusStartup(ctypes.byref(token), ctypes.byref(startup), None) != 0:
+            return None
+        bitmap, hbitmap = c_vp(), c_vp()
+        try:
+            if gdiplus.GdipCreateBitmapFromFile(path, ctypes.byref(bitmap)) != 0:
+                return None
+            width, height = wt.UINT(), wt.UINT()
+            gdiplus.GdipGetImageWidth(bitmap, ctypes.byref(width))
+            gdiplus.GdipGetImageHeight(bitmap, ctypes.byref(height))
+            w, h = width.value, height.value
+            if not w or not h or w * h * 4 > 400 * 1024 * 1024:
+                return None
+            # 透明な部分は、白にする
+            if gdiplus.GdipCreateHBITMAPFromBitmap(bitmap, ctypes.byref(hbitmap), 0xFFFFFFFF) != 0:
+                return None
+            info = _BITMAPINFOHEADER(ctypes.sizeof(_BITMAPINFOHEADER), w, h, 1, 32, 0, w * h * 4, 0, 0, 0, 0)
+            pixels = ctypes.create_string_buffer(w * h * 4)
+            hdc = user32.GetDC(None)
+            try:
+                got = gdi32.GetDIBits(hdc, hbitmap, 0, h, pixels, ctypes.byref(info), 0)
+            finally:
+                user32.ReleaseDC(None, hdc)
+            if not got:
+                return None
+            return bytes(info) + pixels.raw
+        finally:
+            if hbitmap:
+                gdi32.DeleteObject(hbitmap)
+            if bitmap:
+                gdiplus.GdipDisposeImage(bitmap)
+            gdiplus.GdiplusShutdown(token)
+
+    def _clip_set_image(path: str) -> None:
+        """画像を、画像としてクリップボードに入れる。PNG は "PNG" 形式でも入れる。DIB にできず PNG でもなければ失敗。"""
+        items: list[tuple[int, bytes]] = []
+        dib = None
+        try:
+            dib = _image_to_dib(path)
+        except OSError:
+            pass
+        if dib:
+            items.append((CF_DIB, dib))
+        with open(path, "rb") as f:
+            head = f.read(8)
+            if head == b"\x89PNG\r\n\x1a\n":
+                f.seek(0)
+                items.append((user32.RegisterClipboardFormatW("PNG"), f.read()))
+        if not items:
+            raise ClipboardError("画像として、PCのクリップボードに入れられませんでした")
+        _clip_put(items)
 
     def _make_dpi_aware() -> None:
         # 画面の大きさを、拡大率に左右されない実際の画素数で取る
@@ -760,6 +942,18 @@ if sys.platform == "win32":
 
         def clip_set(self, s: str) -> None:
             _clip_set(s)
+
+        def clip_files(self) -> list[str]:
+            return _clip_files()
+
+        def clip_image(self) -> tuple[str, bytes] | None:
+            return _clip_image()
+
+        def clip_set_files(self, paths: list[str]) -> None:
+            _clip_set_files(paths)
+
+        def clip_set_image(self, path: str) -> None:
+            _clip_set_image(path)
 
 
 def create_input():
