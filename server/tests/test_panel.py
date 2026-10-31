@@ -106,6 +106,8 @@ def test_status(app):
     assert data["port"] == 8765
     assert data["admin"] is False and data["autostart"] is False
     assert "version" in data and "started_at" in data and "last_exit" in data
+    # Linux には vgamepad も ViGEmBus もない。使えない、と理由が返る
+    assert data["pad"]["available"] is False and data["pad"]["reason"]
 
 
 def test_start_stop_restart(app):

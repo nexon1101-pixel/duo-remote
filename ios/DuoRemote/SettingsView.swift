@@ -27,6 +27,7 @@ struct SettingsView: View {
     @AppStorage("dockWhenHalfOpen") private var dockWhenHalfOpen = true
     @AppStorage("gameMode") private var gameMode = false
     @AppStorage("controllerPreset") private var controllerPreset = ControllerPreset.arrows
+    @AppStorage(ControllerKind.storageKey) private var controllerKind = ControllerKind.simple
     // 表示
     @AppStorage(RemoteSession.useHEVCKey) private var useHEVC = true
     @AppStorage(RemoteSession.transportKey) private var transport = "tcp"
@@ -90,7 +91,12 @@ struct SettingsView: View {
 
                 Section {
                     Toggle("ゲームモード", isOn: $gameMode)
-                    Picker("コントローラのキー", selection: $controllerPreset) {
+                    Picker("コントローラの種類", selection: $controllerKind) {
+                        ForEach(ControllerKind.allCases) { kind in
+                            Text(kind.label).tag(kind)
+                        }
+                    }
+                    Picker("コントローラのキー（キーボード入力）", selection: $controllerPreset) {
                         ForEach(ControllerPreset.allCases) { preset in
                             Text(preset.label).tag(preset)
                         }
@@ -98,7 +104,7 @@ struct SettingsView: View {
                 } header: {
                     Text("ゲーム")
                 } footer: {
-                    Text("上半分に映像、下半分にキーボード、コントローラ、トラックパッドを出します。")
+                    Text("上半分に映像、下半分にキーボード、コントローラ、トラックパッドを出します。キーボード入力は、キーボードのキーとして送ります。ゲームパッドは、PC の仮想のゲームパッド（Xbox 360）に送ります。PC に ViGEmBus が必要で、入っていないときはキーボード入力で動きます。")
                 }
 
                 Section("画質と表示") {

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, control
+from . import __version__, control, gamepad
 from .control import SERVER_DIR, SettingsError
 
 DEFAULT_PORT = 8770
@@ -172,8 +172,22 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
     def args_for_server() -> list[str]:
         return control.server_args(control.read_settings(config), config)
 
+    pad_cache: dict[str, Any] = {"key": object(), "value": None}
+    pad_lock = threading.Lock()
+
+    def pad_status() -> dict[str, Any]:
+        """仮想のゲームパッド（ViGEmBus）を使えるか。サーバーの起動ごとに1回だけ調べる
+        （調べるときに、仮想のゲームパッドを一瞬作るので、何度も調べない）。"""
+        with pad_lock:
+            key = process.started_at
+            if pad_cache["key"] != key or pad_cache["value"] is None:
+                ok, reason = gamepad.probe()
+                pad_cache.update(key=key, value={"available": ok, "reason": reason})
+            return dict(pad_cache["value"])
+
     def status() -> dict[str, Any]:
         return {
+            "pad": pad_status(),
             "running": process.running,
             "started_at": process.started_at,
             "last_exit": process.last_exit,

@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import QuartzCore
 
 /// PCのウィンドウ（一覧の1行）。
 struct RemoteWindow: Identifiable, Equatable {
@@ -62,6 +63,44 @@ enum VideoQuality: String, CaseIterable, Identifiable {
 }
 
 /// 往復の時間（ミリ秒）。ping を送ってから pong が来るまで。LatencyBadge だけが見る
+/// pad_state の中身
+struct PadStatus: Equatable {
+    let available: Bool
+    let reason: String?
+}
+
+/// ゲームパッドの状態。0.001 より細かい違いは、同じとみなす
+struct PadSnapshot: Equatable {
+    let buttons: Int
+    let lx: Double
+    let ly: Double
+    let rx: Double
+    let ry: Double
+    let lt: Double
+    let rt: Double
+
+    static let zero = PadSnapshot(buttons: 0, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0)
+
+    init(buttons: Int, lx: Double, ly: Double, rx: Double, ry: Double, lt: Double, rt: Double) {
+        func q(_ v: Double) -> Double {
+            guard v.isFinite else { return 0 }
+            return (v * 1000).rounded() / 1000
+        }
+        self.buttons = buttons
+        self.lx = q(lx)
+        self.ly = q(ly)
+        self.rx = q(rx)
+        self.ry = q(ry)
+        self.lt = q(lt)
+        self.rt = q(rt)
+    }
+}
+
+extension Notification.Name {
+    /// ゲームが、ゲームパッドを振動させた。userInfo の "l"、"r"（Double、0.0〜1.0）。両方 0 なら止める
+    static let duoRumble = Notification.Name("duoRumble")
+}
+
 @MainActor
 final class LatencyStore: ObservableObject {
     @Published var ms: Int?
@@ -123,6 +162,21 @@ final class RemoteSession: ObservableObject {
     @Published private(set) var currentMonitor: RemoteMonitor?
     /// PCに、仮想ディスプレイのドライバーが入っている
     @Published private(set) var virtualAvailable = false
+    /// PCに、仮想のゲームパッド（ViGEmBus）が入っている
+    @Published private(set) var padAvailable = false
+    /// 仮想のゲームパッドを作れたか（pad を初めて送ったあとに届く）。まだ届いていないときは nil
+    @Published private(set) var padState: PadStatus?
+    /// ゲームパッドを送ってよい（PC に部品があり、作れなかったと言われていない）
+    var padUsable: Bool { padAvailable && padState?.available != false }
+    /// 最後に送ったゲームパッドの状態と、その時刻。同じ状態は送らない。1秒に120回まで
+    private var lastPad = PadSnapshot.zero
+    private var lastPadSentAt: CFTimeInterval = 0
+    /// 間引いたため、まだ送っていない最後の状態
+    private var pendingPad: PadSnapshot?
+    private var padFlushTask: Task<Void, Never>?
+    /// サーバーに仮想のゲームパッドがある（pad を送って、pad_off をまだ送っていない）
+    private var padSent = false
+    private var padNoticeShown = false
     /// PCのIMEがオンか。サーバーが知らせてこないときはnil
     @Published private(set) var imeOn: Bool?
     /// 往復の時間（ミリ秒）。ping を送ってから pong が来るまで
@@ -444,6 +498,7 @@ final class RemoteSession: ObservableObject {
         renderer.reset()
         audio.stop()
         audioOn = false
+        resetPad()
         resetView()
     }
 
@@ -505,6 +560,19 @@ final class RemoteSession: ObservableObject {
         }
     }
 
+    /// 切れたときに、ゲームパッドの状態を忘れる（サーバーは、切断で取り外す）
+    private func resetPad() {
+        padAvailable = false
+        padState = nil
+        padFlushTask?.cancel()
+        padFlushTask = nil
+        pendingPad = nil
+        lastPad = .zero
+        lastPadSentAt = 0
+        padSent = false
+        padNoticeShown = false
+    }
+
     private func resetView() {
         imeOn = nil
         windows = []
@@ -541,6 +609,64 @@ final class RemoteSession: ObservableObject {
     /// キーの位置（スキャンコード）で押す・離す。Bluetoothキーボード用
     func sendScan(_ sc: Int, down: Bool) {
         send(["t": "key", "sc": sc, "d": down ? "down" : "up"])
+    }
+
+    // MARK: - ゲームパッド
+
+    /// 送る頻度の上限（1秒に120回）
+    private static let padMinInterval: CFTimeInterval = 1.0 / 120.0
+
+    /// ゲームパッドの今の状態を送る。ボタンはビット（docs/protocol.md の「ゲームパッド」）、
+    /// スティックは -1.0〜1.0（ly、ry は上が正）、トリガーは 0.0〜1.0。
+    /// 同じ状態は続けて送らない。頻度が高いときは間引き、最後の状態はあとで必ず送る
+    func sendPad(buttons: Int, lx: Double, ly: Double, rx: Double, ry: Double, lt: Double, rt: Double) {
+        guard padUsable else { return }
+        let snapshot = PadSnapshot(buttons: buttons, lx: lx, ly: ly, rx: rx, ry: ry, lt: lt, rt: rt)
+        if snapshot == lastPad && pendingPad == nil { return }
+        let now = CACurrentMediaTime()
+        let wait = lastPadSentAt + Self.padMinInterval - now
+        if wait <= 0 {
+            padFlushTask?.cancel()
+            padFlushTask = nil
+            pendingPad = nil
+            transmitPad(snapshot, at: now)
+            return
+        }
+        // 間引く。最後の状態だけ覚えておき、間隔があいたら送る
+        pendingPad = snapshot
+        guard padFlushTask == nil else { return }
+        padFlushTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(wait))
+            guard !Task.isCancelled, let self else { return }
+            self.padFlushTask = nil
+            if let pending = self.pendingPad {
+                self.pendingPad = nil
+                self.transmitPad(pending, at: CACurrentMediaTime())
+            }
+        }
+    }
+
+    private func transmitPad(_ snapshot: PadSnapshot, at time: CFTimeInterval) {
+        lastPadSentAt = time
+        guard snapshot != lastPad else { return }
+        lastPad = snapshot
+        padSent = true
+        send([
+            "t": "pad", "b": snapshot.buttons,
+            "lx": snapshot.lx, "ly": snapshot.ly, "rx": snapshot.rx, "ry": snapshot.ry,
+            "lt": snapshot.lt, "rt": snapshot.rt,
+        ])
+    }
+
+    /// 仮想のゲームパッドを取り外す。送っていない状態は捨てる。pad を送っていなければ、何もしない
+    func sendPadOff() {
+        padFlushTask?.cancel()
+        padFlushTask = nil
+        pendingPad = nil
+        lastPad = .zero
+        guard padSent else { return }
+        padSent = false
+        send(["t": "pad_off"])
     }
 
     // MARK: - クリップボード
@@ -719,6 +845,7 @@ final class RemoteSession: ObservableObject {
                 videoSize = CGSize(width: w, height: h)
             }
             virtualAvailable = json["virtual"] as? Bool ?? false
+            padAvailable = json["pad"] as? Bool ?? false
             let reconnected = state == .reconnecting
             welcomed = true
             lastGoodIndex = hostIndex
@@ -747,6 +874,20 @@ final class RemoteSession: ObservableObject {
                     break
                 }
             }
+        case "pad_state":
+            let available = json["available"] as? Bool ?? false
+            let reason = json["reason"] as? String
+            padState = PadStatus(available: available, reason: reason)
+            if !available && !padNoticeShown {
+                padNoticeShown = true
+                show(notice: reason.map { "ゲームパッド: \($0)" } ?? "ゲームパッドを使えません")
+            }
+        case "rumble":
+            let l = (json["l"] as? NSNumber)?.doubleValue ?? 0
+            let r = (json["r"] as? NSNumber)?.doubleValue ?? 0
+            NotificationCenter.default.post(
+                name: .duoRumble, object: nil, userInfo: ["l": l, "r": r]
+            )
         case "resize":
             if let w = json["w"] as? Int, let h = json["h"] as? Int {
                 videoSize = CGSize(width: w, height: h)

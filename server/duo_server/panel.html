@@ -137,6 +137,8 @@ footer { text-align: center; margin-top: 24px; }
     <h2>Windows</h2>
     <div class="row"><span class="label">管理者</span><span class="value" id="adminText" style="font-family:inherit"></span>
       <button id="adminBtn" hidden>管理者で再起動</button></div>
+    <div class="row"><span class="label">ゲームパッド</span><span class="value" id="padText" style="font-family:inherit"></span>
+      <span class="small" id="padHelp" hidden>ViGEmBus を入れて、サーバーを再起動します。入れ方は README の「ゲームパッド」を見てください</span></div>
     <div class="row"><span class="label">自動起動</span>
       <label class="switch"><input type="checkbox" id="autostart"><span></span></label>
       <span>ログインしたときに自動で起動する</span></div>
@@ -228,6 +230,9 @@ function renderStatus() {
   $("adminText").textContent = st.admin ? "管理者として実行中"
     : "管理者ではありません（仮想ディスプレイに必要です）";
   $("adminBtn").hidden = st.admin;
+  const padOk = !!(st.pad && st.pad.available);
+  $("padText").textContent = !st.pad ? "確認中" : padOk ? "使えます" : "使えません（ViGEmBus が必要）";
+  $("padHelp").hidden = !st.pad || padOk;
   $("autostart").checked = st.autostart;
   $("portShow").textContent = st.port;
   $("udpNote").textContent = "UDP も同じポート（" + (st.udp_port || st.port) + "）";
