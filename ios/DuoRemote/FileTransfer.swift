@@ -268,7 +268,7 @@ final class FileTransfer {
         }
         guard !accepted.isEmpty else { return }
         guard session.state == .connected else {
-            session.show(notice: "つながっていないので、送れません")
+            session.show(notice: "未接続のため送れません")
             accepted.forEach { $0.cleanup() }
             return
         }
@@ -416,16 +416,16 @@ final class FileTransfer {
             shareTask?.cancel()
             shareTask = nil
             if Self.receiver.begin(id: id, name: name, size: size, mime: mime) {
-                session?.show(notice: "PCから受け取っています: \(name)")
+                session?.show(notice: "PC から受信中: \(name)")
             } else {
-                session?.show(notice: "「\(name)」を受け取れません")
+                session?.show(notice: "「\(name)」を受信できません")
             }
         case "file_end":
             guard let rawID = json["id"] as? Int, let id = UInt32(exactly: rawID),
                   let done = Self.receiver.finish(id: id) else { return }
             guard done.complete else {
                 try? FileManager.default.removeItem(at: done.directory)
-                session?.show(notice: "「\(done.name)」を最後まで受け取れませんでした")
+                session?.show(notice: "「\(done.name)」を受信できませんでした")
                 scheduleShare()
                 return
             }
@@ -433,7 +433,7 @@ final class FileTransfer {
                 UIPasteboard.general.image = image
             }
             received.append(done)
-            session?.show(notice: "「\(done.name)」を受け取りました")
+            session?.show(notice: "「\(done.name)」を受信しました")
             scheduleShare()
         case "file_saved":
             session?.show(notice: "PC の ダウンロード\\DuoRemote に保存しました")

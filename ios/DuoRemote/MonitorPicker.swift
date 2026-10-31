@@ -67,7 +67,7 @@ struct MonitorPicker: View {
                             ContentUnavailableView(
                                 "モニターがありません",
                                 systemImage: "display",
-                                description: Text("下に引くか、右上のボタンで読み直します")
+                                description: Text("下に引くか、右上のボタンで更新します")
                             )
                         }
                     }
@@ -88,7 +88,7 @@ struct MonitorPicker: View {
                             session.showScreen()
                             dismiss()
                         } label: {
-                            Label("本物の画面を表示", systemImage: "display")
+                            Label("PC の画面を表示", systemImage: "display")
                         }
                     }
                 }
@@ -101,7 +101,7 @@ struct MonitorPicker: View {
                     Button("閉じる") { dismiss() }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button("読み直す", systemImage: "arrow.clockwise") { session.requestMonitors() }
+                    Button("更新", systemImage: "arrow.clockwise") { session.requestMonitors() }
                 }
             }
         }

@@ -9,7 +9,7 @@ struct OverlayKeyboard: View {
     let session: RemoteSession
     /// 閉じるボタンを押したとき
     var onClose: () -> Void
-    /// 下端に固定するボタンを押したとき
+    /// 下に固定するボタンを押したとき
     var onDock: () -> Void = {}
 
     static let layoutKey = "overlayKeyboardLayout"
@@ -72,7 +72,7 @@ struct OverlayKeyboard: View {
                     .background(Color.white.opacity(0.15), in: Circle())
                     .frame(width: 32, height: Self.barHeight)
             }
-            .accessibilityLabel("下端に固定する")
+            .accessibilityLabel("下に固定する")
             Spacer()
             // 引いて動かせることが分かるように、シートと同じつまみを出す
             Capsule()
@@ -144,18 +144,18 @@ struct OverlayKeyboard: View {
 enum OverlayDockMode: String, CaseIterable, Identifiable {
     /// どちらも、映像の上で、自由に動かす
     case free
-    /// キーボードだけ、下端に固定する。トラックパッドは自由に動かす
+    /// キーボードだけ、下に固定する。トラックパッドは自由に動かす
     case keyboard
-    /// キーボードとトラックパッドを、下端に固定する（キーボードの下にトラックパッド）
+    /// キーボードとトラックパッドを、下に固定する（キーボードの下にトラックパッド）
     case both
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .free: "すべて自由に動かす"
-        case .keyboard: "キーボードを下端に固定"
-        case .both: "キーボードとトラックパッドを下端に固定"
+        case .free: "どちらも自由に動かす"
+        case .keyboard: "キーボードを下に固定"
+        case .both: "キーボードとトラックパッドを下に固定"
         }
     }
 
@@ -164,7 +164,7 @@ enum OverlayDockMode: String, CaseIterable, Identifiable {
 
 /// 普通の iPhone のキーボードのように、画面の下に横いっぱいで出すアプリのキーボード。
 /// 広い画面では、背が高くなりすぎないよう、高さの上限に合わせて幅を狭め、真ん中に置く。
-/// 置き方が「キーボードとトラックパッドを下端に固定」のときは、キーボードの下に、トラックパッドも置く
+/// 置き方が「キーボードとトラックパッドを下に固定」のときは、キーボードの下に、トラックパッドも置く
 struct BottomKeyboard: View {
     let session: RemoteSession
     /// キーボードを出すか
@@ -203,7 +203,7 @@ struct BottomKeyboard: View {
                         .frame(width: 22, height: 22)
                         .background(Color.white.opacity(0.15), in: Circle())
                 }
-                .accessibilityLabel("浮かせて、動かせるようにする")
+                .accessibilityLabel("浮かせて動かす")
             }
             .padding(.horizontal, 14)
             .frame(height: Self.barHeight)
@@ -277,7 +277,7 @@ final class OverlayKeysUIView: UIView {
     var imeOn: Bool? {
         didSet { if imeOn != oldValue { setNeedsDisplay() } }
     }
-    /// true のとき、キーを役割ごとに色分けする
+    /// true のとき、キーの色分け
     var colorKeys = true {
         didSet { if colorKeys != oldValue { setNeedsDisplay() } }
     }

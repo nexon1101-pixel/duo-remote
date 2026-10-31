@@ -56,10 +56,10 @@ struct ContentView: View {
     @AppStorage("dockWhenHalfOpen") private var dockWhenHalfOpen = true
     @AppStorage(DockedInput.showKeysKey) private var dockShowKeys = true
     @AppStorage(DockedInput.showPadKey) private var dockShowPad = true
-    /// アプリのキーボードを、普通の iPhone のキーボードのように下端に固定する
+    /// アプリのキーボードを、普通の iPhone のキーボードのように下に固定する
     @AppStorage(OverlayKeyboard.colorKeysKey) private var colorKeys = true
     @AppStorage(OverlayDockMode.key) private var dockModeRaw = ""
-    /// 前の版の設定（キーボードを下端に固定するか）。置き方を選ぶ前の人のために残す
+    /// 前の版の設定（キーボードを下に固定するか）。置き方を選ぶ前の人のために残す
     @AppStorage("overlayKeyboardAtBottom") private var legacyKeyboardAtBottom = false
 
     private var dockMode: OverlayDockMode {
@@ -473,15 +473,15 @@ struct ContentView: View {
                 .pickerStyle(.inline)
                 Toggle("command を Ctrl にする", isOn: $commandAsControl)
                 Toggle("半角/全角キーで IME を切り替える", isOn: $zenkakuAsIME)
-                Picker("アプリのキーボードの配列", selection: $overlayLayout) {
+                Picker("キーボードの配列", selection: $overlayLayout) {
                     ForEach(OverlayKeyboardLayout.allCases) { layout in
                         Text(layout.label).tag(layout)
                     }
                 }
-                Toggle("トラックパッドを出す（重ねて出す形）", isOn: $showTrackpad)
+                Toggle("トラックパッドを重ねて表示", isOn: $showTrackpad)
                 Picker("トラックパッドのピンチ", selection: $trackpadPinch) {
-                    Text("映像を拡大・縮小（iPhone の中だけ）").tag("video")
-                    Text("PC に Ctrl+ホイールを送る（PC のアプリの拡大・縮小）").tag("pc")
+                    Text("映像をズーム（アプリ内だけ）").tag("video")
+                    Text("PC をズーム（Ctrl+ホイールを送る）").tag("pc")
                 }
                 Picker("キーボードとトラックパッドの濃さ", selection: $overlayOpacity) {
                     Text("100%").tag(1.0)
@@ -489,23 +489,23 @@ struct ContentView: View {
                     Text("60%").tag(0.6)
                     Text("40%").tag(0.4)
                 }
-                Toggle("キーを役割ごとに色分けする", isOn: $colorKeys)
+                Toggle("キーの色分け", isOn: $colorKeys)
                 Picker("キーボードとトラックパッドの置き方", selection: dockModeBinding) {
                     ForEach(OverlayDockMode.allCases) { mode in
                         Text(mode.label).tag(mode)
                     }
                 }
-                Toggle("半開きのとき、下にキーボードを出す", isOn: $dockWhenHalfOpen)
-                Toggle("H.265 を使う（通信量が少ない。次の接続から）", isOn: $useHEVC)
-                Toggle("遅れを画面に出す", isOn: $showLatency)
+                Toggle("半開きのとき、下の画面にキーボードを出す", isOn: $dockWhenHalfOpen)
+                Toggle("H.265 を使う（通信量が減る。次の接続から）", isOn: $useHEVC)
+                Toggle("遅延を表示", isOn: $showLatency)
                 Picker("画面の端の余白", selection: $edgeMargin) {
                     Text("なし").tag(0)
                     Text("小（10）").tag(10)
                     Text("中（20）").tag(20)
                     Text("大（30）").tag(30)
                 }
-                Picker("画質（選ぶと、つなぎ直します）", selection: qualityChoice) {
-                    Text("自動（通信に合わせる。上限は最後に選んだ高・中・低）").tag(Self.autoChoice)
+                Picker("画質（変えると再接続します）", selection: qualityChoice) {
+                    Text("自動（通信に合わせる。上限は最後に選んだ画質）").tag(Self.autoChoice)
                     ForEach(VideoQuality.allCases) { q in
                         Text(q.label).tag(q.rawValue)
                     }
@@ -547,12 +547,12 @@ struct ContentView: View {
                 Button("仮想画面を表示", systemImage: "rectangle.on.rectangle") {
                     session.showDesktop(fit: fitSize)
                 }
-                Button("持ってきたウィンドウを元に戻す", systemImage: "arrow.uturn.backward") {
+                Button("移したウィンドウを元に戻す", systemImage: "arrow.uturn.backward") {
                     session.restoreWindows()
                 }
             }
             if session.viewMode != .screen {
-                Button("本物の画面を表示", systemImage: "display") { session.showScreen() }
+                Button("PC の画面を表示", systemImage: "display") { session.showScreen() }
             }
             Button("切断", systemImage: "xmark.circle", role: .destructive) { session.disconnect() }
         } label: {
@@ -594,14 +594,14 @@ struct ContentView: View {
 
                 card(title: "接続先", systemImage: "network") {
                     field(systemImage: "server.rack") {
-                        TextField("家（Wi-Fi）のホスト（例: 192.168.x.x）", text: $host)
+                        TextField("自宅 Wi-Fi のアドレス（例: 192.168.x.x）", text: $host)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
                     }
                     Divider().overlay(Color.white.opacity(0.1))
                     field(systemImage: "globe") {
-                        TextField("外から（Tailscale）のホスト（省略できます）", text: $hostRemote)
+                        TextField("外出先（Tailscale）のアドレス（なくてもよい）", text: $hostRemote)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
@@ -644,7 +644,7 @@ struct ContentView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    Text("外（4G/5G）からつなぐときは、低くすると遅れがたまりにくくなります")
+                    Text("外出先（4G/5G）では、画質を低くすると遅れにくくなります")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -717,7 +717,7 @@ struct ContentView: View {
             Text("DuoRemote")
                 .font(.largeTitle.bold())
                 .foregroundStyle(.white)
-            Text("自宅の PC を、この iPhone から")
+            Text("自宅の PC を iPhone で操作")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }

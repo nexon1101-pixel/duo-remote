@@ -20,7 +20,7 @@ struct WindowPicker: View {
 
     private var isGrid: Bool { style == "grid" }
 
-    private var sectionTitle: String { bringing ? "仮想画面に持ってくるウィンドウ" : "ウィンドウ" }
+    private var sectionTitle: String { bringing ? "仮想画面に移すウィンドウ" : "ウィンドウ" }
 
     /// 今映しているウィンドウを先頭にした一覧
     private var ordered: [RemoteWindow] {
@@ -57,7 +57,7 @@ struct WindowPicker: View {
                             ContentUnavailableView(
                                 "ウィンドウがありません",
                                 systemImage: "macwindow",
-                                description: Text("下に引くか、右上のボタンで読み直します")
+                                description: Text("下に引くか、右上のボタンで更新します")
                             )
                         }
                     }
@@ -77,7 +77,7 @@ struct WindowPicker: View {
 
                 if isGrid && shownWindows.isEmpty && !session.windows.isEmpty {
                     Section {
-                        Text("「\(query)」に合うウィンドウはありません")
+                        Text("「\(query)」に一致するウィンドウはありません")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -107,7 +107,7 @@ struct WindowPicker: View {
                             session.showScreen()
                             dismiss()
                         } label: {
-                            Label("本物の画面を表示", systemImage: "display")
+                            Label("PC の画面を表示", systemImage: "display")
                         }
                     }
                 }
@@ -117,14 +117,14 @@ struct WindowPicker: View {
                         if session.virtualAvailable {
                             Toggle("仮想画面に移して映す", isOn: $toVirtual)
                         }
-                        Toggle("この画面に大きさを合わせる", isOn: $fitWindow)
+                        Toggle("この画面の大きさに合わせる", isOn: $fitWindow)
                             .disabled(session.virtualAvailable && toVirtual)
                     } footer: {
                         Text(footerText)
                     }
                 }
             }
-            .navigationTitle(bringing ? "ウィンドウを持ってくる" : "ウィンドウを選ぶ")
+            .navigationTitle(bringing ? "ウィンドウを仮想画面に移す" : "ウィンドウを選ぶ")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "ウィンドウを探す")
             .refreshable { session.requestWindows() }
@@ -140,15 +140,15 @@ struct WindowPicker: View {
                 ToolbarItem(placement: .principal) {
                     Picker("表示", selection: $style) {
                         Image(systemName: "square.grid.2x2").tag("grid")
-                            .accessibilityLabel("小さい絵で選ぶ")
+                            .accessibilityLabel("プレビューで選ぶ")
                         Image(systemName: "list.bullet").tag("list")
-                            .accessibilityLabel("文字の一覧で選ぶ")
+                            .accessibilityLabel("一覧で選ぶ")
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 110)
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button("読み直す", systemImage: "arrow.clockwise") { session.requestWindows() }
+                    Button("更新", systemImage: "arrow.clockwise") { session.requestWindows() }
                 }
             }
         }
@@ -158,9 +158,9 @@ struct WindowPicker: View {
 
     private var footerText: String {
         if session.virtualAvailable && toVirtual {
-            return "選んだウィンドウを、仮想画面に移して、この画面と同じ縦横比で映します。切断すると、元の場所に戻ります。"
+            return "選んだウィンドウを仮想画面に移し、この画面と同じ縦横比で映します。切断すると元の場所に戻ります。"
         }
-        return "選んだウィンドウの大きさを、この画面と同じ縦横比に変えます。文字は、PCで見るのとほぼ同じ大きさになります。"
+        return "選んだウィンドウを、この画面と同じ縦横比にします。文字の大きさは、PC で見るときとほぼ同じです。"
     }
 
     private func choose(_ window: RemoteWindow) {
