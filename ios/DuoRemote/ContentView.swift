@@ -28,6 +28,8 @@ struct ContentView: View {
     @AppStorage(KeyCaptureView.zenkakuKey) private var zenkakuAsIME = false
     /// 右下のボタンで出すキーボード（iPhoneのキーボードか、アプリのキーボード）
     @AppStorage("keyboardKind") private var keyboardKind = InputMode.overlay
+    /// 重ねて出すトラックパッド（アプリのキーボードと同じく、動かせて、大きさを変えられる）
+    @AppStorage("showFloatingTrackpad") private var showTrackpad = false
     @AppStorage(OverlayKeyboard.layoutKey) private var overlayLayout = OverlayKeyboardLayout.us
     @AppStorage(OverlayKeyboard.opacityKey) private var overlayOpacity = 0.8
 
@@ -137,6 +139,15 @@ struct ContentView: View {
                     .allowsHitTesting(false)
             }
 
+            if showTrackpad && halfOpenFold == nil {
+                OverlayTrackpad(session: session) { showTrackpad = false }
+                    .padding(.top, safeInsets.top)
+                    .padding(.leading, safeInsets.leading)
+                    .padding(.trailing, safeInsets.trailing)
+                    .padding(.bottom, safeInsets.bottom)
+                    .transition(.opacity)
+            }
+
             if inputMode == .overlay && halfOpenFold == nil && !keyboardAtBottom {
                 OverlayKeyboard(session: session, onClose: {
                     if inputMode == .overlay { inputMode = .touch }
@@ -158,8 +169,9 @@ struct ContentView: View {
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 } else {
-                    HStack {
+                    HStack(spacing: 0) {
                         Spacer()
+                        trackpadButton
                         inputButton
                     }
                     if inputMode == .software {
@@ -317,6 +329,22 @@ struct ContentView: View {
         }
     }
 
+    /// トラックパッドを出す・しまうボタン（重ねて出す形）
+    private var trackpadButton: some View {
+        Button {
+            showTrackpad.toggle()
+        } label: {
+            Image(systemName: "rectangle.and.hand.point.up.left")
+                .font(.body.weight(.semibold))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .foregroundStyle(showTrackpad ? Color.accentColor : .white)
+                .glass(in: Capsule(), interactive: true)
+        }
+        .padding(.vertical, 12)
+        .accessibilityLabel(showTrackpad ? "トラックパッドをしまう" : "トラックパッドを出す")
+    }
+
     /// 右下のボタン。iPhoneのキーボードを出す・しまう。PCのIMEの状態も見せる
     private var inputButton: some View {
         Button {
@@ -404,7 +432,8 @@ struct ContentView: View {
                         Text(layout.label).tag(layout)
                     }
                 }
-                Picker("アプリのキーボードの濃さ", selection: $overlayOpacity) {
+                Toggle("トラックパッドを出す（重ねて出す形）", isOn: $showTrackpad)
+                Picker("キーボードとトラックパッドの濃さ", selection: $overlayOpacity) {
                     Text("100%").tag(1.0)
                     Text("80%").tag(0.8)
                     Text("60%").tag(0.6)

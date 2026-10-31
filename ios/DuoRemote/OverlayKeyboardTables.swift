@@ -77,7 +77,7 @@ enum OverlayKeyboardTables {
             OverlayKey(label: "Space", sc: 0x39, width: 6),
             OverlayKey(label: "Win", sc: 0xE05C, width: 1.5, modifier: .win),
             OverlayKey(label: "Alt", sc: 0xE038, width: 1.5, modifier: .alt),
-            OverlayKey(label: "Fn", sc: nil, width: 1.5, modifier: .fn),
+            OverlayKey(label: "あ/A", sc: nil, width: 1.5, ime: true),
         ],
     ]
 
@@ -155,7 +155,7 @@ enum OverlayKeyboardTables {
             OverlayKey(label: "無変換", sc: 0x7B, width: 1.5),
             OverlayKey(label: "Space", sc: 0x39, width: 6),
             OverlayKey(label: "変換", sc: 0x79, width: 1.5),
-            OverlayKey(label: "Alt", sc: 0xE038, width: 1.5, modifier: .alt),
+            OverlayKey(label: "あ/A", sc: nil, width: 1.5, ime: true),
         ],
     ]
 }

@@ -55,6 +55,9 @@ struct OverlayKey {
     var modifier: OverlayModifier? = nil
     /// Fn を押している間に替わるキー。なければ、Fn を押していても、このキーのまま
     var fn: OverlayFnKey? = nil
+    /// true のとき、IME のオン・オフを切り替えるキー（スキャンコードではなく、`ime` を送る）。
+    /// PC のキー配列（US か JIS）に関係なく、半角/全角と同じ働きをする。今の状態（あ / A）を、キーに出す
+    var ime = false
 }
 
 /// Fn を押している間のキー
