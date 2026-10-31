@@ -74,6 +74,10 @@ final class RemoteSession: ObservableObject {
     @Published private(set) var state: State = .disconnected
     @Published private(set) var errorMessage: String?
     @Published private(set) var videoSize: CGSize = .zero
+    /// 今の映像の形（h264 か hevc）
+    @Published private(set) var codec = "h264"
+    /// 設定「H.265 を使う」
+    static let useHEVCKey = "useHEVC"
 
     /// 接続中に出すお知らせ（サーバーからのエラーなど）。数秒で消す
     @Published private(set) var notice: String?
@@ -199,6 +203,9 @@ final class RemoteSession: ObservableObject {
 
         var hello: [String: Any] = ["t": "hello", "v": 1, "token": target.token]
         hello.merge(quality.helloFields) { _, new in new }
+        // H.265 は、同じ画質で通信量が H.264 の半分くらい。この端末が速く読めて、設定でオフにしていなければ、先に頼む
+        let useHEVC = UserDefaults.standard.object(forKey: Self.useHEVCKey) as? Bool ?? true
+        hello["codecs"] = (useHEVC && H264Renderer.supportsHEVC) ? ["hevc", "h264"] : ["h264"]
         let helloData = (try? JSONSerialization.data(withJSONObject: hello)) ?? Data()
         let renderer = self.renderer
 
@@ -570,6 +577,8 @@ final class RemoteSession: ObservableObject {
 
         switch type {
         case "welcome":
+            renderer.setCodec(json["codec"] as? String ?? "h264")
+            codec = json["codec"] as? String ?? "h264"
             if let w = json["w"] as? Int, let h = json["h"] as? Int {
                 videoSize = CGSize(width: w, height: h)
             }

@@ -23,6 +23,7 @@ struct ContentView: View {
     /// 画面の端の余白（ポイント）。Duo の角が丸く、映像の角が削れるときに、広げる
     @AppStorage("edgeMargin") private var edgeMargin = 0
     @AppStorage("showLatency") private var showLatency = true
+    @AppStorage(RemoteSession.useHEVCKey) private var useHEVC = true
     @AppStorage(KeyCaptureView.zenkakuKey) private var zenkakuAsIME = false
     /// 右下のボタンで出すキーボード（iPhoneのキーボードか、アプリのキーボード）
     @AppStorage("keyboardKind") private var keyboardKind = InputMode.overlay
@@ -344,6 +345,7 @@ struct ContentView: View {
                 Text("接続先: \(hostDescription(active))")
             }
             Text(screenDescription)
+            Text("映像: \(session.codec == "hevc" ? "H.265" : "H.264")")
             Toggle("PCの音を鳴らす", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
             Toggle("他のアプリの音と混ぜる", systemImage: "speaker.badge.exclamationmark", isOn: $audioMix)
             Picker("入力", selection: $inputMode) {
@@ -374,6 +376,7 @@ struct ContentView: View {
                 }
                 Toggle("アプリのキーボードを下端に固定する", isOn: $keyboardAtBottom)
                 Toggle("半開きのとき、下にキーボードを出す", isOn: $dockWhenHalfOpen)
+                Toggle("H.265 を使う（通信量が少ない。次の接続から）", isOn: $useHEVC)
                 Toggle("遅れを画面に出す", isOn: $showLatency)
                 Picker("画面の端の余白", selection: $edgeMargin) {
                     Text("なし").tag(0)
