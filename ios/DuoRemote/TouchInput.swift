@@ -21,6 +21,7 @@ enum PointerMode: String, CaseIterable, Identifiable {
 ///
 /// どちらの方式でも共通:
 /// - 2本指でタップ＝右クリック、3本指でタップ＝中ボタンのクリック
+/// - 3本指でスワイプ＝左右: アプリの切り替え（Alt+Tab）、上: タスク ビュー（Win+Tab）、下: デスクトップを表示（Win+D）
 /// - 2本指で動かす＝スクロール（指を離したあとも、少し流れ続ける）
 /// - ピンチ＝映像の拡大・縮小（PCには送らない）。拡大中に2本指で動かすと、映像が動く
 ///
@@ -40,6 +41,8 @@ final class TouchInput: NSObject, UIGestureRecognizerDelegate, UIPointerInteract
     /// 2本指を、スクロールかピンチかに決めるまでの動きの大きさ
     static let scrollThreshold: CGFloat = 12
     static let pinchThreshold: CGFloat = 0.12
+    /// 3本指のスワイプとみなす、指を離したときの移動の大きさ（ポイント）
+    static let swipeDistance: CGFloat = 60
 
     var mode: PointerMode = .direct
     var send: @MainActor ([String: Any]) -> Void = { _ in }
@@ -73,6 +76,14 @@ final class TouchInput: NSObject, UIGestureRecognizerDelegate, UIPointerInteract
         twoFingerTap.numberOfTouchesRequired = 2
         let threeFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleThreeFingerTap))
         threeFingerTap.numberOfTouchesRequired = 3
+        // 3本指のスワイプは、指を離したときに方向を決める。指で触れたものだけ（マウスは対象外）
+        let threeFingerSwipe = UIPanGestureRecognizer(target: self, action: #selector(handleThreeFingerSwipe))
+        threeFingerSwipe.minimumNumberOfTouches = 3
+        threeFingerSwipe.maximumNumberOfTouches = 3
+        threeFingerSwipe.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        // 3本指のタップは、スワイプが始まらないまま指が離れたときだけ成り立つ。
+        // パンは、動き出さないまま指が離れるとすぐに failed になるので、タップはほとんど遅れない
+        threeFingerTap.require(toFail: threeFingerSwipe)
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress))
         // マウスで押し続けたときは、右クリックにしない（右クリックは、マウスの右ボタンで行う）
         longPress.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
@@ -100,7 +111,7 @@ final class TouchInput: NSObject, UIGestureRecognizerDelegate, UIPointerInteract
         // ボタンを押さずに動かしたとき（カーソルが追いかける。マウスのときだけ呼ばれる）
         let hover = UIHoverGestureRecognizer(target: self, action: #selector(handleHover))
 
-        for recognizer in [tap, twoFingerTap, threeFingerTap, longPress, drag, scroll, pinch, rightClick, pointerScroll, hover] {
+        for recognizer in [tap, twoFingerTap, threeFingerTap, threeFingerSwipe, longPress, drag, scroll, pinch, rightClick, pointerScroll, hover] {
             view.addGestureRecognizer(recognizer)
         }
         // iPhoneのカーソルは隠す（映像の中に、PCのカーソルが映るので、二重にならないように）
@@ -139,6 +150,15 @@ final class TouchInput: NSObject, UIGestureRecognizerDelegate, UIPointerInteract
         default:
             break
         }
+    }
+
+    /// 3本指が触れているときは、2本指のスクロールとピンチを始めない
+    /// （3本の指は同時に着かないことが多く、先に2本が動き出して、スクロールやピンチと取り違えるのを防ぐ）
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === scrollRecognizer || gestureRecognizer === pinchRecognizer {
+            return gestureRecognizer.numberOfTouches < 3
+        }
+        return true
     }
 
     /// スクロールとピンチは、同時に受け取ってから、どちらかに決める
@@ -196,6 +216,32 @@ final class TouchInput: NSObject, UIGestureRecognizerDelegate, UIPointerInteract
     @objc private func handleThreeFingerTap(_ recognizer: UITapGestureRecognizer) {
         guard recognizer.state == .ended else { return }
         clickAtTouch("middle", recognizer)
+    }
+
+    /// 3本指のスワイプ。指を離したときに、移動が 60pt 以上なら、縦と横の大きい方で方向を決める。
+    /// 左右はどちらも Alt+Tab（直前のウィンドウとの行き来）にする。右を Alt+Shift+Tab にすると、
+    /// いちばん古いウィンドウに飛んでしまい、どれが出るか分かりにくいため
+    @objc private func handleThreeFingerSwipe(_ recognizer: UIPanGestureRecognizer) {
+        switch recognizer.state {
+        case .began:
+            lastTap = nil
+            stopInertia()
+        case .ended:
+            let t = recognizer.translation(in: view)
+            guard hypot(t.x, t.y) >= Self.swipeDistance else { return }
+            let shortcut: Shortcut
+            if abs(t.x) > abs(t.y) {
+                shortcut = .appSwitch
+            } else if t.y < 0 {
+                shortcut = .taskView
+            } else {
+                shortcut = .showDesktop
+            }
+            haptics.impactOccurred()
+            shortcut.perform(send: send)
+        default:
+            break
+        }
     }
 
     private func clickAtTouch(_ button: String, _ recognizer: UIGestureRecognizer) {
