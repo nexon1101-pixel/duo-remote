@@ -211,10 +211,13 @@ struct BottomKeyboard: View {
             // 幅は、渡された数字ではなく、実際に使える幅に合わせる（広すぎて、左右のキーが画面の外に出ないように）。
             // 高さは、その幅と、キーの縦横の比で決まる。高さの上限を超えるときは、幅を狭めて、真ん中に置く
             if showKeys {
-                OverlayKeysView(session: session, layout: layout)
-                    .aspectRatio(1 / ratio, contentMode: .fit)
-                    .frame(maxWidth: .infinity)
+                // 高さの上限は、縦横比で縮める前に決める。frame(maxHeight:) を後に付けると、上限いっぱいまで広がって、
+                // キーの上下に余白ができてしまう
+                Color.clear
                     .frame(maxHeight: maxKeysHeight)
+                    .aspectRatio(1 / ratio, contentMode: .fit)
+                    .overlay { OverlayKeysView(session: session, layout: layout) }
+                    .frame(maxWidth: .infinity)
                     .padding(.horizontal, 6)
             }
             if showPad {
