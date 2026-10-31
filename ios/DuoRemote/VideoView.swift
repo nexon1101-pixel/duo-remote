@@ -45,11 +45,25 @@ final class VideoContainerView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         touchInput.install(on: self)
+        observeZoom()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         touchInput.install(on: self)
+        observeZoom()
+    }
+
+    /// トラックパッドのピンチ（映像の拡大・縮小の設定のとき）から、拡大・縮小を頼まれる
+    private func observeZoom() {
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleZoomRequest(_:)), name: .duoZoomVideo, object: nil
+        )
+    }
+
+    @objc private func handleZoomRequest(_ note: Notification) {
+        guard let factor = note.userInfo?["factor"] as? CGFloat, factor > 0 else { return }
+        zoom(by: factor, around: CGPoint(x: bounds.midX, y: bounds.midY))
     }
 
     func attach(_ layer: CALayer) {
@@ -147,4 +161,9 @@ final class VideoContainerView: UIView {
         touchInput.stopInertia()
         super.touchesBegan(touches, with: event)
     }
+}
+
+extension Notification.Name {
+    /// 映像を、拡大・縮小する頼み（userInfo の "factor": 今の大きさに掛ける倍率）。トラックパッドのピンチが送る
+    static let duoZoomVideo = Notification.Name("duoZoomVideo")
 }

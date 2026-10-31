@@ -25,6 +25,8 @@ struct ContentView: View {
     @AppStorage("showLatency") private var showLatency = true
     @AppStorage(RemoteSession.useHEVCKey) private var useHEVC = true
     @AppStorage(RemoteSession.autoQualityKey) private var autoQuality = true
+    /// トラックパッドのピンチ（video: 映像の拡大・縮小、pc: PC に Ctrl+ホイールを送る）
+    @AppStorage(TrackpadCoordinator.pinchModeKey) private var trackpadPinch = "video"
     @AppStorage(KeyCaptureView.zenkakuKey) private var zenkakuAsIME = false
     /// 右下のボタンで出すキーボード（iPhoneのキーボードか、アプリのキーボード）
     @AppStorage("keyboardKind") private var keyboardKind = InputMode.overlay
@@ -183,7 +185,6 @@ struct ContentView: View {
                     if inputMode == .overlay && keyboardAtBottom {
                         BottomKeyboard(
                             session: session,
-                            width: fullSize.width,
                             maxKeysHeight: fullSize.height * 0.45,
                             bottomInset: safeInsets.bottom,
                             onUndock: { keyboardAtBottom = false }
@@ -437,6 +438,10 @@ struct ContentView: View {
                     }
                 }
                 Toggle("トラックパッドを出す（重ねて出す形）", isOn: $showTrackpad)
+                Picker("トラックパッドのピンチ", selection: $trackpadPinch) {
+                    Text("映像を拡大・縮小（iPhone の中だけ）").tag("video")
+                    Text("PC に Ctrl+ホイールを送る（PC のアプリの拡大・縮小）").tag("pc")
+                }
                 Picker("キーボードとトラックパッドの濃さ", selection: $overlayOpacity) {
                     Text("100%").tag(1.0)
                     Text("80%").tag(0.8)

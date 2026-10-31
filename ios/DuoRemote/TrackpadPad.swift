@@ -163,13 +163,21 @@ private struct TrackpadSurface: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: UIView, coordinator: TrackpadCoordinator) {
-        coordinator.stopInertia()
+        coordinator.releaseHeld()
     }
 }
 
 /// パッドの上のタッチを、マウス操作に変えて送る。動かし方は TouchInput のトラックパッドの方式に合わせる
 @MainActor
-final class TrackpadCoordinator: NSObject {
+final class TrackpadCoordinator: NSObject, UIGestureRecognizerDelegate {
+    /// ピンチの使い方（設定）。video: 映像の拡大・縮小（iPhone の中だけ）、pc: PC に Ctrl+ホイールを送る
+    static let pinchModeKey = "trackpadPinchMode"
+    /// pc のとき、ホイール1目盛りにする、ピンチの変わり具合（1.12 倍ごと）
+    private static let pinchStep: CGFloat = 1.12
+    /// ピンチとして動き出す、ピンチの変わり具合（これより小さいうちは、スクロールとして扱う）
+    private static let pinchStart: CGFloat = 0.06
+    private static let vkControl = 0x11
+
     /// パッドの幅のこの倍数を、「表示している範囲の幅」1として割合にする。
     /// 2.5 にすると、ゆっくり動かしたとき、パッドの端から端で画面の幅の0.4ほど動く
     static let referenceWidthFactor: CGFloat = 2.5
@@ -199,6 +207,14 @@ final class TrackpadCoordinator: NSObject {
     private var lastScrollTranslation = CGPoint.zero
     private var scrollSent = CGPoint.zero // 送り済みのホイール量（wheelSubdivisions 単位）
     private var inertia: Task<Void, Never>?
+    private var scrollRecognizer: UIPanGestureRecognizer?
+    private var pinchRecognizer: UIPinchGestureRecognizer?
+    /// ピンチの途中か。動き出したあとは、2本指のスクロールを送らない
+    private var pinching = false
+    /// 前に反映した、ピンチの拡大率
+    private var pinchApplied: CGFloat = 1
+    /// pc のとき、Ctrl を押しているか（途中で消えたときに、離すため）
+    private var controlDown = false
 
     func install(on view: UIView) {
         self.view = view
@@ -216,9 +232,80 @@ final class TrackpadCoordinator: NSObject {
         scroll.minimumNumberOfTouches = 2
         scroll.maximumNumberOfTouches = 2
 
-        for recognizer in [tap, twoFingerTap, longPress, move, scroll] {
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch))
+        // スクロールとピンチは、同時に受け取ってから、動きの大きい方に決める
+        scroll.delegate = self
+        pinch.delegate = self
+        scrollRecognizer = scroll
+        pinchRecognizer = pinch
+
+        for recognizer in [tap, twoFingerTap, longPress, move, scroll, pinch] {
             view.addGestureRecognizer(recognizer)
         }
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool {
+        (gestureRecognizer === scrollRecognizer && other === pinchRecognizer)
+            || (gestureRecognizer === pinchRecognizer && other === scrollRecognizer)
+    }
+
+    // MARK: - ピンチ
+
+    @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
+        switch recognizer.state {
+        case .began:
+            pinching = false
+            pinchApplied = 1
+        case .changed:
+            if !pinching {
+                guard abs(recognizer.scale - 1) > Self.pinchStart else { return }
+                pinching = true
+                stopInertia()
+            }
+            let mode = UserDefaults.standard.string(forKey: Self.pinchModeKey) ?? "video"
+            let ratio = recognizer.scale / pinchApplied
+            if mode == "pc" {
+                // 1.12 倍ごとに、ホイール1目盛り。広げると拡大（上へ）、狭めると縮小（下へ）
+                if ratio >= Self.pinchStep {
+                    wheelWithControl(up: true)
+                    pinchApplied = recognizer.scale
+                } else if ratio <= 1 / Self.pinchStep {
+                    wheelWithControl(up: false)
+                    pinchApplied = recognizer.scale
+                }
+            } else {
+                pinchApplied = recognizer.scale
+                NotificationCenter.default.post(name: .duoZoomVideo, object: nil, userInfo: ["factor": ratio])
+            }
+        default:
+            // 終わった・取り消された。Ctrl を押していれば、離す
+            pinching = false
+            releaseControl()
+        }
+    }
+
+    /// Ctrl を押したまま、ホイールを1目盛り回す（PC のアプリの拡大・縮小）
+    private func wheelWithControl(up: Bool) {
+        if !controlDown {
+            controlDown = true
+            send(["t": "key", "vk": Self.vkControl, "d": "down"])
+        }
+        send(["t": "scroll", "dx": 0.0, "dy": up ? 1.0 : -1.0])
+    }
+
+    private func releaseControl() {
+        guard controlDown else { return }
+        controlDown = false
+        send(["t": "key", "vk": Self.vkControl, "d": "up"])
+    }
+
+    /// 消えるときに、押したままのものを離す
+    func releaseHeld() {
+        stopInertia()
+        releaseControl()
     }
 
     // MARK: - タップと長押し
@@ -311,8 +398,10 @@ final class TrackpadCoordinator: NSObject {
             lastScrollTranslation = .zero
         case .changed:
             lastScrollTranslation = t
+            guard !pinching else { return }
             scroll(total: t)
         case .ended:
+            guard !pinching else { return }
             startInertia(from: t, velocity: recognizer.velocity(in: view))
         default:
             break
