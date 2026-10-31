@@ -220,7 +220,8 @@ struct ContentView: View {
                             padHeight: min(max(fullSize.height * 0.18, 110), 170),
                             maxKeysHeight: fullSize.height * (bottomPad ? 0.35 : 0.45),
                             bottomInset: safeInsets.bottom,
-                            onUndock: { keyboardAtBottom = false }
+                            onUndock: { keyboardAtBottom = false },
+                            onUndockPad: { padAtBottom = false }
                         )
                         .transition(.move(edge: .bottom))
                     }

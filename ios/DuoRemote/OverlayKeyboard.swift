@@ -165,6 +165,8 @@ struct BottomKeyboard: View {
     let bottomInset: CGFloat
     /// 浮かせるボタンを押したとき
     var onUndock: () -> Void
+    /// トラックパッドを浮かせるボタンを押したとき
+    var onUndockPad: () -> Void = {}
 
     @AppStorage(OverlayKeyboard.layoutKey) private var layout = OverlayKeyboardLayout.us
     @AppStorage(OverlayKeyboard.opacityKey) private var opacity = 0.8
@@ -209,6 +211,19 @@ struct BottomKeyboard: View {
             if showPad {
                 TrackpadPad(send: session.send, zones: .sides)
                     .frame(height: padHeight)
+                    .overlay(alignment: .topTrailing) {
+                        // 浮かせて、動かせるようにするボタン
+                        Button(action: onUndockPad) {
+                            Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 26, height: 26)
+                                .background(Color.white.opacity(0.15), in: Circle())
+                                .frame(width: 40, height: 40)
+                                .contentShape(Rectangle())
+                        }
+                        .accessibilityLabel("トラックパッドをフロートにする")
+                    }
                     .padding(.horizontal, 6)
                     .padding(.top, showKeys ? 6 : 8)
             }

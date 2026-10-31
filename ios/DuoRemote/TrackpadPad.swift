@@ -7,6 +7,7 @@ import UIKit
 /// - 1本指で動かす＝カーソルを動かす（速く動かすほど、多めに動く）
 /// - 1本指でタップ＝左クリック、2本指でタップ＝右クリック
 /// - 2本指で動かす＝スクロール（指を離したあとも、少し流れ続ける）
+/// - 右端の細い帯を、1本指で上下になぞる＝スクロール
 /// - 長押ししてから動かす＝左ボタンを押したまま動かす（ドラッグ）
 /// - クリックの場所（文字は出さず、薄い線で分ける）。押している間だけ、ボタンを押した状態にする。
 ///   押したまま、パッドを別の指で動かすと、ドラッグになる。場所は、使い方で変える（ClickZoneLayout）
@@ -24,6 +25,8 @@ struct TrackpadPad: View {
     /// 左右の端に置くときの、パッド全体に対する幅の割合と、幅の下限（ポイント）
     private static let sideFraction: CGFloat = 0.2
     private static let sideMinWidth: CGFloat = 56
+    /// スクロールの帯の幅（ポイント）
+    private static let scrollStripWidth: CGFloat = 40
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -61,12 +64,18 @@ struct TrackpadPad: View {
 
     /// カーソルを動かす部分（アイコンと、タッチを受け取る面）
     private var movePad: some View {
-        ZStack {
-            Image(systemName: "rectangle.and.hand.point.up.left")
-                .font(.system(size: 44, weight: .light))
-                .foregroundStyle(.white.opacity(0.18))
-                .allowsHitTesting(false)
-            TrackpadSurface(send: send)
+        HStack(spacing: 0) {
+            ZStack {
+                Image(systemName: "rectangle.and.hand.point.up.left")
+                    .font(.system(size: 44, weight: .light))
+                    .foregroundStyle(.white.opacity(0.18))
+                    .allowsHitTesting(false)
+                TrackpadSurface(send: send)
+            }
+            // 右端は、1本指でスクロールする細い帯。2本指のスクロールが難しい、小さいパッドでも使える
+            divider(vertical: true)
+            ScrollStrip(send: send)
+                .frame(width: Self.scrollStripWidth)
         }
     }
 
@@ -74,6 +83,51 @@ struct TrackpadPad: View {
         Rectangle()
             .fill(Color.white.opacity(0.14))
             .frame(width: vertical ? 1 : nil, height: vertical ? nil : 1)
+    }
+}
+
+/// パッドの右端の、1本指でスクロールする帯。上下になぞると、ホイールを回す。
+/// 向きは、2本指のスクロールと同じ（指を下に動かすと、画面が上へ動く）
+private struct ScrollStrip: View {
+    let send: @MainActor ([String: Any]) -> Void
+
+    @State private var sent: CGFloat = 0 // 送り済みのホイール量（wheelSubdivisions 単位）
+    @State private var active = false
+
+    /// 指の動きに対する、スクロール量の倍率（帯が短いので、2本指より少し多めにする）
+    private static let gain: CGFloat = 1.5
+
+    var body: some View {
+        ZStack {
+            (active ? Color.accentColor.opacity(0.2) : Color.white.opacity(0.04))
+            VStack(spacing: 10) {
+                Image(systemName: "chevron.up")
+                Image(systemName: "arrow.up.and.down")
+                Image(systemName: "chevron.down")
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(active ? Color.accentColor : Color.white.opacity(0.3))
+            .allowsHitTesting(false)
+        }
+        .animation(.easeOut(duration: 0.12), value: active)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    active = true
+                    let scale = TouchInput.wheelSubdivisions / TouchInput.pointsPerWheelStep * Self.gain
+                    let total = (value.translation.height * scale).rounded(.towardZero)
+                    let delta = total - sent
+                    guard delta != 0 else { return }
+                    sent = total
+                    send(["t": "scroll", "dx": 0.0, "dy": Double(delta / TouchInput.wheelSubdivisions)])
+                }
+                .onEnded { _ in
+                    active = false
+                    sent = 0
+                }
+        )
+        .accessibilityLabel("スクロール")
     }
 }
 
