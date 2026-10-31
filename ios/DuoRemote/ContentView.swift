@@ -24,6 +24,7 @@ struct ContentView: View {
     @AppStorage("edgeMargin") private var edgeMargin = 0
     @AppStorage("showLatency") private var showLatency = true
     @AppStorage(RemoteSession.useHEVCKey) private var useHEVC = true
+    @AppStorage(RemoteSession.autoQualityKey) private var autoQuality = true
     @AppStorage(KeyCaptureView.zenkakuKey) private var zenkakuAsIME = false
     /// 右下のボタンで出すキーボード（iPhoneのキーボードか、アプリのキーボード）
     @AppStorage("keyboardKind") private var keyboardKind = InputMode.overlay
@@ -345,7 +346,8 @@ struct ContentView: View {
                 Text("接続先: \(hostDescription(active))")
             }
             Text(screenDescription)
-            Text("映像: \(session.codec == "hevc" ? "H.265" : "H.264")")
+            Text("映像: \(session.codec == "hevc" ? "H.265" : "H.264")"
+                 + (session.autoLevel.map { "、画質: 自動で\($0.shortLabel)" } ?? ""))
             Toggle("PCの音を鳴らす", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
             Toggle("他のアプリの音と混ぜる", systemImage: "speaker.badge.exclamationmark", isOn: $audioMix)
             Picker("入力", selection: $inputMode) {
@@ -376,6 +378,7 @@ struct ContentView: View {
                 }
                 Toggle("アプリのキーボードを下端に固定する", isOn: $keyboardAtBottom)
                 Toggle("半開きのとき、下にキーボードを出す", isOn: $dockWhenHalfOpen)
+                Toggle("画質を通信に合わせて自動で変える（選んだ画質より上にはしない。次の接続から）", isOn: $autoQuality)
                 Toggle("H.265 を使う（通信量が少ない。次の接続から）", isOn: $useHEVC)
                 Toggle("遅れを画面に出す", isOn: $showLatency)
                 Picker("画面の端の余白", selection: $edgeMargin) {

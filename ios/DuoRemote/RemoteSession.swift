@@ -40,6 +40,14 @@ enum VideoQuality: String, CaseIterable, Identifiable {
         }
     }
 
+    var shortLabel: String {
+        switch self {
+        case .high: "高"
+        case .medium: "中"
+        case .low: "低"
+        }
+    }
+
     /// hello で送る値
     var helloFields: [String: Any] {
         switch self {
@@ -127,6 +135,11 @@ final class RemoteSession: ObservableObject {
     /// 最後に選んだウィンドウの大きさの合わせ先。つなぎ直したときに、同じ表示に戻すため
     private var lastDisplay: DisplayRequest?
     private var quality = VideoQuality.high
+    /// 画質を自動で変えるとき、その決まりと、今の画質。自動でないときは nil
+    private var autoQuality: AutoQuality?
+    @Published private(set) var autoLevel: VideoQuality?
+    /// 設定「画質を通信に合わせて自動で変える」
+    static let autoQualityKey = "autoQuality"
     /// アプリが裏に回ったので、接続を閉じている。前に戻ったら、つなぎ直す
     private var suspended = false
 
@@ -157,6 +170,8 @@ final class RemoteSession: ObservableObject {
         disconnect()
         errorMessage = nil
         self.quality = quality
+        autoQuality = nil
+        autoLevel = nil
 
         var list: [String] = []
         for host in hosts where !host.isEmpty && !list.contains(host) {
@@ -202,7 +217,8 @@ final class RemoteSession: ObservableObject {
         task.resume()
 
         var hello: [String: Any] = ["t": "hello", "v": 1, "token": target.token]
-        hello.merge(quality.helloFields) { _, new in new }
+        // つなぎ直しのときは、自動で下げた画質のまま始める
+        hello.merge((autoQuality?.current ?? quality).helloFields) { _, new in new }
         // H.265 は、同じ画質で通信量が H.264 の半分くらい。この端末が速く読めて、設定でオフにしていなければ、先に頼む
         let useHEVC = UserDefaults.standard.object(forKey: Self.useHEVCKey) as? Bool ?? true
         hello["codecs"] = (useHEVC && H264Renderer.supportsHEVC) ? ["hevc", "h264"] : ["h264"]
@@ -304,6 +320,7 @@ final class RemoteSession: ObservableObject {
     func setQuality(_ quality: VideoQuality) {
         guard quality != self.quality else { return }
         self.quality = quality
+        autoQuality = nil // 選び直した画質から、自動の判断をやり直す
         guard state == .connected, target != nil else { return }
         close(code: .goingAway)
         reconnectAttempts = 0
@@ -578,6 +595,15 @@ final class RemoteSession: ObservableObject {
 
         switch type {
         case "welcome":
+            let auto = UserDefaults.standard.object(forKey: Self.autoQualityKey) as? Bool ?? true
+            if auto {
+                // つなぎ直しのときは、それまでの画質から続ける
+                autoQuality = AutoQuality(ceiling: quality, current: autoQuality?.current)
+                autoLevel = autoQuality?.current
+            } else {
+                autoQuality = nil
+                autoLevel = nil
+            }
             renderer.setCodec(json["codec"] as? String ?? "h264")
             codec = json["codec"] as? String ?? "h264"
             if let w = json["w"] as? Int, let h = json["h"] as? Int {
@@ -618,6 +644,17 @@ final class RemoteSession: ObservableObject {
                 latencyMs = Int(Date().timeIntervalSince(sent) * 1000)
                 // これより前の ping は、返事が来なかったものとして忘れる
                 pendingPings = pendingPings.filter { $0.key > n }
+            }
+        case "stats":
+            guard var auto = autoQuality, let dropped = json["dropped"] as? Int else { break }
+            let next = auto.update(dropped: dropped, latencyMs: latencyMs)
+            autoQuality = auto // 変えなかったときも、数えた状態（続けて悪かった回数など）を残す
+            if let next {
+                autoLevel = next
+                var message: [String: Any] = ["t": "quality"]
+                message.merge(next.helloFields) { _, new in new }
+                send(message)
+                show(notice: "通信に合わせて、画質を\(next.shortLabel)にしました")
             }
         case "audio_state":
             if json["on"] as? Bool == true, audioWanted,

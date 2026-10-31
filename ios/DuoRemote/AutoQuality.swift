@@ -19,7 +19,10 @@ struct AutoQuality {
 
     init(ceiling: VideoQuality, current: VideoQuality? = nil) {
         self.ceiling = ceiling
-        self.current = current ?? ceiling
+        // 利用者が選んだ画質より上からは始めない
+        let ceilingIndex = Self.levels.firstIndex(of: ceiling) ?? 0
+        let currentIndex = current.flatMap { Self.levels.firstIndex(of: $0) } ?? ceilingIndex
+        self.current = Self.levels[max(currentIndex, ceilingIndex)]
     }
 
     /// stats が届いたときに呼ぶ。画質を変えるときだけ、新しい画質を返す
