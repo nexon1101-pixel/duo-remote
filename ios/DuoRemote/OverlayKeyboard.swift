@@ -312,6 +312,17 @@ final class OverlayKeysUIView: UIView {
 
     // MARK: 描く
 
+    /// キーの役割で決める薄い色。ふつうのキーは nil
+    private static func roleTint(of key: OverlayKey) -> UIColor? {
+        switch key.label {
+        case "Enter": UIColor.systemBlue.withAlphaComponent(0.45)
+        case "Esc", "BS", "Del": UIColor.systemRed.withAlphaComponent(0.30)
+        case "←", "↑", "↓", "→", "Home", "End", "PgUp", "PgDn", "Tab":
+            UIColor.systemTeal.withAlphaComponent(0.28)
+        default: nil
+        }
+    }
+
     override func draw(_ rect: CGRect) {
         let rows = layout.rows
         let fn = isActive(.fn)
@@ -328,6 +339,8 @@ final class OverlayKeysUIView: UIView {
             let box = f.rect.insetBy(dx: Self.gap / 2, dy: Self.gap / 2)
             let state = key.modifier.flatMap { modifiers[$0] }
             let fill: UIColor
+            // 役割ごとの薄い色。Enter は青、Esc・BS・Del は赤、矢印などは青緑
+            let roleTint: UIColor? = Self.roleTint(of: key)
             if pressed.contains("\(f.row),\(f.col)") {
                 fill = UIColor(white: 1, alpha: 0.5)
             } else if key.ime && imeOn == true {
@@ -336,6 +349,13 @@ final class OverlayKeysUIView: UIView {
                 fill = .systemBlue
             } else if state != nil {
                 fill = UIColor.systemBlue.withAlphaComponent(0.6)
+            } else if fn && key.fn != nil {
+                // Fn を押している間に替わるキーは、オレンジにして、替わったことが分かるようにする
+                fill = UIColor.systemOrange.withAlphaComponent(0.4)
+            } else if key.ime {
+                fill = UIColor.systemPurple.withAlphaComponent(0.35)
+            } else if let roleTint {
+                fill = roleTint
             } else if key.modifier != nil || key.width > 1 {
                 fill = UIColor(white: 1, alpha: 0.09)
             } else {
@@ -346,7 +366,12 @@ final class OverlayKeysUIView: UIView {
             UIColor(white: 0, alpha: 0.25).setFill()
             UIBezierPath(roundedRect: box.offsetBy(dx: 0, dy: 1), cornerRadius: radius).fill()
             fill.setFill()
-            UIBezierPath(roundedRect: box, cornerRadius: radius).fill()
+            let keyPath = UIBezierPath(roundedRect: box, cornerRadius: radius)
+            keyPath.fill()
+            // 縁に細い明るい線を引いて、ガラスの端のように見せる
+            UIColor(white: 1, alpha: 0.10).setStroke()
+            keyPath.lineWidth = 0.5
+            keyPath.stroke()
 
             let main: String
             var small: String?
