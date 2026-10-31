@@ -18,12 +18,15 @@ enum ViewMode: Equatable {
     case desktop
     /// ウィンドウ1つだけ
     case window
+    /// 主モニター以外も含む、モニター1つ全体
+    case monitor
 }
 
 /// つなぎ直したときに、同じ表示に戻すため、最後に頼んだ表示を覚えておく
 private enum DisplayRequest {
     case desktop(fit: CGSize?)
     case window(RemoteWindow, fit: CGSize?, toVirtual: Bool)
+    case monitor(RemoteMonitor)
 }
 
 /// 映像の画質。外（4G/5G）では低くすると、遅れがたまりにくい。
@@ -81,6 +84,11 @@ final class RemoteSession: ObservableObject {
     /// 表示しているウィンドウ。nilなら画面全体
     @Published private(set) var currentWindow: RemoteWindow?
     @Published private(set) var viewMode: ViewMode = .screen
+    /// PCのモニターの一覧。requestMonitors() で読み直す（MonitorPicker.swift）
+    @Published var monitors: [RemoteMonitor] = []
+    @Published var isLoadingMonitors = false
+    /// 表示しているモニター。viewMode が .monitor のときだけ入る
+    @Published private(set) var currentMonitor: RemoteMonitor?
     /// PCに、仮想ディスプレイのドライバーが入っている
     @Published private(set) var virtualAvailable = false
     /// PCのIMEがオンか。サーバーが知らせてこないときはnil
@@ -99,7 +107,10 @@ final class RemoteSession: ObservableObject {
     private var audioWanted = false
     private var audioMix = false
 
-    private var task: URLSessionWebSocketTask?
+    /// ファイルの受け渡し（FileTransfer.swift）
+    private(set) lazy var fileTransfer = FileTransfer(session: self)
+
+    private(set) var task: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
 
     /// つなぎ直すときに使う、接続先
@@ -198,6 +209,13 @@ final class RemoteSession: ObservableObject {
     private nonisolated static func handleBinary(_ data: Data, video: H264Renderer, audio: AudioPlayer) {
         guard data.count > 5, let flags = data.first else { return }
         let body = data.dropFirst(5)
+        if flags == fileFrameFlag {
+            // ファイルの中身（フラグ 0x04 + id(4、ビッグエンディアン) + 中身）。受信のスレッドで書く
+            let start = data.startIndex
+            let id = data[start + 1..<start + 5].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+            FileTransfer.receiver.append(id: id, data: Data(body))
+            return
+        }
         if flags & 0x02 != 0 {
             audio.enqueue(Data(body))
             return
@@ -268,6 +286,7 @@ final class RemoteSession: ObservableObject {
         reconnectAttempts = 0
         suspended = false
         currentWindow = nil
+        currentMonitor = nil
         viewMode = .screen
         lastDisplay = nil
         close(code: .normalClosure)
@@ -285,6 +304,7 @@ final class RemoteSession: ObservableObject {
         latencyMs = nil
         task?.cancel(with: code, reason: nil)
         task = nil
+        fileTransfer.cancelAll()
         renderer.reset()
         audio.stop()
         audioOn = false
@@ -321,6 +341,7 @@ final class RemoteSession: ObservableObject {
         target = nil
         reconnectAttempts = 0
         currentWindow = nil
+        currentMonitor = nil
         viewMode = .screen
         lastDisplay = nil
         state = .disconnected
@@ -342,6 +363,8 @@ final class RemoteSession: ObservableObject {
         imeOn = nil
         windows = []
         isLoadingWindows = false
+        monitors = []
+        isLoadingMonitors = false
         noticeTask?.cancel()
         notice = nil
     }
@@ -389,9 +412,10 @@ final class RemoteSession: ObservableObject {
         send(["t": "clip_set", "s": text])
     }
 
-    /// PCのクリップボードの文字を、もらう（届いたら、iPhoneのクリップボードに入れる）
+    /// PCのクリップボードの中身を、もらう。文字なら clip が返り、iPhoneのクリップボードに入れる。
+    /// ファイルや画像なら、file_begin などで届く（FileTransfer.swift）
     func requestClipboard() {
-        send(["t": "clip_get"])
+        send(["t": "clip_pull"])
     }
 
     func setIME(_ on: Bool) {
@@ -453,6 +477,12 @@ final class RemoteSession: ObservableObject {
         send(message)
     }
 
+    /// モニター1つ全体を表示する
+    func showMonitor(_ monitor: RemoteMonitor) {
+        lastDisplay = .monitor(monitor)
+        send(["t": "mode", "mode": "monitor", "id": monitor.id])
+    }
+
     func showScreen() {
         lastDisplay = nil
         send(["t": "mode", "mode": "screen"])
@@ -475,7 +505,7 @@ final class RemoteSession: ObservableObject {
             showDesktop(fit: fit)
         case .window(let window, let oldFit, let toVirtual)?:
             if oldFit != nil { showWindow(window, fit: fit, toVirtual: toVirtual) }
-        case nil:
+        case .monitor?, nil:
             break
         }
     }
@@ -487,7 +517,7 @@ final class RemoteSession: ObservableObject {
         }
     }
 
-    private func show(notice text: String) {
+    func show(notice text: String) {
         notice = text
         noticeTask?.cancel()
         noticeTask = Task { [weak self] in
@@ -534,6 +564,8 @@ final class RemoteSession: ObservableObject {
                     showDesktop(fit: fit)
                 case .window(let window, let fit, let toVirtual)?:
                     showWindow(window, fit: fit, toVirtual: toVirtual)
+                case .monitor(let monitor)?:
+                    showMonitor(monitor)
                 case nil:
                     break
                 }
@@ -589,15 +621,29 @@ final class RemoteSession: ObservableObject {
                 if let id = json["id"] as? Int {
                     let title = json["title"] as? String ?? ""
                     currentWindow = windows.first { $0.id == id } ?? RemoteWindow(id: id, title: title, app: "")
+                    currentMonitor = nil
                     viewMode = .window
+                }
+            case "monitor":
+                if let id = json["id"] as? Int {
+                    currentWindow = nil
+                    currentMonitor = monitors.first { $0.id == id }
+                        ?? RemoteMonitor(id: id, name: json["name"] as? String ?? "モニター \(id)")
+                    viewMode = .monitor
                 }
             case "desktop":
                 currentWindow = nil
+                currentMonitor = nil
                 viewMode = .desktop
             default:
                 currentWindow = nil
+                currentMonitor = nil
                 viewMode = .screen
             }
+        case "monitors":
+            handleMonitors(json)
+        case "file_begin", "file_end", "file_saved":
+            fileTransfer.handleControl(type, json)
         case "notice":
             if let message = json["message"] as? String { show(notice: message) }
         case "brought":

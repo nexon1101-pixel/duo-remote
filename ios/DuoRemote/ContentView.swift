@@ -30,6 +30,11 @@ struct ContentView: View {
     @State private var safeInsets = EdgeInsets()
 
     @State private var showingWindows = false
+    @State private var showingMonitors = false
+    /// 写真・ファイルの選択画面を出すか、と、PC のクリップボードにも入れるか
+    @State private var showingPhotoPicker = false
+    @State private var showingFileImporter = false
+    @State private var sendToPCClipboard = false
     /// 画面全体の大きさ（ポイント。キーボードが出ていても変わらない）。ウィンドウの大きさを合わせるときに使う
     @State private var fullSize: CGSize = .zero
     @State private var refitTask: Task<Void, Never>?
@@ -236,6 +241,14 @@ struct ContentView: View {
         .sheet(isPresented: $showingWindows, onDismiss: { refocus += 1 }) {
             WindowPicker(fitSize: fitSize)
         }
+        .sheet(isPresented: $showingMonitors, onDismiss: { refocus += 1 }) {
+            MonitorPicker()
+        }
+        .fileSendPickers(
+            photosShown: $showingPhotoPicker,
+            filesShown: $showingFileImporter,
+            toClipboard: sendToPCClipboard
+        )
         .onAppear {
             inputMode = GCKeyboard.coalesced != nil ? .hardware : .touch
         }
@@ -331,6 +344,8 @@ struct ContentView: View {
                 Text("表示中: \(window.title)")
             } else if session.viewMode == .desktop {
                 Text("表示中: 仮想画面")
+            } else if session.viewMode == .monitor, let monitor = session.currentMonitor {
+                Text("表示中: \(monitor.name)")
             }
             Text(screenDescription)
             Toggle("PCの音を鳴らす", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
@@ -379,10 +394,31 @@ struct ContentView: View {
             Menu("クリップボード", systemImage: "doc.on.clipboard") {
                 Button("iPhone → PC", systemImage: "arrow.up.doc") { session.sendClipboard() }
                 Button("PC → iPhone", systemImage: "arrow.down.doc") { session.requestClipboard() }
+                Divider()
+                Button("写真を PC に送る", systemImage: "photo") {
+                    sendToPCClipboard = false
+                    showingPhotoPicker = true
+                }
+                Button("写真を PC のクリップボードに入れる", systemImage: "photo.on.rectangle") {
+                    sendToPCClipboard = true
+                    showingPhotoPicker = true
+                }
+                Button("ファイルを PC に送る", systemImage: "doc") {
+                    sendToPCClipboard = false
+                    showingFileImporter = true
+                }
+                Button("ファイルを PC のクリップボードに入れる", systemImage: "doc.on.clipboard") {
+                    sendToPCClipboard = true
+                    showingFileImporter = true
+                }
             }
             Button("ウィンドウを選ぶ", systemImage: "macwindow") {
                 session.requestWindows()
                 showingWindows = true
+            }
+            Button("モニターを選ぶ", systemImage: "display.2") {
+                session.requestMonitors()
+                showingMonitors = true
             }
             if session.virtualAvailable {
                 Button("仮想画面を表示", systemImage: "rectangle.on.rectangle") {
