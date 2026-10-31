@@ -483,9 +483,10 @@ final class RemoteSession: ObservableObject {
 
     private func requestAudio() {
         if audioWanted {
-            // 低画質のときは、音も軽くする（24000Hz、モノラル）
+            // 音は Opus で圧縮して受け取る（PCM の約 1.5Mbps が、約 0.1Mbps になる）。Opus は 48000Hz だけ。
+            // 低画質のときは、モノラルにして、さらに軽くする
             let low = quality == .low
-            send(["t": "audio", "on": true, "rate": low ? 24000 : 48000, "channels": low ? 1 : 2])
+            send(["t": "audio", "on": true, "codec": "opus", "rate": 48000, "channels": low ? 1 : 2])
         } else {
             send(["t": "audio", "on": false])
         }
@@ -621,7 +622,8 @@ final class RemoteSession: ObservableObject {
         case "audio_state":
             if json["on"] as? Bool == true, audioWanted,
                let rate = json["rate"] as? Int, let channels = json["channels"] as? Int {
-                audio.start(rate: rate, channels: channels, mixWithOthers: audioMix)
+                // 古いサーバーは codec を返さない（PCM で送ってくる）
+                audio.start(rate: rate, channels: channels, codec: json["codec"] as? String ?? "pcm", mixWithOthers: audioMix)
                 audioOn = true
             } else {
                 audio.stop()

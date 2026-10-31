@@ -1,6 +1,8 @@
 import AVFoundation
 
-/// PCから届いた音（PCM、符号つき16ビット、インターリーブ）を鳴らす。
+/// PCから届いた音を鳴らす。音の形は2つ。
+/// - pcm: 符号つき16ビット、インターリーブ
+/// - opus: Opus の1パケット（20ミリ秒、48000Hz）。AVAudioConverter で PCM に戻してから鳴らす
 ///
 /// 音の管理（AVAudioSession）は、音を鳴らしている間だけ使う。
 /// オンにすると、他のアプリの音（YouTube など）は止まる（mixWithOthers がオフのとき）。
@@ -16,12 +18,15 @@ final class AudioPlayer: @unchecked Sendable {
     private var engine: AVAudioEngine?
     private var node: AVAudioPlayerNode?
     private var format: AVAudioFormat?
+    /// Opus のとき、パケットを PCM に戻すもの
+    private var opusFormat: AVAudioFormat?
+    private var converter: AVAudioConverter?
     private var mixWithOthers = false
     private var queuedFrames = 0
     private var observers: [NSObjectProtocol] = []
 
     /// 鳴らし始める。すでに鳴らしていれば、やり直す
-    func start(rate: Int, channels: Int, mixWithOthers: Bool) {
+    func start(rate: Int, channels: Int, codec: String = "pcm", mixWithOthers: Bool) {
         queue.async { [self] in
             teardown()
             self.mixWithOthers = mixWithOthers
@@ -35,6 +40,20 @@ final class AudioPlayer: @unchecked Sendable {
                 return
             }
             self.format = format
+            if codec == "opus" {
+                var description = AudioStreamBasicDescription(
+                    mSampleRate: Double(rate), mFormatID: kAudioFormatOpus, mFormatFlags: 0,
+                    mBytesPerPacket: 0, mFramesPerPacket: 960, mBytesPerFrame: 0,
+                    mChannelsPerFrame: UInt32(channels), mBitsPerChannel: 0, mReserved: 0
+                )
+                guard let opus = AVAudioFormat(streamDescription: &description),
+                      let converter = AVAudioConverter(from: opus, to: format) else {
+                    fail("Opus の音を読めません")
+                    return
+                }
+                opusFormat = opus
+                self.converter = converter
+            }
             do {
                 try activateSession()
                 try startEngine()
@@ -47,26 +66,15 @@ final class AudioPlayer: @unchecked Sendable {
         }
     }
 
-    /// 届いた音（PCM）を、鳴らす列に足す。受信のスレッドから呼ばれる
+    /// 届いた音（PCM か、Opus の1パケット）を、鳴らす列に足す。受信のスレッドから呼ばれる
     func enqueue(_ data: Data) {
         queue.async { [self] in
             guard let format, let node, let engine, engine.isRunning else { return }
-            let channels = Int(format.channelCount)
-            let frames = data.count / (2 * channels)
-            guard frames > 0 else { return }
             // 追いつけないときは、新しい音を捨てる
             if Double(queuedFrames) > format.sampleRate * Self.maxQueuedSeconds { return }
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
-                  let out = buffer.floatChannelData else { return }
-            buffer.frameLength = AVAudioFrameCount(frames)
-            data.withUnsafeBytes { raw in
-                for ch in 0..<channels {
-                    for i in 0..<frames {
-                        let sample = raw.loadUnaligned(fromByteOffset: (i * channels + ch) * 2, as: Int16.self)
-                        out[ch][i] = Float(Int16(littleEndian: sample)) / 32768
-                    }
-                }
-            }
+            let decoded = converter != nil ? decodeOpus(data, to: format) : decodePCM(data, to: format)
+            guard let buffer = decoded, buffer.frameLength > 0 else { return }
+            let frames = Int(buffer.frameLength)
             queuedFrames += frames
             node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
                 self?.queue.async { self?.queuedFrames -= frames }
@@ -86,6 +94,52 @@ final class AudioPlayer: @unchecked Sendable {
     }
 
     // MARK: - 内部（queue の上で呼ぶ）
+
+    private func decodePCM(_ data: Data, to format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        let channels = Int(format.channelCount)
+        let frames = data.count / (2 * channels)
+        guard frames > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
+              let out = buffer.floatChannelData else { return nil }
+        buffer.frameLength = AVAudioFrameCount(frames)
+        data.withUnsafeBytes { raw in
+            for ch in 0..<channels {
+                for i in 0..<frames {
+                    let sample = raw.loadUnaligned(fromByteOffset: (i * channels + ch) * 2, as: Int16.self)
+                    out[ch][i] = Float(Int16(littleEndian: sample)) / 32768
+                }
+            }
+        }
+        return buffer
+    }
+
+    /// Opus の1パケットを、PCM に戻す
+    private func decodeOpus(_ data: Data, to format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        guard let converter, let opusFormat, !data.isEmpty else { return nil }
+        let packet = AVAudioCompressedBuffer(format: opusFormat, packetCapacity: 1, maximumPacketSize: data.count)
+        data.withUnsafeBytes { raw in
+            packet.data.copyMemory(from: raw.baseAddress!, byteCount: data.count)
+        }
+        packet.byteLength = UInt32(data.count)
+        packet.packetCount = 1
+        packet.packetDescriptions?[0] = AudioStreamPacketDescription(
+            mStartOffset: 0, mVariableFramesInPacket: 0, mDataByteSize: UInt32(data.count)
+        )
+        // 1パケットは 20 ミリ秒（48000Hz で 960 フレーム）。余裕をもって、その倍を用意する
+        guard let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1920) else { return nil }
+        var given = false
+        var error: NSError?
+        let status = converter.convert(to: out, error: &error) { _, inputStatus in
+            if given {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            given = true
+            inputStatus.pointee = .haveData
+            return packet
+        }
+        return status == .error ? nil : out
+    }
 
     private func activateSession() throws {
         let session = AVAudioSession.sharedInstance()
@@ -137,6 +191,8 @@ final class AudioPlayer: @unchecked Sendable {
         node = nil
         engine = nil
         format = nil
+        converter = nil
+        opusFormat = nil
         queuedFrames = 0
     }
 
