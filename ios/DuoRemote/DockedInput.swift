@@ -56,7 +56,7 @@ struct DockedInput: View {
                 // ノートパソコンのように、キーボードの下に、広いトラックパッド
                 VStack(spacing: Self.spacing) {
                     keyboard(width: keysWidth, height: keysHeight)
-                    TrackpadPad(send: session.send)
+                    TrackpadPad(send: session.send, zones: .sides)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else {
@@ -66,7 +66,7 @@ struct DockedInput: View {
                 let height = width * ratio
                 HStack(spacing: Self.spacing) {
                     keyboard(width: width, height: height)
-                    TrackpadPad(send: session.send)
+                    TrackpadPad(send: session.send, zones: .sides)
                         .frame(maxHeight: height + inset)
                 }
             }
@@ -75,7 +75,7 @@ struct DockedInput: View {
             let height = min(width * ratio * Self.maxStretch, max(size.height - inset, 1))
             keyboard(width: width, height: height)
         } else if showPad {
-            TrackpadPad(send: session.send)
+            TrackpadPad(send: session.send, zones: .sides)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }

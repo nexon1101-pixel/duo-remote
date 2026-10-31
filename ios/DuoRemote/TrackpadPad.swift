@@ -8,42 +8,81 @@ import UIKit
 /// - 1本指でタップ＝左クリック、2本指でタップ＝右クリック
 /// - 2本指で動かす＝スクロール（指を離したあとも、少し流れ続ける）
 /// - 長押ししてから動かす＝左ボタンを押したまま動かす（ドラッグ）
-/// - パッドの下の3割は、クリックの場所（文字は出さない）。左半分＝左ボタン、右半分＝右ボタン。
-///   押している間だけ、ボタンを押した状態にする。押したまま、上のパッドを別の指で動かすと、ドラッグになる
+/// - クリックの場所（文字は出さず、薄い線で分ける）。押している間だけ、ボタンを押した状態にする。
+///   押したまま、パッドを別の指で動かすと、ドラッグになる。場所は、使い方で変える（ClickZoneLayout）
+///   - 半開きの下の画面: 左端が左ボタン、右端が右ボタン（両手の親指で持つ形に合わせる）
+///   - 重ねて出す形: パッドの下の3割を、左半分と右半分に分ける
 struct TrackpadPad: View {
     /// 制御メッセージを送る（RemoteSession.send と同じ形）
     let send: @MainActor ([String: Any]) -> Void
+    /// クリックの場所を、どこに置くか
+    var zones: ClickZoneLayout = .bottom
 
-    /// クリックの場所の、パッド全体に対する高さの割合と、高さの下限（ポイント）
+    /// 下に置くときの、パッド全体に対する高さの割合と、高さの下限（ポイント）
     private static let zoneFraction: CGFloat = 0.3
     private static let zoneMinHeight: CGFloat = 48
+    /// 左右の端に置くときの、パッド全体に対する幅の割合と、幅の下限（ポイント）
+    private static let sideFraction: CGFloat = 0.2
+    private static let sideMinWidth: CGFloat = 56
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
         ZStack {
             Color.clear
                 .glass(in: shape)
+            // カーソルを動かす部分と、クリックの場所は、重ならないように分ける。
+            // 重なると、クリックの場所を押したとき、下のパッドが、カーソルを動かしてしまう
             GeometryReader { proxy in
-                // 上のパッド（カーソルを動かす）と、下のクリックの場所は、重ならないように、縦に分ける。
-                // 重なると、クリックの場所を押したとき、下のパッドが、カーソルを動かしてしまう
-                let zone = min(max(proxy.size.height * Self.zoneFraction, Self.zoneMinHeight), proxy.size.height * 0.5)
-                VStack(spacing: 0) {
-                    ZStack {
-                        Image(systemName: "rectangle.and.hand.point.up.left")
-                            .font(.system(size: 44, weight: .light))
-                            .foregroundStyle(.white.opacity(0.18))
-                            .allowsHitTesting(false)
-                        TrackpadSurface(send: send)
+                switch zones {
+                case .bottom:
+                    let zone = min(max(proxy.size.height * Self.zoneFraction, Self.zoneMinHeight), proxy.size.height * 0.5)
+                    VStack(spacing: 0) {
+                        movePad.frame(height: proxy.size.height - zone)
+                        ClickZones(send: send)
+                            .frame(height: zone)
                     }
-                    .frame(height: proxy.size.height - zone)
-                    ClickZones(send: send)
-                        .frame(height: zone)
+                case .sides:
+                    let zone = min(max(proxy.size.width * Self.sideFraction, Self.sideMinWidth), proxy.size.width * 0.3)
+                    HStack(spacing: 0) {
+                        ClickZone(button: "left", send: send)
+                            .frame(width: zone)
+                        divider(vertical: true)
+                        movePad
+                        divider(vertical: true)
+                        ClickZone(button: "right", send: send)
+                            .frame(width: zone)
+                    }
                 }
             }
         }
         .clipShape(shape)
         .contentShape(shape)
     }
+
+    /// カーソルを動かす部分（アイコンと、タッチを受け取る面）
+    private var movePad: some View {
+        ZStack {
+            Image(systemName: "rectangle.and.hand.point.up.left")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(.white.opacity(0.18))
+                .allowsHitTesting(false)
+            TrackpadSurface(send: send)
+        }
+    }
+
+    private func divider(vertical: Bool) -> some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.14))
+            .frame(width: vertical ? 1 : nil, height: vertical ? nil : 1)
+    }
+}
+
+/// クリックの場所の置き方
+enum ClickZoneLayout {
+    /// パッドの下の3割を、左半分と右半分に分ける
+    case bottom
+    /// パッドの左端と右端
+    case sides
 }
 
 /// パッドの下の、左右のクリックの場所。文字は出さず、薄い線で分ける。押している間は、薄く光る
