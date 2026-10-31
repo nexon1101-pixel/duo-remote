@@ -168,6 +168,8 @@ def _interface_names() -> dict[str, str]:
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-Command",
+             # 日本語の装置の名前（イーサネットなど）が化けないよう、UTF-8 で出させる
+             "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
              "Get-NetIPAddress -AddressFamily IPv4 | Select-Object IPAddress,InterfaceAlias | ConvertTo-Json -Compress"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

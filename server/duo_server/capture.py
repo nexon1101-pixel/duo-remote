@@ -111,6 +111,10 @@ def build_ffmpeg_cmd(
             grab += f":offset_x={x}:offset_y={y}:video_size={w}x{h}"
     scale = bool(max_height and src_height and src_height > max_height)
 
+    # ウィンドウだけを撮るときは、中身が変わったときにしか映像が来ない（ffmpeg 8.1）。
+    # 枚数でキーフレームを入れると、止まったウィンドウでは何分も来ないので、時間で入れる（前から2秒たった次の1枚）
+    keyframes = ["-force_key_frames", "expr:gte(t,n_forced*2)"] if window is not None else []
+
     if encoder == "h264_nvenc":
         # 拡大縮小がなければ、GPUのまま圧縮に渡す
         graph = grab
@@ -140,6 +144,7 @@ def build_ffmpeg_cmd(
         ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostdin",
         "-f", "lavfi", "-i", graph,
         *enc,
+        *keyframes,
         "-bsf:v", "dump_extra=freq=keyframe",
         "-f", "h264", "pipe:1",
     ]

@@ -38,13 +38,16 @@ RESTART_WAIT = 15.0
 
 # --- 起動し直す・ウィンドウを開く
 
+# 起動し直すとき、新しい管理画面に引き継ぐ引数（--browser chrome で開いていたら、起動し直しても Chrome で開く）
+CARRY_ARGS: list[str] = []
+
 def relaunch(args: list[str]) -> None:
     """panel.bat を、この管理画面から切り離して起動する（この管理画面が終わっても、続けて動く）。"""
     flags = 0
     if sys.platform == "win32":
         flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     subprocess.Popen(
-        ["cmd", "/c", str(PANEL_BAT), *args],
+        ["cmd", "/c", str(PANEL_BAT), *args, *CARRY_ARGS],
         cwd=SERVER_DIR, creationflags=flags, close_fds=True,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
@@ -57,7 +60,8 @@ def run_as_admin() -> bool:
     try:
         import ctypes
 
-        result = ctypes.windll.shell32.ShellExecuteW(None, "runas", str(PANEL_BAT), "--restart", str(SERVER_DIR), 1)
+        params = subprocess.list2cmdline(["--restart", *CARRY_ARGS])
+        result = ctypes.windll.shell32.ShellExecuteW(None, "runas", str(PANEL_BAT), params, str(SERVER_DIR), 1)
         return int(result) > 32
     except Exception:
         return False
@@ -475,6 +479,7 @@ def bind(port: int, handler: type, retry_seconds: float) -> ThreadingHTTPServer:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    CARRY_ARGS[:] = ["--browser", args.browser] if args.browser else []
     show_window = not (args.autostart or args.no_window)
 
     if args.restart:

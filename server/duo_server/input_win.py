@@ -176,6 +176,9 @@ class NullInput(_BringMixin):
             w["minimized"] = False
         return w is not None
 
+    def repaint_window(self, wid: int) -> None:
+        self.calls.append(("repaint", wid))
+
     def fit_window(self, wid: int, w: float, h: float, area: tuple[int, int, int, int] | None = None) -> bool:
         self.calls.append(("fit", wid, w, h))
         return wid in self.windows
@@ -280,6 +283,7 @@ if sys.platform == "win32":
     user32.GetWindowThreadProcessId.argtypes = (wt.HWND, ctypes.POINTER(wt.DWORD))
     user32.ShowWindow.argtypes = (wt.HWND, ctypes.c_int)
     user32.SetForegroundWindow.argtypes = (wt.HWND,)
+    user32.RedrawWindow.argtypes = (wt.HWND, ctypes.c_void_p, wt.HRGN, wt.UINT)
     user32.SetWindowPos.argtypes = (wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.UINT)
     user32.SystemParametersInfoW.argtypes = (wt.UINT, wt.UINT, ctypes.c_void_p, wt.UINT)
     dwmapi.DwmGetWindowAttribute.argtypes = (wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD)
@@ -339,7 +343,9 @@ if sys.platform == "win32":
     DWMWA_EXTENDED_FRAME_BOUNDS = 9
     DWMWA_CLOAKED = 14
     SW_RESTORE = 9
+    RDW_INVALIDATE, RDW_ERASE, RDW_FRAME, RDW_ALLCHILDREN, RDW_UPDATENOW = 0x0001, 0x0004, 0x0400, 0x0080, 0x0100
     SWP_NOZORDER, SWP_NOACTIVATE = 0x0004, 0x0010
+    SWP_NOSIZE, SWP_NOMOVE, SWP_FRAMECHANGED = 0x0001, 0x0002, 0x0020
     SPI_GETWORKAREA = 0x0030
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     CF_UNICODETEXT = 13
@@ -628,6 +634,19 @@ if sys.platform == "win32":
             # 直前にキー入力があったことにすると通るため、Altを押して離してから、もう一度試す
             _send([_key(VK_MENU, 0, 0), _key(VK_MENU, 0, KEYEVENTF_KEYUP)])
             return bool(user32.SetForegroundWindow(wid))
+
+        def repaint_window(self, wid: int) -> None:
+            """ウィンドウに、描き直しを頼む。ウィンドウだけを撮るとき（gfxcapture）、中身が変わらないと、
+            最初の1枚が出ないため（ffmpeg 8.1）。枠も含めて、すぐ描き直させる。"""
+            if user32.IsWindow(wid):
+                user32.RedrawWindow(
+                    wid, None, None, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW,
+                )
+                # 中身を自分で描くアプリ（ストアアプリなど）は、上だけでは描き直さないことがあるので、枠も描き直させる
+                user32.SetWindowPos(
+                    wid, None, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                )
 
         def fit_window(self, wid: int, w: float, h: float, area: tuple[int, int, int, int] | None = None) -> bool:
             """ウィンドウの大きさを、w x h（iPhoneの画面のポイント数）に合わせる。

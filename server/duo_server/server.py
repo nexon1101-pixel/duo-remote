@@ -49,6 +49,10 @@ MAX_AUDIO_BUFFERED_BYTES = 128 * 1024
 MIN_BITRATE_KBPS = 500
 MAX_BITRATE_KBPS = 20000
 
+# ウィンドウだけを撮るとき、最初の1枚が届くまで、描き直しを頼む間隔と回数
+NUDGE_INTERVAL_SEC = 0.3
+NUDGE_ATTEMPTS = 20
+
 VK_RETURN = 0x0D
 _NEWLINE = re.compile(r"\r\n|\r|\n")
 
@@ -224,6 +228,7 @@ class Session:
         self._paused = False  # 画面の設定を変える間、撮影を止めている
         self._restarts: list[float] = []  # 撮影が止まって、撮り直した時刻
         self._recovery: asyncio.Task | None = None
+        self._nudge: asyncio.Task | None = None  # ウィンドウに描き直しを頼む（最初の1枚が届くまで）
         self._lock = asyncio.Lock()
         self._t0 = time.monotonic()
 
@@ -251,6 +256,17 @@ class Session:
         self._first_frame = asyncio.Event()
         self._video = asyncio.create_task(self._send_video(stream, self._first_frame))
         self._video.add_done_callback(self._video_done)
+        if self.settings.window_capture and self.window is not None:
+            self._nudge = asyncio.create_task(self._nudge_window(self.window, self._first_frame, self._video))
+
+    async def _nudge_window(self, wid: int, first_frame: asyncio.Event, video: asyncio.Task) -> None:
+        """ウィンドウだけを撮るとき、最初の1枚が届くまで、ウィンドウに描き直しを頼む。
+        ffmpeg 8.1 の gfxcapture は、ウィンドウの中身が変わるまで、1枚も出さないため。"""
+        for _ in range(NUDGE_ATTEMPTS):
+            await asyncio.sleep(NUDGE_INTERVAL_SEC)
+            if first_frame.is_set() or video.done() or self.window != wid:
+                return
+            await asyncio.to_thread(self.backend.repaint_window, wid)
 
     async def _send_video(self, stream: Stream, first_frame: asyncio.Event) -> None:
         """映像を送る。ffmpegからの読み取りは別に動かし、送るのが追いつかないときは古いフレームを捨てる。"""
@@ -436,6 +452,9 @@ class Session:
                 await self._switch_with_fallback(*self._current_target(), "映像")
 
     async def stop_stream(self) -> None:
+        if self._nudge is not None:
+            self._nudge.cancel()
+            self._nudge = None
         if self._video is not None:
             self._video.cancel()
             await asyncio.gather(self._video, return_exceptions=True)
