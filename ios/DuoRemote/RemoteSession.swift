@@ -61,13 +61,13 @@ enum VideoQuality: String, CaseIterable, Identifiable {
     }
 }
 
-/// サーバーとのWebSocket接続。通信の取り決めは docs/protocol.md を参照。
 /// 往復の時間（ミリ秒）。ping を送ってから pong が来るまで。LatencyBadge だけが見る
 @MainActor
 final class LatencyStore: ObservableObject {
     @Published var ms: Int?
 }
 
+/// サーバーとのWebSocket接続。通信の取り決めは docs/protocol.md を参照。
 @MainActor
 final class RemoteSession: ObservableObject {
     enum State: Equatable {
@@ -342,9 +342,10 @@ final class RemoteSession: ObservableObject {
         open()
     }
 
-    /// 画質を変える。接続中なら、つなぎ直して反映する
-    func setQuality(_ quality: VideoQuality) {
-        guard quality != self.quality else { return }
+    /// 画質を変える。接続中なら、つなぎ直して反映する。
+    /// force は、画質は同じで、自動かどうかだけが変わったとき（自動は設定から読む）
+    func setQuality(_ quality: VideoQuality, force: Bool = false) {
+        guard quality != self.quality || force else { return }
         self.quality = quality
         autoQuality = nil // 選び直した画質から、自動の判断をやり直す
         guard state == .connected, target != nil else { return }
