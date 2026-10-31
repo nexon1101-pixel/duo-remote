@@ -115,7 +115,15 @@ private struct ClickZone: View {
 
     var body: some View {
         Rectangle()
-            .fill(pressed ? Color.white.opacity(0.14) : Color.clear)
+            .fill(pressed ? Color.accentColor.opacity(0.28) : Color.clear)
+            .overlay {
+                // 左右が分かるように、薄いアイコンを出す。押している間は、明るくして色を付ける
+                Image(systemName: button == "left" ? "cursorarrow.click" : "contextualmenu.and.cursorarrow")
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundStyle(pressed ? Color.accentColor : Color.white.opacity(0.28))
+                    .allowsHitTesting(false)
+            }
+            .animation(.easeOut(duration: 0.12), value: pressed)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
