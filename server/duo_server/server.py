@@ -12,8 +12,8 @@ from typing import Any, Callable, Protocol
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed
 
-from . import protocol
-from .audio import ALLOWED_CHANNELS, ALLOWED_RATES, AudioError
+from . import files, protocol
+from .audio import ALLOWED_CHANNELS, ALLOWED_CODECS, ALLOWED_RATES, OPUS_RATE, AudioError
 from .capture import StreamError, output_size
 from .input_win import ClipboardError, from_windows_newlines, to_windows_newlines
 from .virtual_display import VirtualDisplayError, monitor_of
@@ -241,6 +241,7 @@ class Session:
         self.audio_factory = audio_factory
         self._audio = None
         self._audio_task: asyncio.Task | None = None
+        self.files = files.FileTransfer(self.send, ws.send, backend)
         self.settings = settings
         self.backend = backend
         self.stream_factory = stream_factory
@@ -384,13 +385,17 @@ class Session:
             await self.send({"t": "audio_state", "on": False})
             return
         rate, channels = _int(msg.get("rate")) or 48000, _int(msg.get("channels")) or 2
+        codec = msg.get("codec") or "pcm"
+        if codec not in ALLOWED_CODECS or (codec == "opus" and rate != OPUS_RATE):
+            await self.send({"t": "audio_state", "on": False, "reason": "その音の形には対応していません"})
+            return
         if rate not in ALLOWED_RATES or channels not in ALLOWED_CHANNELS:
             await self.send({"t": "audio_state", "on": False, "reason": "その音の形には対応していません"})
             return
         if self.audio_factory is None:
             await self.send({"t": "audio_state", "on": False, "reason": "このサーバーでは、音を送れません"})
             return
-        stream = self.audio_factory(rate, channels)
+        stream = self.audio_factory(rate, channels, "opus") if codec == "opus" else self.audio_factory(rate, channels)
         try:
             await stream.start()
         except AudioError as e:
@@ -398,7 +403,7 @@ class Session:
             await self.send({"t": "audio_state", "on": False, "reason": str(e)})
             return
         self._audio = stream
-        await self.send({"t": "audio_state", "on": True, "rate": rate, "channels": channels})
+        await self.send({"t": "audio_state", "on": True, "rate": rate, "channels": channels, "codec": codec})
         self._audio_task = asyncio.create_task(self._send_audio(stream))
 
     async def _send_audio(self, stream) -> None:
@@ -676,6 +681,8 @@ class Session:
             await self.send({"t": "notice", "message": f"ウィンドウを元の場所に戻しました（{len(restored)}個）"})
         elif t == "audio":
             await self.set_audio(msg)
+        elif t in files.MESSAGES:
+            await self.files.handle(msg)
         elif t == "clip_get":
             await self.clip_get()
         elif t == "clip_set":
@@ -934,6 +941,9 @@ def make_handler(
 
     async def receive(session: Session) -> None:
         async for raw in session.ws:
+            if isinstance(raw, bytes):
+                await session.files.handle_binary(raw)
+                continue
             msg = protocol.loads(raw)
             if msg is not None:
                 await session.handle(msg)
@@ -1047,6 +1057,7 @@ def make_handler(
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             await session.stop_audio()
+            await session.files.close()
             await session.stop_stream()
             # 押したまま切れると、PCでボタンやキーが押されたままになるので、離す
             release_held(backend, session.held)

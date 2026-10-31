@@ -106,8 +106,8 @@ async def run(args: argparse.Namespace) -> None:
         )
         return FfmpegStream(cmd, s.codec)
 
-    def audio_factory(rate: int, channels: int) -> AudioStream:
-        return AudioStream(args.ffmpeg, rate, channels)
+    def audio_factory(rate: int, channels: int, codec: str = "pcm") -> AudioStream:
+        return AudioStream(args.ffmpeg, rate, channels, codec=codec)
 
     handler = make_handler(settings, backend, stream_factory, audio_factory)
     # 仮想ディスプレイのドライバーが入っているかを、先に調べておく（調べるのに1秒ほどかかる）
