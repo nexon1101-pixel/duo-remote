@@ -236,7 +236,7 @@ final class VirtualControllerUIView: UIView {
         guard !buttons.isEmpty, let ctx = UIGraphicsGetCurrentContext() else { return }
         let k = preset.keys
         let d = unit
-        let accent = tintColor
+        let accent: UIColor = tintColor ?? .systemBlue
 
         drawDPad(ctx: ctx, keys: k, d: d, accent: accent)
 
