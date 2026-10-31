@@ -5,7 +5,7 @@
 > duo-remote のリポジトリで git pull して、docs/pc-requests.md を読んで、依頼C をやってください。
 
 （依頼A、B、C は、それぞれ別の依頼です。名前を言われた依頼だけを、やってください。
-A: 切断のあとの後片付けの確認 / B: ウィンドウと音の確認 / C: iPhone で試すあいだの、サーバーの起動と見守り / D: 日本語入力（IME）の切り替えの確認 / E: サーバーの管理画面の確認 / F: ウィンドウだけを撮ることの確認 / G: 管理画面の直したところの確認 / H: 中身が止まったウィンドウを撮れるかの確認）
+A: 切断のあとの後片付けの確認 / B: ウィンドウと音の確認 / C: iPhone で試すあいだの、サーバーの起動と見守り / D: 日本語入力（IME）の切り替えの確認 / E: サーバーの管理画面の確認 / F: ウィンドウだけを撮ることの確認 / G: 管理画面の直したところの確認 / H: 中身が止まったウィンドウを撮れるかの確認 / I: 0.15.0 の新しい機能の確認）
 
 リポジトリは `%USERPROFILE%\duo-remote` にあります（なければ `git clone https://github.com/nexon1101-pixel/duo-remote.git`）。
 
@@ -603,3 +603,89 @@ git で取ったこのリポジトリは、今が最新なので、更新は試�
 ```
 
 期待する結果: 1〜5 のどれも `[OK]` で、画像にそのウィンドウが映る。2 と 4 では、外に出た部分も映る。
+
+---
+
+## 依頼I: 0.15.0 の新しい機能の確認
+
+目的: 0.15.0 で足した機能のうち、PC だけで確かめられるもの（H.265、Opus の音、モニターの一覧と切り替え、接続したままの画質の変更と stats、クリップボードの画像とファイル、iPhone からのファイルの保存、スリープを防ぐこと）を、`check.bat` の新しいオプションで確かめる。
+
+メモ帳などを置いたり、check.bat を呼んだりするのは、依頼F・H と同じく、スクリプトで行ってよい。`check.bat` は `python -m duo_server.selfcheck` を直接呼んでもよい。
+
+### 準備
+
+1. 動いているサーバーと管理画面を止める
+2. 最新にする（`cd /d "%USERPROFILE%\duo-remote"`、`git checkout main`、`git pull`）。`server\duo_server\__init__.py` が `0.15.0` 以降であること
+3. `server\start.bat` でサーバーを起動する（新しいパッケージはないが、初回は少し待つことがある）。起動の表示から、次の行をそのまま控える
+   - 「duo_server 0.15.0 を起動しました: …（エンコーダー: h264_nvenc、H.265 も使えます）」の行（「H.265 も使えます」が付くか）
+   - 「ウィンドウの表示: …」の行
+
+### 確認 1: H.265
+
+```bat
+cd /d "%USERPROFILE%\duo-remote\server"
+check.bat --hevc
+```
+
+`[OK]` と `[NG]` を全部控える。映像の形が hevc になり、キーフレームに VPS・SPS・PPS が付いていること。
+
+### 確認 2: Opus の音
+
+1. 別の PowerShell で、音を鳴らし続ける
+
+   ```powershell
+   $p = New-Object Media.SoundPlayer "C:\Windows\Media\Alarm01.wav"; $p.PlayLooping()
+   ```
+
+2. `check.bat --opus` を実行して、出力を控える。音の形が opus で、音のフレームが届くこと
+3. 音を止める（その PowerShell を閉じる）
+
+### 確認 3: モニター
+
+`check.bat --monitors` を実行して、出力を控える。モニターの一覧が出ること。主でないモニターがあれば、切り替えて映像が届くこと（このPCがモニター1枚なら、そう出ればよい）。
+
+### 確認 4: 接続したままの画質の変更と stats
+
+`check.bat --quality` を実行して、出力を控える。高さ 720 に変わって映像が届くこと、stats が届くこと。
+
+### 確認 5: PC のクリップボード → iPhone（clip_pull）
+
+受け取ったファイルの保存先を、読める場所（例: `Downloads\duo-tools\pull`）にして、次の3つを順に試す。それぞれ、先に PC のクリップボードに入れてから、`check.bat --pull --save-dir <保存先>` を実行し、出力を控える。
+
+1. 画像: `powershell -STA -Command "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; [Windows.Forms.Clipboard]::SetImage([Drawing.Image]::FromFile('C:\Windows\Web\Wallpaper\Windows\img0.jpg'))"`（この画像がなければ、ほかの jpg でよい）。PNG で届き、保存した画像が開けること
+2. ファイル: `powershell -Command "Set-Clipboard -Path 'C:\Windows\Media\Alarm01.wav'"`。ファイルの名前と大きさが合って届くこと
+3. 文字: `powershell -Command "Set-Clipboard -Value 'duo-remote のテスト'"`。文字が届くこと
+
+### 確認 6: iPhone → PC のファイル（file_put）
+
+1. `check.bat --put "C:\Windows\Web\Wallpaper\Windows\img0.jpg" --put-clipboard` を実行して、出力を控える。保存先（`ダウンロード\DuoRemote\img0.jpg`）が表示されること
+2. その場所に、ファイルがあること
+3. `powershell -STA -Command "Add-Type -AssemblyName System.Windows.Forms; [Windows.Forms.Clipboard]::ContainsImage()"` が True になること（PC のクリップボードに画像として入った）
+4. もう一度同じコマンドを実行すると、`img0 (2).jpg` で保存されること
+
+### 確認 7: スリープを防ぐ（できるときだけ）
+
+管理者のコマンドプロンプトが要る。開けなければ、飛ばす。
+
+1. `check.bat --seconds 40` を実行する（40秒つながったままになる）
+2. その間に、管理者のコマンドプロンプトで `powercfg /requests` を実行し、出力を控える。DISPLAY と SYSTEM の欄に、サーバーの python.exe が出ること
+3. check.bat が終わってから、もう一度 `powercfg /requests` を実行し、python.exe が消えていること
+
+### 後片付け
+
+サーバーを止める。`ダウンロード\DuoRemote` に保存された img0 のファイルと、`--save-dir` で受け取ったファイルは、消してよい。
+
+### 報告の形
+
+```
+## 準備: 起動の表示（2行）
+
+## 確認 1〜7
+（それぞれ、check.bat の出力をそのまま。7 は powercfg /requests の出力。できなかったものは、その理由）
+
+## duo_server.log の WARNING と ERROR の行
+（なければ「なし」）
+
+## そのほか気づいたこと
+```
+
