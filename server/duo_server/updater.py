@@ -161,7 +161,7 @@ def _apply_zip(log: Callable[[str], None], root: Path, timeout: float) -> None:
         entries: list[tuple[zipfile.ZipInfo, str]] = []
         for info in zf.infolist():
             if _unsafe_name(info.filename):
-                raise UpdateError(f"ZIP の中に危ないパスがあります: {info.filename}")
+                raise UpdateError(f"ZIP の中に使えないパスがあります: {info.filename}")
             if info.is_dir():
                 continue
             parts = PurePosixPath(info.filename.replace("\\", "/")).parts
@@ -177,7 +177,7 @@ def _apply_zip(log: Callable[[str], None], root: Path, timeout: float) -> None:
                 continue
             dest = (root / rel).resolve()
             if root_resolved != dest and root_resolved not in dest.parents:
-                raise UpdateError(f"ZIP の中に危ないパスがあります: {info.filename}")
+                raise UpdateError(f"ZIP の中に使えないパスがあります: {info.filename}")
             dest.parent.mkdir(parents=True, exist_ok=True)
             tmp_file = Path(tmp) / f"{count}.part"
             with zf.open(info) as src, open(tmp_file, "wb") as dst:
