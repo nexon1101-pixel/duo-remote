@@ -316,11 +316,11 @@ $("panelBrowser").onchange = async (ev) => {
 
 $("adminBtn").onclick = async () => {
   if (!(await ask("管理者として起動し直します。この画面は閉じて、新しい画面が開きます。よろしいですか。"))) return;
-  try { await api("/api/admin", "POST"); } catch (e) { fail(e); return; }
-  // 起動し直した管理画面は、鍵が変わるので、このページからは操作できない
+  let r;
+  try { r = await api("/api/admin", "POST"); } catch (e) { fail(e); return; }
   $("down").style.display = "block";
-  $("down").textContent = "管理者として起動し直しました。新しく開いた画面を使ってください。この画面は閉じてかまいません。";
-  failures = -1000;
+  $("down").textContent = "管理者として起動し直しています…（新しい管理画面が動き出したら、このページが切り替わります）";
+  moveToNext(r.next_key, $("down"));
 };
 
 // 更新
@@ -349,33 +349,47 @@ $("checkBtn").onclick = checkUpdate;
 $("updateBtn").onclick = async () => {
   if (!(await ask("更新します。サーバーは止まり、管理画面は起動し直します。よろしいですか。"))) return;
   try {
-    await api("/api/update", "POST");
+    const r = await api("/api/update", "POST");
+    updateNextKey = r.next_key;
     updating = true; $("updateBtn").hidden = true; $("checkBtn").disabled = true;
     $("updateLog").hidden = false; $("updateLog").textContent = "";
     pollUpdate();
   } catch (e) { fail(e); }
 };
 
+let updateNextKey = null; // 更新のあと、起動し直した管理画面の鍵
 async function pollUpdate() {
   let u;
   try { u = await api("/api/update/log"); }
   catch (e) {
     // 更新が終わって管理画面が止まった
-    if (updating) finishUpdate(); return;
+    if (updating) finishUpdate(updateNextKey); return;
   }
   const el = $("updateLog");
   el.textContent = u.lines.join("\n"); el.scrollTop = el.scrollHeight;
   if (u.error) { updating = false; $("checkBtn").disabled = false; $("updateBtn").hidden = false; toast(u.error, true); return; }
-  if (u.done) { finishUpdate(); return; }
+  if (u.done) { finishUpdate(u.next_key || updateNextKey); return; }
   setTimeout(pollUpdate, 1000);
 }
 
-function finishUpdate() {
+function finishUpdate(nextKey) {
   updating = false;
   const n = $("updateDone"); n.hidden = false; n.textContent = "起動し直しています…";
-  setTimeout(() => {
-    n.textContent = "管理画面を起動し直しました。新しいウィンドウを使ってください。このウィンドウは閉じてかまいません。";
-  }, 4000);
+  moveToNext(nextKey, n);
+}
+
+// 起動し直した新しい管理画面が答えるようになったら、このページを、その鍵のアドレスに移す
+async function moveToNext(nextKey, note) {
+  failures = -1000; // 古い管理画面が止まっても、「止まっています」の帯を出さない
+  if (!nextKey) return;
+  for (let i = 0; i < 90; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      const r = await fetch("/api/ping", { headers: { "X-Panel-Key": nextKey }, cache: "no-store" });
+      if (r.ok) { location.href = "/?k=" + encodeURIComponent(nextKey); return; }
+    } catch (e) { /* まだ起動していない */ }
+  }
+  note.textContent = "新しい管理画面が見つかりませんでした。server フォルダの panel.bat で開き直してください。";
 }
 
 // ログ

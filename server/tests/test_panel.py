@@ -199,13 +199,16 @@ def test_update_apply_success(app, monkeypatch):
         log("入れ替えました")
 
     fake_updater(monkeypatch, apply)
-    assert app("POST", "/api/update") == (200, {"started": True})
+    status, started = app("POST", "/api/update")
+    assert status == 200 and started["started"] is True and started["next_key"]
     assert app.handler.exit_signal.wait(5)
     status, data = app("GET", "/api/update/log")
     assert data == {
         "running": False, "lines": ["取ってきます", "入れ替えました"], "done": True, "error": None, "previous": [],
+        "next_key": started["next_key"],
     }
-    assert launched == [["--restart"]]
+    # 新しい管理画面には、ページが移れるよう、鍵を渡す
+    assert launched == [["--restart", "--key", started["next_key"]]]
     # 起動し直した管理画面は、ファイルに残った前回の更新のログを見せる
     assert panel.UPDATE_LOG_PATH.read_text(encoding="utf-8").splitlines() == ["取ってきます", "入れ替えました"]
     assert ("stop", None) in app.process.calls
@@ -228,12 +231,15 @@ def test_update_apply_failure(app, monkeypatch):
 
 
 def test_admin_and_quit(app, monkeypatch):
-    monkeypatch.setattr(panel, "run_as_admin", lambda: False)
+    monkeypatch.setattr(panel, "run_as_admin", lambda extra=None: False)
     status, data = app("POST", "/api/admin")
     assert status == 400 and data["error"] == "管理者として起動できませんでした"
     assert not app.handler.exit_signal.is_set()
-    monkeypatch.setattr(panel, "run_as_admin", lambda: True)
-    assert app("POST", "/api/admin")[0] == 200
+    admin_args = []
+    monkeypatch.setattr(panel, "run_as_admin", lambda extra=None: admin_args.append(extra) or True)
+    status, data = app("POST", "/api/admin")
+    assert status == 200 and data["next_key"]
+    assert admin_args == [["--key", data["next_key"]]]  # 新しい管理画面に、同じ鍵を渡す
     assert app.handler.exit_signal.wait(5)
     assert ("stop", None) in app.process.calls
 
@@ -284,3 +290,34 @@ def test_page_does_not_use_browser_dialogs():
     """confirm() や alert() は、PCを操作する Claude が押せず、タブが止まるので使わない。"""
     html = (panel.Path(panel.__file__).parent / "panel.html").read_text(encoding="utf-8")
     assert "confirm(" not in html and "alert(" not in html and "prompt(" not in html
+
+
+def test_main_with_handed_over_key(tmp_path, monkeypatch):
+    """main を通しで動かす。渡された鍵で待ち受け、ウィンドウは開かず、--browser と --port を引き継ぐ。"""
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    monkeypatch.setattr(panel, "LOCK_PATH", tmp_path / "panel.lock")
+    monkeypatch.setattr(panel, "CARRY_ARGS", [])
+    monkeypatch.setattr(control, "read_settings", lambda *a: {"panel_browser": "edge", "encoder": "auto", "output_idx": 0})
+    monkeypatch.setattr(control, "refresh_autostart", lambda: None)
+    opened = []
+    monkeypatch.setattr(panel, "open_window", lambda *a: opened.append(a))
+
+    monkeypatch.setattr(control, "ServerProcess", FakeProcess)
+    done = threading.Event()
+    result = []
+    t = threading.Thread(
+        target=lambda: (result.append(panel.main(["--port", str(port), "--key", "handed", "--browser", "chrome"])), done.set()),
+        daemon=True,
+    )
+    t.start()
+    assert wait_for(lambda: panel.ping(port, "handed"))
+    assert opened == []
+    assert panel.CARRY_ARGS == ["--browser", "chrome", "--port", str(port)]
+    conn = HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request("POST", "/api/quit", body=b"{}", headers={"X-Panel-Key": "handed", "Host": f"127.0.0.1:{port}"})
+    assert conn.getresponse().status == 200
+    assert done.wait(10) and result == [0]
