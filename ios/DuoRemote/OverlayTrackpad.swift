@@ -23,8 +23,8 @@ struct OverlayTrackpad: View {
     @State private var dragStart: CGPoint?
     @State private var resizeStart: CGSize?
 
-    private static let barHeight: CGFloat = 26
-    private static let minSize = CGSize(width: 150, height: 110)
+    private static let barHeight: CGFloat = UIMetrics.barHeight
+    private static let minSize = CGSize(width: 190, height: 110)
     private static let initialSize = CGSize(width: 280, height: 190)
     /// 帯と枠の余白（キーボードと同じ）
     private static let sideInset: CGFloat = 4
@@ -52,22 +52,8 @@ struct OverlayTrackpad: View {
     /// 上の帯。引くと動く。閉じるボタンと、大きさを変えるつまみ
     private func bar(size: CGSize, area: CGSize) -> some View {
         HStack(spacing: 0) {
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .bold))
-                    .frame(width: 22, height: 22)
-                    .background(Color.white.opacity(0.15), in: Circle())
-                    .frame(width: 40, height: Self.barHeight)
-            }
-            .accessibilityLabel("トラックパッドを閉じる")
-            Button(action: onDock) {
-                Image(systemName: "arrow.down.to.line.compact")
-                    .font(.system(size: 11, weight: .bold))
-                    .frame(width: 22, height: 22)
-                    .background(Color.white.opacity(0.15), in: Circle())
-                    .frame(width: 32, height: Self.barHeight)
-            }
-            .accessibilityLabel("下部に固定")
+            BarIconButton(systemImage: "xmark", label: "トラックパッドを閉じる", action: onClose)
+            BarIconButton(systemImage: "arrow.down.to.line.compact", label: "下部に固定", action: onDock)
             Spacer()
             // 引いて動かせることが分かるように、シートと同じつまみを出す
             Capsule()
@@ -75,10 +61,10 @@ struct OverlayTrackpad: View {
                 .frame(width: 40, height: 5)
             Spacer()
             Image(systemName: "arrow.up.left.and.arrow.down.right")
-                .font(.system(size: 11, weight: .bold))
-                .frame(width: 22, height: 22)
+                .font(.system(size: 12, weight: .bold))
+                .frame(width: UIMetrics.barIconSize, height: UIMetrics.barIconSize)
                 .background(Color.white.opacity(0.15), in: Circle())
-                .frame(width: 44, height: Self.barHeight)
+                .frame(width: UIMetrics.barIconHitWidth, height: Self.barHeight)
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(coordinateSpace: .global)
