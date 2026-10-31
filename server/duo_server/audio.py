@@ -32,6 +32,16 @@ class AudioError(RuntimeError):
     """音を取れないときの理由（利用者に見せる文）。"""
 
 
+# 取った音のチャンネル数 → ffmpeg のスピーカーの並び。数だけを渡すと、ffmpeg が並びを推測して警告を出す
+_LAYOUTS = {1: "mono", 2: "stereo", 4: "quad", 6: "5.1", 8: "7.1"}
+
+
+def input_layout(channels: int) -> list[str]:
+    """ffmpeg の入力（取った音）のチャンネルの指定。並びが分かれば並びで、分からなければ数で渡す。"""
+    layout = _LAYOUTS.get(channels)
+    return ["-ch_layout", layout] if layout else ["-ac", str(channels)]
+
+
 def build_audio_ffmpeg_cmd(
     *, ffmpeg: str = "ffmpeg", in_rate: int, in_channels: int, rate: int, channels: int, codec: str = "pcm"
 ) -> list[str]:
@@ -40,7 +50,7 @@ def build_audio_ffmpeg_cmd(
         return [
             ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostdin",
             "-probesize", "32", "-analyzeduration", "0",
-            "-f", "s16le", "-ar", str(in_rate), "-ac", str(in_channels), "-i", "pipe:0",
+            "-f", "s16le", "-ar", str(in_rate), *input_layout(in_channels), "-i", "pipe:0",
             "-ar", str(OPUS_RATE), "-ac", str(channels),
             "-c:a", "libopus", "-b:a", OPUS_BITRATE.get(channels, "96k"),
             "-application", "lowdelay", "-frame_duration", "20",
@@ -52,7 +62,7 @@ def build_audio_ffmpeg_cmd(
         # 入力を調べる時間をなくす。これがないと、音を流し続けても、ffmpeg が出力を始めない。
         # （-fflags nobuffer -flags low_delay は、付けると出力が空になるので、付けない）
         "-probesize", "32", "-analyzeduration", "0",
-        "-f", "s16le", "-ar", str(in_rate), "-ac", str(in_channels), "-i", "pipe:0",
+        "-f", "s16le", "-ar", str(in_rate), *input_layout(in_channels), "-i", "pipe:0",
         "-ar", str(rate), "-ac", str(channels),
         "-f", "s16le", "-flush_packets", "1", "pipe:1",
     ]

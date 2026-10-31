@@ -1,5 +1,6 @@
 import asyncio
 import json
+import shutil
 import struct
 import zlib
 
@@ -440,3 +441,25 @@ def test_clip_pull_text_when_nothing_else(backend):
             assert (await recv_until(ws, "clip"))[-1] == {"t": "clip", "s": ""}
 
     run_server(body, backend)
+
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg がない")
+def test_big_clipboard_image_becomes_jpeg():
+    """写真のような大きな画像は JPEG にする。小さい画像は、そのまま（None）。"""
+    import subprocess
+
+    from duo_server.files import to_jpeg_if_smaller
+
+    def png(size: str, source: str) -> bytes:
+        return subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"{source}=size={size}",
+             "-frames:v", "1", "-f", "image2", "-c:v", "png", "pipe:1"],
+            capture_output=True, check=True,
+        ).stdout
+
+    photo = png("1600x1200", "mandelbrot")  # 色の変化が細かく、PNG では大きくなる
+    assert len(photo) > 1024 * 1024
+    jpeg = to_jpeg_if_smaller(photo)
+    assert jpeg is not None and jpeg[:2] == b"\xff\xd8" and len(jpeg) * 2 <= len(photo)
+    assert to_jpeg_if_smaller(png("320x240", "testsrc")) is None  # 小さい画像は PNG のまま

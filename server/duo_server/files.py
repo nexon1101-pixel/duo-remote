@@ -124,6 +124,35 @@ def dib_to_bmp(dib: bytes) -> bytes | None:
     return b"BM" + struct.pack("<IHHI", 14 + len(dib), 0, 0, 14 + layout[4]) + dib
 
 
+# クリップボードの画像を JPEG にしてみる大きさ（これより小さい PNG は、そのまま送る）
+JPEG_TRY_BYTES = 1024 * 1024
+# JPEG に使う ffmpeg（__main__ が --ffmpeg の値に置き換える）
+FFMPEG = "ffmpeg"
+
+
+def to_jpeg_if_smaller(image: bytes, ffmpeg: str | None = None) -> bytes | None:
+    """大きな画像（写真など）を JPEG にする。元の半分以下になったときだけ返す（そうでなければ None）。
+    PNG のままで小さいスクリーンショットなどは、文字がにじまないよう、JPEG にしない。"""
+    import subprocess
+
+    if len(image) < JPEG_TRY_BYTES:
+        return None
+    try:
+        result = subprocess.run(
+            [ffmpeg or FFMPEG, "-hide_banner", "-loglevel", "error", "-f", "image2pipe", "-i", "pipe:0",
+             "-frames:v", "1", "-pix_fmt", "yuvj420p", "-q:v", "3", "-f", "image2", "-c:v", "mjpeg", "pipe:1"],
+            input=image, capture_output=True, timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        log.warning("画像を JPEG にできませんでした: %s", e)
+        return None
+    jpeg = result.stdout
+    if result.returncode != 0 or not jpeg.startswith(b"\xff\xd8"):
+        return None
+    return jpeg if len(jpeg) * 2 <= len(image) else None
+
+
 def dib_to_png(dib: bytes) -> bytes | None:
     """DIB（24ビットか32ビット）を PNG にする。透明度は使わない（クリップボードの32ビットは、当てにならない）。
     ほかの形のときは None。"""
@@ -382,6 +411,10 @@ class FileTransfer:
                     await self._error("クリップボードの画像を読めませんでした")
                     return
                 data, name, mime = bmp, "clipboard.bmp", "image/bmp"
+        # 写真のような大きな画像は、JPEG の方がずっと小さい（モバイル回線で時間がかからない）
+        jpeg = await asyncio.to_thread(to_jpeg_if_smaller, data)
+        if jpeg is not None:
+            data, name, mime = jpeg, "clipboard.jpg", "image/jpeg"
         if len(data) > MAX_FILE_BYTES:
             await self._error(f"画像が大きすぎます（{MAX_FILE_BYTES // (1024 * 1024)}MBまで）")
             return

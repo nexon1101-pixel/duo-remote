@@ -11,7 +11,7 @@ from pathlib import Path
 
 from websockets.asyncio.server import serve
 
-from . import __version__
+from . import __version__, files
 from .audio import AudioStream
 from .capture import (
     FfmpegStream, build_ffmpeg_cmd, capture_target, detect_encoder, detect_hevc, detect_window_capture,
@@ -77,6 +77,7 @@ async def run(args: argparse.Namespace) -> None:
     )
     port = args.port or cfg.get("port", 8765)
     encoder = detect_encoder(args.ffmpeg) if args.encoder == "auto" else args.encoder
+    files.FFMPEG = args.ffmpeg
     settings.hevc_available = encoder == "h264_nvenc" and detect_hevc(args.ffmpeg)
     if args.window_capture == "auto":
         settings.window_capture = sys.platform == "win32" and detect_window_capture(args.ffmpeg)

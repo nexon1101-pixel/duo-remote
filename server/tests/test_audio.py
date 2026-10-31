@@ -1,6 +1,7 @@
 import asyncio
 import json
 import math
+import shutil
 import struct
 
 import pytest
@@ -34,7 +35,8 @@ def test_ffmpeg_cmd():
     cmd = build_audio_ffmpeg_cmd(in_rate=44100, in_channels=8, rate=48000, channels=2)
     i = cmd.index("-i")
     before, after = cmd[:i], cmd[i:]
-    assert before[before.index("-ar") + 1] == "44100" and before[before.index("-ac") + 1] == "8"
+    # 取った音は、チャンネルの数ではなく並びで渡す（数だけだと、ffmpeg が並びを推測して警告を出す）
+    assert before[before.index("-ar") + 1] == "44100" and before[before.index("-ch_layout") + 1] == "7.1"
     assert after[after.index("-ar") + 1] == "48000" and after[after.index("-ac") + 1] == "2"
     assert cmd[-1] == "pipe:1" and cmd[cmd.index("-f", i) + 1] == "s16le"
     assert "-probesize" in before and "-nobuffer" not in cmd and "nobuffer" not in cmd
@@ -369,3 +371,25 @@ def test_opus_over_websocket():
 
     asyncio.run(with_server(body, factory))
     assert [(a.rate, a.channels, a.codec) for a in audios] == [(48000, 1, "opus")]
+
+
+
+def test_input_layout():
+    from duo_server.audio import input_layout
+
+    assert input_layout(2) == ["-ch_layout", "stereo"]
+    assert input_layout(1) == ["-ch_layout", "mono"]
+    assert input_layout(3) == ["-ac", "3"]  # 並びが分からない数は、数で渡す
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg がない")
+def test_layout_is_accepted_without_warning():
+    """本物の ffmpeg が、取った音（s16le）の並びの指定を受け付け、並びを推測する警告を出さない。"""
+    import subprocess
+
+    cmd = build_audio_ffmpeg_cmd(in_rate=48000, in_channels=2, rate=48000, channels=2)
+    i = cmd.index("-loglevel")
+    cmd[i + 1] = "info"
+    result = subprocess.run(cmd, input=b"\x00" * 48000 * 4, capture_output=True, timeout=20)
+    assert result.returncode == 0 and len(result.stdout) > 0
+    assert b"Guessed Channel Layout" not in result.stderr
