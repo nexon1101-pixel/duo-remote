@@ -678,7 +678,15 @@ struct LatencyBadge: View {
     @EnvironmentObject private var session: RemoteSession
 
     var body: some View {
-        if let ms = session.latencyMs {
+        LatencyBadgeContent(latency: session.latency)
+    }
+}
+
+private struct LatencyBadgeContent: View {
+    @ObservedObject var latency: LatencyStore
+
+    var body: some View {
+        if let ms = latency.ms {
             HStack(spacing: 5) {
                 Circle()
                     .fill(LatencyColor.color(ms: ms))

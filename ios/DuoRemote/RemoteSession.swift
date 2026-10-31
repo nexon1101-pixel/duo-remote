@@ -62,6 +62,12 @@ enum VideoQuality: String, CaseIterable, Identifiable {
 }
 
 /// サーバーとのWebSocket接続。通信の取り決めは docs/protocol.md を参照。
+/// 往復の時間（ミリ秒）。ping を送ってから pong が来るまで。LatencyBadge だけが見る
+@MainActor
+final class LatencyStore: ObservableObject {
+    @Published var ms: Int?
+}
+
 @MainActor
 final class RemoteSession: ObservableObject {
     enum State: Equatable {
@@ -108,7 +114,9 @@ final class RemoteSession: ObservableObject {
     /// PCのIMEがオンか。サーバーが知らせてこないときはnil
     @Published private(set) var imeOn: Bool?
     /// 往復の時間（ミリ秒）。ping を送ってから pong が来るまで
-    @Published private(set) var latencyMs: Int?
+    /// 往復の時間は、数秒おきに変わる。session の @Published にすると、そのたびに session を見ている画面
+    /// すべてが作り直され、開いているメニューが更新されてスクロールが戻る。専用の入れ物に分ける
+    let latency = LatencyStore()
     /// 今つながっているホスト（候補の1つ）。つながっていないときはnil
     @Published private(set) var activeHost: String?
     private var noticeTask: Task<Void, Never>?
@@ -371,7 +379,7 @@ final class RemoteSession: ObservableObject {
         heartbeat?.cancel()
         heartbeat = nil
         pendingPings = [:]
-        latencyMs = nil
+        latency.ms = nil
         task?.cancel(with: code, reason: nil)
         task = nil
         fileTransfer.cancelAll()
@@ -673,13 +681,13 @@ final class RemoteSession: ObservableObject {
             }
         case "pong":
             if let n = json["n"] as? Int, let sent = pendingPings.removeValue(forKey: n) {
-                latencyMs = Int(Date().timeIntervalSince(sent) * 1000)
+                latency.ms = Int(Date().timeIntervalSince(sent) * 1000)
                 // これより前の ping は、返事が来なかったものとして忘れる
                 pendingPings = pendingPings.filter { $0.key > n }
             }
         case "stats":
             guard var auto = autoQuality, let dropped = json["dropped"] as? Int else { break }
-            let next = auto.update(dropped: dropped, latencyMs: latencyMs)
+            let next = auto.update(dropped: dropped, latencyMs: latency.ms)
             autoQuality = auto // 変えなかったときも、数えた状態（続けて悪かった回数など）を残す
             if let next {
                 autoLevel = next
