@@ -554,7 +554,7 @@ def main(argv: list[str] | None = None) -> None:
             print(f"仮想モニターが出ました: {m['name']} {m['rect']}")
         elif args.command == "off":
             vd.off(force=True)
-            print("仮想モニターを消しました")
+            print("仮想モニターを無効にしました")
         elif args.command == "write-config":
             xml = build_vdd_settings(args.gpu)
             if CONFIG_PATH.exists():
