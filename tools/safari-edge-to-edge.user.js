@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         帯の下まで表示
 // @description  iPhone Duo の外側の画面で、Safari の右の帯の下まで、ページを広げる。左下のボタンで、サイトごとに切り替える。内側の画面では、何もしない
-// @version      3.5
+// @version      3.6
 // @match        *://*/*
 // @run-at       document-start
 // ==/UserScript==
@@ -133,17 +133,21 @@
     placeHandle();
   }
 
-  // ボタンは、ページの左下（Safari の下のバーの上）に、固定して置く。帯の中は、タップが届かないので、置かない
-  var ICON =
-    '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" ' +
-    'stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:9px">' +
-    '<path d="M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg>';
+  // ボタンは、ページの左下（右の「＋」ボタンと同じ高さ）に、固定して置く。帯の中は、タップが届かないので、置かない
+  // オンのとき（広げている）は、内向きの矢印（押すと、元の幅に戻る）。オフのときは、外向きの矢印（押すと、広がる）
+  function icon(path) {
+    return '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" ' +
+      'stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:9px"><path d="' + path + '"/></svg>';
+  }
+  var ICON_ON = icon('M3 12h7M7 8l3.5 4-3.5 4M21 12h-7M17 8l-3.5 4 3.5 4');
+  var ICON_OFF = icon('M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4');
 
   function placeHandle() {
     if (!handle) return;
     handle.style.display = '';
-    if (!handle.firstChild) handle.innerHTML = ICON;
-    handle.style.cssText = BUTTON_CSS + 'position:fixed;left:12px;bottom:92px;' + (on ? 'color:#fff;' : 'color:rgba(255,255,255,0.4);');
+    handle.innerHTML = on ? ICON_ON : ICON_OFF;
+    // 高さは、右の「＋」ボタンと同じあたり（画面の高さの 83% が、ボタンの真ん中）
+    handle.style.cssText = BUTTON_CSS + 'position:fixed;left:12px;top:calc(83.5% - 20px);color:#fff;';
   }
 
   function patchAllOff() {
