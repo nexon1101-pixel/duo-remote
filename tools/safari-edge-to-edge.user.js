@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         帯の下まで表示
 // @description  iPhone Duo の Safari で、右の帯の下まで、ページを広げる。左の「⇔」で、サイトごとに切り替える
-// @version      2.0
+// @version      2.1
 // @match        *://*/*
 // @run-at       document-start
 // ==/UserScript==
@@ -43,14 +43,23 @@
     style.textContent = css();
     if (style.textContent) (document.head || document.documentElement).appendChild(style);
     else style.remove();
-    if (button) button.style.opacity = on ? '0.55' : '0.25';
+    if (button) {
+      button.style.opacity = on ? '0.55' : '0.25';
+      placeButton();
+    }
+  }
+
+  // ボタンは、右の帯の、空いている所（戻るボタンと「＋」ボタンの間）に置く。帯がないときは、左の端
+  function placeButton() {
+    var g = gap();
+    button.style.left = (g ? document.documentElement.clientWidth + g - 36 - 14 : 8) + 'px';
   }
 
   function makeButton() {
     button = document.createElement('div');
     button.textContent = '⇔';
     button.style.cssText =
-      'position:fixed;left:8px;top:45%;width:36px;height:36px;border-radius:18px;' +
+      'position:fixed;left:8px;top:70%;width:36px;height:36px;border-radius:18px;' +
       'background:#000;color:#fff;font:18px/36px sans-serif;text-align:center;' +
       'z-index:2147483647;user-select:none;-webkit-user-select:none';
     button.addEventListener('click', function () {
