@@ -7,6 +7,7 @@ from __future__ import annotations
 import collections
 import json
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -221,6 +222,19 @@ class ServerProcess:
         self._seq = 0
         self.started_at: float | None = None
         self.last_exit: int | None = None
+        # 制御用の入り口（127.0.0.1 のポートと鍵）。起動のたびに作り、この管理画面のプロセスの中だけで持つ
+        self._control: tuple[int, str] | None = None
+
+    def control_endpoint(self) -> tuple[int, str] | None:
+        """動いているサーバーの、制御用の入り口 (ポート, 鍵)。動いていなければ None。"""
+        with self._lock:
+            return self._control if self.running else None
+
+    @staticmethod
+    def free_port() -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
 
     @property
     def running(self) -> bool:
@@ -234,6 +248,8 @@ class ServerProcess:
             flags = 0
             if sys.platform == "win32":
                 flags = subprocess.CREATE_NO_WINDOW  # 黒い画面を出さない
+            self._control = (self.free_port(), secrets.token_urlsafe(16))
+            args = [*args, "--control-port", str(self._control[0]), "--control-key", self._control[1]]
             self._proc = subprocess.Popen(
                 self.command(args),
                 cwd=self.cwd, env=env,

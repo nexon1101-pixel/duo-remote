@@ -11,7 +11,7 @@ from pathlib import Path
 
 from websockets.asyncio.server import serve
 
-from . import __version__, files
+from . import __version__, files, localctl
 from .audio import AudioStream
 from .capture import (
     FfmpegStream, build_ffmpeg_cmd, capture_target, detect_encoder, detect_hevc, detect_window_capture,
@@ -65,6 +65,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--control-stdin", action="store_true",
         help="標準入力に stop の行が来るか、標準入力が閉じたら、後片付けをして止まる（管理画面から動かすとき）",
     )
+    p.add_argument(
+        "--control-port", type=int,
+        help="制御用の入り口のポート（127.0.0.1 だけ。管理画面が、今すぐの後片付けを頼むために使う。--control-key と一緒に指定）",
+    )
+    p.add_argument("--control-key", help="制御用の入り口の鍵（--control-port と一緒に指定）")
     p.add_argument("-v", "--verbose", action="store_true")
     return p.parse_args(argv)
 
@@ -130,6 +135,14 @@ async def run(args: argparse.Namespace) -> None:
     if virtual and await asyncio.to_thread(backend.virtual_cleanup_leftover):
         # 前回、サーバーが後片付けをせずに止められると、有効のまま残る。使っていないときは無効、が決まり
         print("前回から有効のまま残っていた仮想ディスプレイを、無効に戻しました")
+    control_server = None
+    if args.control_port and args.control_key:
+        try:
+            control_server = await localctl.start_control_server(
+                args.control_port, args.control_key, handler.cleanup_now, handler.status_now,
+            )
+        except OSError as e:
+            log.warning("制御用の入り口を開けませんでした（管理画面の「無効にする」は、直接の方法になります）: %s", e)
     try:
         # close_timeout: 応答しない相手を閉じるときに、待つ時間（秒）
         async with serve(handler, args.host, port, max_size=1024 * 1024, close_timeout=2):
@@ -147,6 +160,8 @@ async def run(args: argparse.Namespace) -> None:
             print(f"UDP: {'ポート ' + str(port) + ' で待ちます' if udp else '使えません（WebSocket だけで動きます）'}")
             await wait_for_stop(args.control_stdin)
     finally:
+        if control_server is not None:
+            control_server.close()
         if udp is not None:
             udp.close()
         # 持ってきたウィンドウを元に戻し、仮想ディスプレイを無効に戻す

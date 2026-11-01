@@ -472,7 +472,7 @@ class VirtualDisplay:
         device = self.device()
         if device is not None and device.get("Status") == "OK":
             if not is_admin():
-                raise VirtualDisplayError("仮想ディスプレイを消すには、管理者の権限が要ります")
+                raise VirtualDisplayError("仮想ディスプレイを無効にするには、管理者の権限が要ります")
             set_pnp_enabled(device["InstanceId"], False)
         self._we_enabled = False
 
@@ -554,7 +554,7 @@ def main(argv: list[str] | None = None) -> None:
             print(f"仮想モニターが出ました: {m['name']} {m['rect']}")
         elif args.command == "off":
             vd.off(force=True)
-            print("仮想モニターを消しました")
+            print("仮想モニターを無効にしました")
         elif args.command == "write-config":
             xml = build_vdd_settings(args.gpu)
             if CONFIG_PATH.exists():
