@@ -145,9 +145,11 @@ struct SettingsView: View {
                     }
                     Toggle("H.265 を使用（次回接続から）", isOn: $useHEVC)
                     Toggle("遅延を表示", isOn: $showLatency)
-                    Picker("仮想画面の大きさ", selection: $virtualScale) {
-                        ForEach(VirtualScale.all, id: \.self) { scale in
-                            Text(VirtualScale.label(scale, aspect: virtualAspect)).tag(scale)
+                    if VirtualScale.enabled {
+                        Picker("仮想画面の大きさ", selection: $virtualScale) {
+                            ForEach(VirtualScale.all, id: \.self) { scale in
+                                Text(VirtualScale.label(scale, aspect: virtualAspect)).tag(scale)
+                            }
                         }
                     }
                     segmentedRow("画面の余白", selection: $edgeMargin) {
@@ -159,7 +161,9 @@ struct SettingsView: View {
                 } header: {
                     Text("画質と表示")
                 } footer: {
-                    Text("仮想画面の大きさは、縦横比はそのままで、解像度を大きくします。「×1」が標準（高さ 1080）で、×1.5 なら、高さ 1620 です。かっこの中は、いまの画面の縦横比のときの、おおよその大きさです（PC の仮想ディスプレイの設定ファイルを書き直したあと、使えます）。画質が「高」のとき、大きくした解像度のまま見られます。")
+                    if VirtualScale.enabled {
+                        Text("仮想画面の大きさは、縦横比はそのままで、解像度を大きくします。「×1」が標準（高さ 1080）で、×1.5 なら、高さ 1620 です。かっこの中は、いまの画面の縦横比のときの、おおよその大きさです（PC の仮想ディスプレイの設定ファイルを書き直したあと、使えます）。画質が「高」のとき、大きくした解像度のまま見られます。")
+                    }
                 }
 
                 Section {
@@ -171,13 +175,14 @@ struct SettingsView: View {
                             Spacer()
                             Text("\(Int(audioVolume * 100))%").foregroundStyle(.secondary).monospacedDigit()
                         }
-                        Slider(value: $audioVolume, in: 0...1)
+                        Slider(value: $audioVolume, in: 0...3, step: 0.05)
+                        AudioMeterBar(width: 160)
                     }
                     Toggle("接続中、PC のスピーカーを消音", isOn: $muteLocal)
                 } header: {
                     Text("音声")
                 } footer: {
-                    Text("音量は、この iPhone で鳴らす音の大きさです。「PC のスピーカーを消音」をオンにすると、接続している間、PC のスピーカーから音が出なくなります（iPhone には届きます）。切断すると、元に戻ります。PC の音声を再生していなくても、PC のスピーカーは消音になります。")
+                    Text("音量は、この iPhone で鳴らす音の大きさです（0〜300%。100% を超えた分は、増幅します）。下の棒は、いま鳴っている音の大きさで、赤くなると、割れています。「PC のスピーカーを消音」をオンにすると、接続している間、PC のスピーカーから音が出なくなります（iPhone には届きます）。切断すると、元に戻ります。PC の音声を再生していなくても、PC のスピーカーは消音になります。")
                 }
 
                 if !info.isEmpty {
