@@ -6,7 +6,7 @@ import UIKit
 ///
 /// - 1本指で動かす＝カーソルを動かす（速く動かすほど、多めに動く）
 /// - 1本指でタップ＝左クリック、2本指でタップ＝右クリック
-/// - 2本指で動かす＝スクロール（指を離したあとも、少し流れ続ける）
+/// - 2本指で動かす＝スクロール（指を離したあとも、少し流れ続ける）。映像を拡大しているときは、スクロールではなく、映像を映す位置を動かす
 /// - 右端の細い帯を、1本指で上下になぞる＝スクロール
 /// - 長押ししてから動かす＝左ボタンを押したまま動かす（ドラッグ）
 /// - クリックの場所（文字は出さず、薄い線で分ける）。押している間だけ、ボタンを押した状態にする。
@@ -267,6 +267,8 @@ final class TrackpadCoordinator: NSObject, UIGestureRecognizerDelegate {
     private var lastPressLocation = CGPoint.zero
     // 2本指のスクロール
     private var lastScrollTranslation = CGPoint.zero
+    /// 映像を動かすときに、前に送った指の動きの合計
+    private var lastPanTranslation = CGPoint.zero
     private var scrollSent = CGPoint.zero // 送り済みのホイール量（wheelSubdivisions 単位）
     private var inertia: Task<Void, Never>?
     private var scrollRecognizer: UIPanGestureRecognizer?
@@ -458,12 +460,23 @@ final class TrackpadCoordinator: NSObject, UIGestureRecognizerDelegate {
             stopInertia()
             scrollSent = .zero
             lastScrollTranslation = .zero
+            lastPanTranslation = .zero
         case .changed:
             lastScrollTranslation = t
             guard !pinching else { return }
+            if VideoZoomState.isZoomed {
+                // 映像を拡大しているときは、PC にスクロールを送らずに、映す位置を動かす（指に映像がついてくる）。
+                // パッドは小さいので、パッドの幅に対する画面の幅の比で、動きを大きくする
+                let padWidth = view?.bounds.width ?? 1
+                let gain = min(max(UIScreen.main.bounds.width * 0.8 / max(padWidth, 1), 1), 6)
+                let delta = CGPoint(x: (t.x - lastPanTranslation.x) * gain, y: (t.y - lastPanTranslation.y) * gain)
+                lastPanTranslation = t
+                NotificationCenter.default.post(name: .duoPanVideo, object: nil, userInfo: ["dx": delta.x, "dy": delta.y])
+                return
+            }
             scroll(total: t)
         case .ended:
-            guard !pinching else { return }
+            guard !pinching, !VideoZoomState.isZoomed else { return }
             startInertia(from: t, velocity: recognizer.velocity(in: view))
         default:
             break

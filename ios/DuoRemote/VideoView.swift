@@ -59,6 +59,19 @@ final class VideoContainerView: UIView {
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleZoomRequest(_:)), name: .duoZoomVideo, object: nil
         )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handlePanRequest(_:)), name: .duoPanVideo, object: nil
+        )
+    }
+
+    /// トラックパッドの2本指（拡大しているとき）から、映像を動かすように頼まれる
+    @objc private func handlePanRequest(_ note: Notification) {
+        guard let dx = note.userInfo?["dx"] as? CGFloat, let dy = note.userInfo?["dy"] as? CGFloat else { return }
+        pan(by: CGPoint(x: dx, y: dy))
+    }
+
+    deinit {
+        VideoZoomState.isZoomed = false
     }
 
     @objc private func handleZoomRequest(_ note: Notification) {
@@ -151,6 +164,7 @@ final class VideoContainerView: UIView {
     }
 
     private func layoutVideo() {
+        VideoZoomState.isZoomed = isZoomed
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         videoLayer?.frame = videoRect
@@ -163,7 +177,15 @@ final class VideoContainerView: UIView {
     }
 }
 
+/// 映像を拡大しているか。トラックパッドの2本指が、PC のスクロールか、映像の移動かを決めるのに使う（メインスレッドでだけ触る）
+enum VideoZoomState {
+    static var isZoomed = false
+}
+
 extension Notification.Name {
+    /// 拡大している映像を、動かす頼み（userInfo の "dx"、"dy": 動かす量。画面のポイント）。トラックパッドの2本指が送る
+    static let duoPanVideo = Notification.Name("duoPanVideo")
+
     /// 映像を、拡大・縮小する頼み（userInfo の "factor": 今の大きさに掛ける倍率）。トラックパッドのピンチが送る
     static let duoZoomVideo = Notification.Name("duoZoomVideo")
 }
