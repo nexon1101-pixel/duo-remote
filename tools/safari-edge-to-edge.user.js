@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         帯の下まで表示
 // @description  iPhone Duo の外側の画面で、Safari の右の帯の下まで、ページを広げる。左下のボタンで、サイトごとに切り替える。内側の画面では、何もしない
-// @version      3.6
+// @version      3.7
 // @match        *://*/*
 // @run-at       document-start
 // ==/UserScript==
@@ -133,11 +133,11 @@
     placeHandle();
   }
 
-  // ボタンは、ページの左下（右の「＋」ボタンと同じ高さ）に、固定して置く。帯の中は、タップが届かないので、置かない
+  // ボタンは、ページの左下に、固定して置く。帯の中は、タップが届かないので、置かない
   // オンのとき（広げている）は、内向きの矢印（押すと、元の幅に戻る）。オフのときは、外向きの矢印（押すと、広がる）
   function icon(path) {
-    return '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" ' +
-      'stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:9px"><path d="' + path + '"/></svg>';
+    return '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" ' +
+      'stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:7px"><path d="' + path + '"/></svg>';
   }
   var ICON_ON = icon('M3 12h7M7 8l3.5 4-3.5 4M21 12h-7M17 8l-3.5 4 3.5 4');
   var ICON_OFF = icon('M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4');
@@ -146,8 +146,9 @@
     if (!handle) return;
     handle.style.display = '';
     handle.innerHTML = on ? ICON_ON : ICON_OFF;
-    // 高さは、右の「＋」ボタンと同じあたり（画面の高さの 83% が、ボタンの真ん中）
-    handle.style.cssText = BUTTON_CSS + 'position:fixed;left:12px;top:calc(83.5% - 20px);color:#fff;';
+    // 高さは、画面の高さの 88% が、ボタンの真ん中。下のバーが出入りしても動かないように、バーが引っ込んだときの
+    // 大きい画面の高さ（lvh）を基準にする（lvh が使えないときは vh）
+    handle.style.cssText = BUTTON_CSS + 'position:fixed;left:6px;top:calc(88vh - 18px);top:calc(88lvh - 18px);color:#fff;';
   }
 
   function patchAllOff() {
@@ -159,9 +160,9 @@
   }
 
   var BUTTON_CSS =
-    'width:40px;height:40px;border-radius:20px;box-sizing:border-box;' +
-    'background:rgba(28,28,32,0.62);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);' +
-    'border:1px solid rgba(255,255,255,0.28);box-shadow:0 2px 10px rgba(0,0,0,0.35);' +
+    'width:36px;height:36px;border-radius:18px;box-sizing:border-box;opacity:0.32;' +
+    'background:rgba(28,28,32,0.5);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);' +
+    'border:1px solid rgba(255,255,255,0.22);' +
     'z-index:2147483647;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;';
 
   // 押すと、このサイトだけ、オン・オフを切り替える
