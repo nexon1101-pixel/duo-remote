@@ -1033,3 +1033,32 @@ final class RemoteSession: ObservableObject {
         }
     }
 }
+
+/// 仮想画面の大きさ（仮想ディスプレイの解像度の倍率）。標準は、高さ 1080。
+/// 縦横比は、iPhone の画面に合わせる。サーバーは、設定ファイルにある解像度から、近いものを選ぶので、画面に出す大きさは「約」
+enum VirtualScale {
+    static let all: [Double] = [1.0, 1.25, 1.5, 2.0]
+    static let baseHeight = 1080.0
+
+    /// 倍率の文字（×1、×1.25、×1.5、×2）
+    static func factor(_ scale: Double) -> String {
+        let text = scale == scale.rounded() ? String(Int(scale)) : String(scale)
+        return "×" + text
+    }
+
+    /// その倍率のときの、おおよその大きさ（幅、高さ）。aspect は、画面の幅 ÷ 高さ。わからないとき（0 以下）は nil
+    static func size(_ scale: Double, aspect: Double) -> (width: Int, height: Int)? {
+        guard aspect > 0, aspect.isFinite else { return nil }
+        let height = Int((baseHeight * scale / 2).rounded()) * 2
+        let width = Int((Double(height) * aspect / 2).rounded()) * 2
+        return (width, height)
+    }
+
+    /// 選択肢の文字。たとえば「×1.5（約 1140×1620）」。縦横比が分からないときは、「×1.5（高さ 1620）」
+    static func label(_ scale: Double, aspect: Double) -> String {
+        if let size = size(scale, aspect: aspect) {
+            return "\(factor(scale))（約 \(size.width)×\(size.height)）"
+        }
+        return "\(factor(scale))（高さ \(Int(VirtualScale.baseHeight * scale))）"
+    }
+}

@@ -336,7 +336,10 @@ struct ContentView: View {
             MonitorPicker()
         }
         .sheet(isPresented: $showingSettings, onDismiss: { refocus += 1 }) {
-            SettingsView(qualityChoice: qualityChoice, autoChoice: Self.autoChoice, info: settingsInfo)
+            SettingsView(
+                qualityChoice: qualityChoice, autoChoice: Self.autoChoice, info: settingsInfo,
+                virtualAspect: fitSize.height > 0 ? Double(fitSize.width / fitSize.height) : 0
+            )
         }
         .fileSendPickers(
             photosShown: $showingPhotoPicker,
@@ -530,6 +533,9 @@ struct ContentView: View {
         }
         rows.append(("画面", screenDescription.replacingOccurrences(of: "画面: ", with: "")))
         rows.append(("通信", session.transportName))
+        if session.videoSize.width > 0 {
+            rows.append(("映像の大きさ", "\(Int(session.videoSize.width))×\(Int(session.videoSize.height))"))
+        }
         rows.append(("映像", (session.codec == "hevc" ? "H.265" : "H.264")
                      + (session.autoLevel.map { "（自動: \($0.shortLabel)）" } ?? "")))
         return rows
@@ -561,10 +567,10 @@ struct ContentView: View {
             if session.virtualAvailable {
                 Menu("仮想画面の大きさ", systemImage: "arrow.up.left.and.arrow.down.right") {
                     Picker("仮想画面の大きさ", selection: $virtualScale) {
-                        Text("標準（1080）").tag(1.0)
-                        Text("大（1.25倍）").tag(1.25)
-                        Text("特大（1.5倍）").tag(1.5)
-                        Text("最大（2倍）").tag(2.0)
+                        ForEach(VirtualScale.all, id: \.self) { scale in
+                            Text(VirtualScale.label(scale, aspect: fitSize.height > 0 ? Double(fitSize.width / fitSize.height) : 0))
+                                .tag(scale)
+                        }
                     }
                     .pickerStyle(.inline)
                 }

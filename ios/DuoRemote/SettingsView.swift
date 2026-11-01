@@ -10,6 +10,8 @@ struct SettingsView: View {
     let autoChoice: String
     /// 今の状態（表示中のもの、接続先、画面、映像）。読むだけ
     let info: [(label: String, value: String)]
+    /// 画面の縦横比（幅 ÷ 高さ）。仮想画面の大きさの選択肢に、おおよその解像度を出すために使う
+    var virtualAspect: Double = 0
 
     // 入力
     @AppStorage("pointerMode") private var pointerMode = PointerMode.direct
@@ -139,11 +141,10 @@ struct SettingsView: View {
                     }
                     Toggle("H.265 を使用（次回接続から）", isOn: $useHEVC)
                     Toggle("遅延を表示", isOn: $showLatency)
-                    segmentedRow("仮想画面の大きさ", selection: $virtualScale) {
-                        Text("標準").tag(1.0)
-                        Text("大").tag(1.25)
-                        Text("特大").tag(1.5)
-                        Text("最大").tag(2.0)
+                    Picker("仮想画面の大きさ", selection: $virtualScale) {
+                        ForEach(VirtualScale.all, id: \.self) { scale in
+                            Text(VirtualScale.label(scale, aspect: virtualAspect)).tag(scale)
+                        }
                     }
                     segmentedRow("画面の余白", selection: $edgeMargin) {
                         Text("なし").tag(0)
@@ -154,7 +155,7 @@ struct SettingsView: View {
                 } header: {
                     Text("画質と表示")
                 } footer: {
-                    Text("仮想画面の大きさは、縦横比はそのままで、解像度を大きくします（PC の仮想ディスプレイの設定ファイルを書き直したあと、使えます）。画質が「高」のとき、大きくした解像度のまま見られます。")
+                    Text("仮想画面の大きさは、縦横比はそのままで、解像度を大きくします。「×1」が標準（高さ 1080）で、×1.5 なら、高さ 1620 です。かっこの中は、いまの画面の縦横比のときの、おおよその大きさです（PC の仮想ディスプレイの設定ファイルを書き直したあと、使えます）。画質が「高」のとき、大きくした解像度のまま見られます。")
                 }
 
                 Section {
