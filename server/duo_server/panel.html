@@ -138,6 +138,8 @@ footer { text-align: center; margin-top: 24px; }
     <div class="row"><span class="label">管理者</span><span class="value" id="adminText" style="font-family:inherit"></span>
       <button id="adminBtn" hidden>管理者で再起動</button></div>
     <div class="row"><span class="label">ゲームパッド</span><span class="value" id="padText" style="font-family:inherit"></span>
+      <button id="padInstall" hidden>ドライバーを入れる</button>
+      <span class="small" id="padInstallState" hidden></span>
       <span class="small" id="padHelp" hidden>ViGEmBus を入れて、サーバーを再起動します。入れ方は README の「ゲームパッド」を見てください</span></div>
     <div class="row"><span class="label">自動起動</span>
       <label class="switch"><input type="checkbox" id="autostart"><span></span></label>
@@ -233,6 +235,7 @@ function renderStatus() {
   const padOk = !!(st.pad && st.pad.available);
   $("padText").textContent = !st.pad ? "確認中" : padOk ? "使えます" : "使えません（ViGEmBus が必要）";
   $("padHelp").hidden = !st.pad || padOk;
+  renderPadInstall(padOk);
   $("autostart").checked = st.autostart;
   $("portShow").textContent = st.port;
   $("udpNote").textContent = "UDP も同じポート（" + (st.udp_port || st.port) + "）";
@@ -252,6 +255,33 @@ function renderStatus() {
     hosts.append(line);
   });
 }
+
+// ViGEmBus を入れる
+const PAD_STATE_TEXT = {
+  downloading: "ダウンロード中…", verifying: "確認中…",
+  waiting: "インストーラーの画面で、操作してください", done: "入れました。サーバーを再起動してください",
+};
+let lastPadState = "idle";
+function renderPadInstall(padOk) {
+  const pi = st.pad_install || { state: "idle", message: "" };
+  const active = pi.state === "downloading" || pi.state === "verifying" || pi.state === "waiting";
+  // ボタンは、使えないときと、Windows のときだけ出す
+  $("padInstall").hidden = !st.pad || padOk || st.windows === false || pi.state === "done";
+  $("padInstall").disabled = active;
+  const text = pi.state === "error" ? "入れられませんでした: " + pi.message : (PAD_STATE_TEXT[pi.state] || "");
+  $("padInstallState").textContent = text;
+  $("padInstallState").hidden = !text;
+  if (pi.state !== lastPadState) {
+    if (pi.state === "done") $("restartNotice").hidden = false;
+    if (pi.state === "error") toast(pi.message, true);
+    lastPadState = pi.state;
+  }
+}
+
+$("padInstall").onclick = async () => {
+  if (!(await ask("ViGEmBus（仮想のゲームパッドのドライバー）を入れます。インストーラーを GitHub から取って、管理者の確認の画面が出ます。続けますか。"))) return;
+  try { await api("/api/driver/vigem", "POST"); pollStatus(); } catch (e) { fail(e); }
+};
 
 async function pollStatus() {
   try {
