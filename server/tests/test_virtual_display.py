@@ -84,8 +84,15 @@ def _written_modes(xml: str) -> list[tuple[int, int]]:
     return [(int(r.findtext("width")), int(r.findtext("height"))) for r in root.iter("resolution")]
 
 
-def test_build_vdd_settings_writes_four_heights():
+def test_default_settings_write_only_1080():
+    # 長い一覧（72件）で、実機のドライバーが起動に失敗した。初めは 1080 だけ（18件）
     modes = _written_modes(vd.build_vdd_settings())
+    assert {h for _, h in modes} == {1080}
+    assert len(modes) == len(vd.PRESET_WIDTHS)
+
+
+def test_build_vdd_settings_writes_four_heights():
+    modes = _written_modes(vd.build_vdd_settings(heights=vd.ALL_HEIGHTS))
     assert {h for _, h in modes} == {1080, 1350, 1620, 2160}
     assert len(modes) == len(set(modes))  # 重複なし
     assert len(modes) <= 4 * len(vd.PRESET_WIDTHS)
@@ -103,7 +110,7 @@ def test_build_vdd_settings_custom_heights():
 
 
 def _all_modes():
-    return [(w, h, 60) for w, h in _written_modes(vd.build_vdd_settings())]
+    return [(w, h, 60) for w, h in _written_modes(vd.build_vdd_settings(heights=vd.ALL_HEIGHTS))]
 
 
 def test_choose_mode_picks_height_nearest_target_for_same_aspect():
@@ -134,3 +141,39 @@ def test_clamp_scale():
     assert vd.clamp_scale(0.2) == 1.0
     for bad in ("1.5", None, float("nan"), float("inf"), True, [1]):
         assert vd.clamp_scale(bad) == 1.0
+
+
+def test_parse_heights():
+    assert vd.parse_heights(None) == (1080,)
+    assert vd.parse_heights("") == (1080,)
+    assert vd.parse_heights("1350, 1080") == (1080, 1350)
+    assert vd.parse_heights("1080,1080,1620") == (1080, 1620)
+    for bad in ("abc", "1234", "1080,5000", ","):
+        with pytest.raises(vd.VirtualDisplayError):
+            vd.parse_heights(bad)
+
+
+class _FakeDriver:
+    """apply_driver のテスト用。無効にして有効に戻したあと、決まった状態になる。"""
+
+    def __init__(self, statuses):
+        self.statuses = list(statuses)
+        self.toggles = []
+
+    def device(self):
+        status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
+        return {"InstanceId": "ROOT\\DISPLAY\\0000", "Status": status}
+
+
+def test_apply_driver_ok(monkeypatch):
+    fake = _FakeDriver(["OK", "OK", "Error", "OK"])
+    calls = []
+    monkeypatch.setattr(vd, "set_pnp_enabled", lambda i, e: calls.append(e))
+    assert vd.apply_driver(fake, sleep=lambda s: None) is True
+    assert calls == [False, True]
+
+
+def test_apply_driver_reports_error(monkeypatch):
+    fake = _FakeDriver(["OK", "Error"])
+    monkeypatch.setattr(vd, "set_pnp_enabled", lambda i, e: None)
+    assert vd.apply_driver(fake, sleep=lambda s: None, wait=3) is False
