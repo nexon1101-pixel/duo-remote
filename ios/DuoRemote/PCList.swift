@@ -172,7 +172,12 @@ private struct UpSnapTab: View {
     @EnvironmentObject private var session: RemoteSession
     let connect: (PCProfile, String) -> Void
 
+    /// 自宅（LAN）の UpSnap のアドレス
     @AppStorage("upsnapURL") private var url = ""
+    /// 外出先（Tailscale）の UpSnap のアドレス。省略できる
+    @AppStorage("upsnapURLRemote") private var urlRemote = ""
+    /// 前回つながったアドレス（0: 自宅、1: 外出先）。次は、こちらから試す
+    @AppStorage("upsnapLastIndex") private var lastIndex = 0
     @AppStorage("upsnapEmail") private var email = ""
     @State private var password = ""
     /// ログインできた設定。これがあるときは、機器の一覧を出す
@@ -182,6 +187,8 @@ private struct UpSnapTab: View {
     @State private var loaded = false
     @State private var message: String?
     @State private var loggingIn = false
+    /// いまつながっているアドレス（0: 自宅、1: 外出先）
+    @State private var activeIndex: Int?
 
     @StateObject private var waker = PCWaker()
     @State private var wakingID: String?
@@ -214,8 +221,15 @@ private struct UpSnapTab: View {
     private var loginForm: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 12) {
-                field("externaldrive.connected.to.line.below") {
-                    TextField("UpSnap のアドレス（例: 100.x.x.x:8090）", text: $url)
+                field("house") {
+                    TextField("自宅のアドレス（例: 192.168.0.155:8090）", text: $url)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                }
+                Divider().overlay(Color.white.opacity(0.1))
+                field("globe") {
+                    TextField("外出先のアドレス（Tailscale、任意）", text: $urlRemote)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
@@ -250,7 +264,7 @@ private struct UpSnapTab: View {
             }
             .glassButton(prominent: true)
             .controlSize(.large)
-            .disabled(url.isEmpty || email.isEmpty || password.isEmpty || loggingIn)
+            .disabled((url.isEmpty && urlRemote.isEmpty) || email.isEmpty || password.isEmpty || loggingIn)
 
             if let message {
                 Label(message, systemImage: "exclamationmark.triangle.fill")
@@ -266,19 +280,43 @@ private struct UpSnapTab: View {
     private func login() async {
         loggingIn = true
         defer { loggingIn = false }
+        url = ContentView.cleaned(url)
+        urlRemote = ContentView.cleaned(urlRemote)
+        email = ContentView.cleaned(email)
+        guard let base = await resolveBase() else {
+            message = "UpSnap につながりません。アドレスを確認してください（外出先では、Tailscale をオンにしてください）"
+            return
+        }
         do {
-            let list = try await WakeOnLAN.upsnapDeviceList(
-                baseURL: ContentView.cleaned(url), email: ContentView.cleaned(email), password: password)
+            devices = try await WakeOnLAN.upsnapDeviceList(baseURL: base, email: email, password: password)
             Keychain.save("upsnapPassword", password)
-            url = ContentView.cleaned(url)
-            email = ContentView.cleaned(email)
-            devices = list
             loaded = true
             message = nil
             loggedIn = true
         } catch {
             message = error.localizedDescription
         }
+    }
+
+    /// 自宅と外出先のアドレスを、前回つながった方から試し、つながった方を返す
+    private func resolveBase() async -> String? {
+        let all = [url, urlRemote]
+        let first = lastIndex == 1 ? 1 : 0
+        for index in [first, 1 - first] where !all[index].isEmpty {
+            if await WakeOnLAN.upsnapReachable(all[index]) {
+                lastIndex = index
+                activeIndex = index
+                return all[index]
+            }
+        }
+        activeIndex = nil
+        return nil
+    }
+
+    private var activeBase: String? {
+        guard let activeIndex else { return nil }
+        let value = activeIndex == 0 ? url : urlRemote
+        return value.isEmpty ? nil : value
     }
 
     private func logout() {
@@ -288,6 +326,7 @@ private struct UpSnapTab: View {
         password = ""
         devices = []
         loaded = false
+        activeIndex = nil
         loggedIn = false
     }
 
@@ -310,7 +349,7 @@ private struct UpSnapTab: View {
                 }
                 Divider().overlay(Color.white.opacity(0.1))
                 HStack {
-                    Text(email)
+                    Text("\(email)（\(activeIndex == 1 ? "外出先" : activeIndex == 0 ? "自宅" : "未接続")のアドレス）")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -435,7 +474,7 @@ private struct UpSnapTab: View {
         wakingID = device.id
         let config = PCWaker.Config(
             mac: "", broadcast: "",
-            upsnapURL: ContentView.cleaned(url),
+            upsnapURL: ContentView.cleaned(activeBase ?? url),
             upsnapEmail: ContentView.cleaned(email),
             upsnapPassword: password,
             deviceIP: device.ip,
@@ -449,16 +488,29 @@ private struct UpSnapTab: View {
 
     private func reload() async {
         do {
-            let list = try await WakeOnLAN.upsnapDeviceList(
-                baseURL: ContentView.cleaned(url), email: ContentView.cleaned(email), password: password)
+            if activeBase == nil, await resolveBase() == nil {
+                throw WakeOnLAN.WakeError.upsnap("どのアドレスにもつながりません")
+            }
+            do {
+                devices = try await fetchDevices()
+            } catch {
+                // つながるアドレスが変わったかもしれない（家を出た、など）。選び直して、もう一度読む
+                guard await resolveBase() != nil else { throw error }
+                devices = try await fetchDevices()
+            }
             if Task.isCancelled { return }
-            devices = list
             message = nil
         } catch {
             if Task.isCancelled { return }
             message = "UpSnap から読めません（\(error.localizedDescription)）"
         }
         loaded = true
+    }
+
+    private func fetchDevices() async throws -> [WakeOnLAN.UpSnapDevice] {
+        try await WakeOnLAN.upsnapDeviceList(
+            baseURL: ContentView.cleaned(activeBase ?? url),
+            email: ContentView.cleaned(email), password: password)
     }
 
     private func field<Content: View>(_ icon: String, @ViewBuilder content: () -> Content) -> some View {

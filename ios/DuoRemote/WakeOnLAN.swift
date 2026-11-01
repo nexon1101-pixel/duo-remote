@@ -90,6 +90,16 @@ enum WakeOnLAN {
         return items
     }
 
+    /// UpSnap のアドレスにつながるか（2.5秒で打ち切る）
+    static func upsnapReachable(_ baseURL: String) async -> Bool {
+        guard let root = try? upsnapRoot(baseURL) else { return false }
+        var request = URLRequest(url: root.appendingPathComponent("api/health"), timeoutInterval: 2.5)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let (_, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse else { return false }
+        return (200..<300).contains(http.statusCode)
+    }
+
     struct UpSnapDevice: Identifiable, Equatable {
         let id: String
         let name: String
