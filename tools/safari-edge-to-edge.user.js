@@ -1,31 +1,64 @@
 // ==UserScript==
 // @name         帯の下まで表示
 // @description  iPhone Duo の外側の画面で、Safari の右の帯の下まで、ページを広げる。左の端のつまみで、サイトごとに切り替える。内側の画面では、何もしない
-// @version      3.0
+// @version      3.1
 // @match        *://*/*
 // @run-at       document-start
 // ==/UserScript==
 (function () {
   var KEY = 'edge2edge:' + location.host;
-  var on = localStorage.getItem(KEY) !== 'off';
+  var GKEY = 'e2e-gap:' + screen.width; // 画面の幅ごとに、帯の幅を覚える（外側の画面だけに、値が残る）
+  var MARK = 'data-e2e';
+  var on = safeGet(KEY) !== 'off';
   var style = document.createElement('style');
   var handle;
-  var gapNow = 0;
-  var MARK = 'data-e2e';
+  var hackGap = 0; // 幅を無理に広げているときの、帯の幅
 
-  // 画面全体の幅と、ページの幅の差が、右の帯の幅
-  function gap() {
+  function safeGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function safeSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+  // 画面全体の幅と、ページの幅の差が、右の帯の幅。Safari が、帯まで広げているとき（差がないとき）は、覚えた値を使う
+  function measure() {
     var d = Math.round(screen.width - document.documentElement.clientWidth);
-    return d > 20 && d < 400 ? d : 0;
+    if (d > 20 && d < 400) { safeSet(GKEY, String(d)); return { g: d, cover: false }; }
+    var saved = parseInt(safeGet(GKEY) || '0', 10);
+    if (saved && d >= -2 && d <= 2) return { g: saved, cover: true };
+    return { g: 0, cover: false };
   }
 
-  function viewport() {
-    var m = document.querySelector('meta[name=viewport]');
-    if (!m) return;
-    var c = m.content.replace(/,?\s*viewport-fit=cover/, '');
-    m.content = on ? c + ', viewport-fit=cover' : c;
+  // --- 読み込みの最初に、viewport-fit=cover を足す（覚えた帯の幅があるとき = 外側の画面だと分かっているとき）
+  function patchMeta(m) {
+    var c = m.getAttribute('content') || '';
+    var has = /viewport-fit=cover/.test(c);
+    if (on && !has) m.setAttribute('content', c + (c ? ', ' : '') + 'viewport-fit=cover');
+    else if (!on && has) m.setAttribute('content', c.replace(/,?\s*viewport-fit=cover/, ''));
   }
 
+  function patchAll() {
+    var ms = document.querySelectorAll('meta[name=viewport]');
+    for (var i = 0; i < ms.length; i++) patchMeta(ms[i]);
+  }
+
+  var knownOuter = parseInt(safeGet(GKEY) || '0', 10) > 0;
+  if (knownOuter) {
+    new MutationObserver(function (records) {
+      for (var i = 0; i < records.length; i++) {
+        var added = records[i].addedNodes;
+        for (var j = 0; j < added.length; j++) {
+          var n = added[j];
+          if (n.nodeType !== 1) continue;
+          if (n.tagName === 'META' && n.getAttribute('name') === 'viewport') patchMeta(n);
+          else if (n.querySelector) {
+            var m = n.querySelector('meta[name=viewport]');
+            if (m) patchMeta(m);
+          }
+        }
+      }
+    }).observe(document, { childList: true, subtree: true });
+    patchAll();
+  }
+
+  // --- Safari が広げなかったときの方法。ページの幅を、帯の分だけ無理に広げる
   function css(g) {
     var w = document.documentElement.clientWidth + g;
     return (
@@ -36,23 +69,22 @@
     );
   }
 
-  // 固定表示（position:fixed）は、広げる前の幅の中にしか描かれない。幅いっぱいのものは、帯の分だけ広げ、
-  // 右の端に寄せたものは、帯の分だけ右へずらす
+  // 固定表示（fixed）と、張り付く表示（sticky）の、幅いっぱいのものは、帯の分だけ広げる。右の端に寄ったものは、右へずらす
   function fixFixed(g) {
     var base = document.documentElement.clientWidth;
     var all = document.body ? document.body.getElementsByTagName('*') : [];
     for (var i = 0; i < all.length; i++) {
       var el = all[i];
       if (el.hasAttribute(MARK) || el === handle) continue;
-      var cs = getComputedStyle(el);
-      if (cs.position !== 'fixed') continue;
+      var pos = getComputedStyle(el).position;
+      if (pos !== 'fixed' && pos !== 'sticky') continue;
       var r = el.getBoundingClientRect();
       if (r.width === 0 || r.height === 0) continue;
       if (r.left <= 2 && r.right >= base - 2) {
         el.style.setProperty('width', (r.width + g) + 'px', 'important');
         el.style.setProperty('max-width', 'none', 'important');
         el.setAttribute(MARK, 'w');
-      } else if (r.right >= base - 2) {
+      } else if (pos === 'fixed' && r.right >= base - 2) {
         el.style.setProperty('translate', g + 'px 0', 'important');
         el.setAttribute(MARK, 't');
       }
@@ -63,38 +95,46 @@
     var marked = document.querySelectorAll('[' + MARK + ']');
     for (var i = 0; i < marked.length; i++) {
       var el = marked[i];
-      var kind = el.getAttribute(MARK);
-      if (kind === 'w') { el.style.removeProperty('width'); el.style.removeProperty('max-width'); }
-      else { el.style.removeProperty('translate'); }
+      if (el.getAttribute(MARK) === 'w') { el.style.removeProperty('width'); el.style.removeProperty('max-width'); }
+      else el.style.removeProperty('translate');
       el.removeAttribute(MARK);
     }
   }
 
   var timer = null;
   function scheduleFix() {
-    if (timer || !on || !gapNow) return;
-    timer = setTimeout(function () { timer = null; if (on && gapNow) fixFixed(gapNow); }, 400);
+    if (timer || !on || !hackGap) return;
+    timer = setTimeout(function () { timer = null; if (on && hackGap) fixFixed(hackGap); }, 400);
   }
 
   function apply() {
     // 広げた状態では、幅を測れないので、いったん元に戻してから測る
     style.remove();
     unfixFixed();
-    var g = gap();
-    gapNow = g;
-    if (!g) {
+    hackGap = 0;
+    var q = measure();
+    if (!q.g) {
       // 右の帯がない（内側の画面など）。何もしない
-      var m = document.querySelector('meta[name=viewport]');
-      if (m) m.content = m.content.replace(/,?\s*viewport-fit=cover/, '');
+      patchAllOff();
       if (handle) handle.style.display = 'none';
       return;
     }
-    if (handle) { handle.style.display = ''; handle.style.opacity = on ? '0.45' : '0.2'; }
-    viewport();
-    if (on) {
-      style.textContent = css(g);
+    if (handle) { handle.style.display = ''; handle.style.opacity = on ? '0.8' : '0.35'; }
+    patchAll();
+    if (on && !q.cover) {
+      // Safari が、帯まで広げていない。幅を無理に広げる
+      hackGap = q.g;
+      style.textContent = css(q.g);
       (document.head || document.documentElement).appendChild(style);
-      fixFixed(g);
+      fixFixed(q.g);
+    }
+  }
+
+  function patchAllOff() {
+    var ms = document.querySelectorAll('meta[name=viewport]');
+    for (var i = 0; i < ms.length; i++) {
+      var c = ms[i].getAttribute('content') || '';
+      if (/viewport-fit=cover/.test(c)) ms[i].setAttribute('content', c.replace(/,?\s*viewport-fit=cover/, ''));
     }
   }
 
@@ -103,14 +143,14 @@
     handle = document.createElement('div');
     handle.style.cssText =
       'position:fixed;left:0;top:70%;width:12px;height:56px;border-radius:0 8px 8px 0;' +
-      'background:#000;z-index:2147483647;-webkit-tap-highlight-color:transparent';
+      'background:#000;box-shadow:0 0 0 1px rgba(255,255,255,0.7);' +
+      'z-index:2147483647;-webkit-tap-highlight-color:transparent';
     handle.addEventListener('click', function () {
       on = !on;
-      localStorage.setItem(KEY, on ? 'on' : 'off');
+      safeSet(KEY, on ? 'on' : 'off');
       apply();
     });
     document.documentElement.appendChild(handle);
-    handle.setAttribute(MARK + '-self', '1');
   }
 
   document.addEventListener('DOMContentLoaded', function () {
