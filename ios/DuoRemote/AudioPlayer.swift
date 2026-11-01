@@ -1,5 +1,6 @@
 import AudioToolbox
 import AVFoundation
+import SwiftUI
 
 /// PCから届いた音を鳴らす。音の形は2つ。
 /// - pcm: 符号つき16ビット、インターリーブ
