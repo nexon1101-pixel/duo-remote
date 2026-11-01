@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         帯の下まで表示
-// @description  iPhone Duo の Safari で、右の帯の下まで、ページを広げる。左の「⇔」で、サイトごとに切り替える
-// @version      2.1
+// @description  iPhone Duo の外側の画面で、Safari の右の帯の下まで、ページを広げる。「⇔」で、サイトごとに切り替える。内側の画面では、何もしない
+// @version      2.2
 // @match        *://*/*
 // @run-at       document-start
 // ==/UserScript==
@@ -19,6 +19,11 @@
     return d > 20 && d < 400 ? d : 0;
   }
 
+  // 外側の画面か。右の帯があり、画面の幅が狭いとき（内側の広い画面では、何もしない）
+  function isOuter(g) {
+    return g > 0 && Math.min(screen.width, screen.height) < 600;
+  }
+
   function viewport() {
     var m = document.querySelector('meta[name=viewport]');
     if (!m) return;
@@ -26,8 +31,7 @@
     m.content = on ? c + ', viewport-fit=cover' : c;
   }
 
-  function css() {
-    var g = gap();
+  function css(g) {
     if (!on || !g) return '';
     var w = document.documentElement.clientWidth + g;
     return (
@@ -39,20 +43,31 @@
   }
 
   function apply() {
+    // 広げた状態では、幅を測れないので、いったん元に戻してから測る
+    style.remove();
+    var g = gap();
+    if (!isOuter(g)) {
+      // 外側の画面ではない。何もしない（広げたものは戻し、ボタンは隠す）
+      var m = document.querySelector('meta[name=viewport]');
+      if (m) m.content = m.content.replace(/,?\s*viewport-fit=cover/, '');
+      style.remove();
+      if (button) button.style.display = 'none';
+      return;
+    }
+    if (button) button.style.display = '';
     viewport();
-    style.textContent = css();
+    style.textContent = css(g);
     if (style.textContent) (document.head || document.documentElement).appendChild(style);
     else style.remove();
     if (button) {
       button.style.opacity = on ? '0.55' : '0.25';
-      placeButton();
+      placeButton(g);
     }
   }
 
-  // ボタンは、右の帯の、空いている所（戻るボタンと「＋」ボタンの間）に置く。帯がないときは、左の端
-  function placeButton() {
-    var g = gap();
-    button.style.left = (g ? document.documentElement.clientWidth + g - 36 - 14 : 8) + 'px';
+  // ボタンは、右の帯の、空いている所（戻るボタンと「＋」ボタンの間）に置く
+  function placeButton(g) {
+    button.style.left = (document.documentElement.clientWidth + g - 36 - 14) + 'px';
   }
 
   function makeButton() {
@@ -65,14 +80,13 @@
     button.addEventListener('click', function () {
       on = !on;
       localStorage.setItem(KEY, on ? 'on' : 'off');
-      // 広げる前の幅で測り直すために、いったん消してから、つけ直す
-      style.remove();
-      requestAnimationFrame(apply);
+      apply();
     });
     document.documentElement.appendChild(button);
   }
 
   document.addEventListener('DOMContentLoaded', function () { makeButton(); apply(); });
   window.addEventListener('load', apply);
-  window.addEventListener('orientationchange', function () { style.remove(); setTimeout(apply, 300); });
+  window.addEventListener('orientationchange', function () { setTimeout(apply, 300); });
+  window.addEventListener('resize', function () { setTimeout(apply, 300); });
 })();
