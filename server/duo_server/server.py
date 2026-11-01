@@ -17,7 +17,7 @@ from websockets.exceptions import ConnectionClosed
 from . import files, gamepad, protocol, udp as udp_mod
 from .audio import ALLOWED_CHANNELS, ALLOWED_CODECS, ALLOWED_RATES, OPUS_RATE, AudioError
 from .capture import StreamError, output_size
-from .input_win import ClipboardError, PowerError, from_windows_newlines, to_windows_newlines
+from .input_win import AudioMuteError, ClipboardError, PowerError, from_windows_newlines, to_windows_newlines
 from .udp import UdpEndpoint, UdpPeer
 from .virtual_display import VirtualDisplayError, clamp_scale, monitor_of
 
@@ -860,6 +860,8 @@ class Session:
                 await self._resume_video()
         elif t == "power":
             await self.power(msg)
+        elif t == "local_mute":
+            await self.local_mute(msg)
         elif t == "restore":
             restored = await asyncio.to_thread(self.backend.restore_brought)
             await self.send({"t": "notice", "message": f"ウィンドウを元に戻しました（{len(restored)}個）"})
@@ -885,6 +887,15 @@ class Session:
             reply = dispatch_input(msg, self.backend, self.held)
             if reply:
                 await self.send(reply)
+
+    async def local_mute(self, msg: dict[str, Any]) -> None:
+        """PC のスピーカーを、消音にする・戻す。接続が終わると、サーバーが戻す。"""
+        on = msg.get("on") is True
+        try:
+            await asyncio.to_thread(self.backend.mute_output, on)
+        except AudioMuteError as e:
+            log.warning("PC のスピーカーの消音を切り替えられませんでした: %s", e)
+            await self.send({"t": "error", "message": f"PC の音を消せませんでした（{e}）"})
 
     POWER_LABELS = {"shutdown": "シャットダウン", "restart": "再起動", "sleep": "スリープ"}
 
@@ -1306,6 +1317,10 @@ def make_handler(
                 backend.keep_awake(False)
             except Exception:
                 log.exception("スリープを防ぐ設定を戻せませんでした")
+            try:
+                backend.mute_output(False)  # 消音にしていたスピーカーを戻す
+            except Exception:
+                log.exception("PC のスピーカーの消音を戻せませんでした")
 
     async def handler(ws: ServerConnection) -> None:
         hello = await authenticate(ws)

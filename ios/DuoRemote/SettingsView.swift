@@ -40,6 +40,8 @@ struct SettingsView: View {
     // 音声
     @AppStorage("audioOn") private var audioOn = false
     @AppStorage("audioMix") private var audioMix = false
+    @AppStorage("audioVolume") private var audioVolume = 1.0
+    @AppStorage("muteLocal") private var muteLocal = false
 
     /// 選択肢が少ない設定を、1回で選べる、横並びの切り替えにする（見出しは、上に小さく出す）
     private func segmentedRow<T: Hashable, Content: View>(
@@ -163,8 +165,19 @@ struct SettingsView: View {
                 Section {
                     Toggle("PC の音声を再生", isOn: $audioOn)
                     Toggle("他のアプリの音声と同時に再生", isOn: $audioMix)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("音量")
+                            Spacer()
+                            Text("\(Int(audioVolume * 100))%").foregroundStyle(.secondary).monospacedDigit()
+                        }
+                        Slider(value: $audioVolume, in: 0...1)
+                    }
+                    Toggle("接続中、PC のスピーカーを消音", isOn: $muteLocal)
                 } header: {
                     Text("音声")
+                } footer: {
+                    Text("音量は、この iPhone で鳴らす音の大きさです。「PC のスピーカーを消音」をオンにすると、接続している間、PC のスピーカーから音が出なくなります（iPhone には届きます）。切断すると、元に戻ります。PC の音声を再生していなくても、PC のスピーカーは消音になります。")
                 }
 
                 if !info.isEmpty {

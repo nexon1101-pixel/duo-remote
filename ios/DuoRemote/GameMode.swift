@@ -3,8 +3,8 @@ import SwiftUI
 /// ゲームモードの板の、中身の切り替え
 enum GameModePane: String, CaseIterable, Identifiable {
     case keyboard
-    case controller
     case trackpad
+    case controller
 
     var id: String { rawValue }
 
@@ -30,7 +30,10 @@ enum GameModePane: String, CaseIterable, Identifiable {
 struct GameModePanel: View {
     @EnvironmentObject private var session: RemoteSession
     @AppStorage(OverlayKeyboard.layoutKey) private var layout = OverlayKeyboardLayout.us
-    @AppStorage("gameModePane") private var pane = GameModePane.controller
+    /// 出している板。キーボードとトラックパッドは、一緒に出せる。コントローラは、単独だけ
+    @AppStorage("gameModeKeyboard") private var showKeyboard = false
+    @AppStorage("gameModeTrackpad") private var showTrackpad = false
+    @AppStorage("gameModePad") private var showController = true
     @AppStorage("gameMode") private var gameMode = false
     @AppStorage("controllerPreset") private var preset = ControllerPreset.arrows
     @AppStorage(ControllerKind.storageKey) private var controllerKind = ControllerKind.simple
@@ -53,24 +56,38 @@ struct GameModePanel: View {
                     .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
             }
         }
-        .animation(.spring(duration: 0.35), value: pane)
+        .animation(.spring(duration: 0.35), value: showKeyboard)
+        .animation(.spring(duration: 0.35), value: showTrackpad)
+        .animation(.spring(duration: 0.35), value: showController)
     }
 
     @ViewBuilder
     private func content(in size: CGSize) -> some View {
-        switch pane {
-        case .keyboard:
-            keyboardPane(in: size)
-        case .controller:
+        if showController {
             controllerPane
-        case .trackpad:
-            TrackpadPad(send: session.send, zones: .sides)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if showKeyboard && showTrackpad {
+            // 上にキーボード、下にトラックパッド。キーボードは、板の高さの6割までにして、残りをトラックパッドにする
+            let spacing: CGFloat = 8
+            let keys = keyboardSize(in: CGSize(width: size.width, height: max((size.height - spacing) * 0.6, 1)))
+            VStack(spacing: spacing) {
+                keyboardPane(in: CGSize(width: size.width, height: max((size.height - spacing) * 0.6, 1)))
+                    .frame(height: keys.height + 12)
+                trackpadPane
+            }
+        } else if showTrackpad {
+            trackpadPane
+        } else {
+            keyboardPane(in: size)
         }
     }
 
-    /// 板いっぱいのキーボード。横幅から縦を決め、高さの上限を超えるときは、横幅を狭める
-    private func keyboardPane(in size: CGSize) -> some View {
+    private var trackpadPane: some View {
+        TrackpadPad(send: session.send, zones: .sides)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// 板に収まるキーボードの大きさ。横幅から縦を決め、高さの上限を超えるときは、横幅を狭める
+    private func keyboardSize(in size: CGSize) -> CGSize {
         let inset = Self.panelInset
         let ratio = OverlayKeyboard.keyAspect * CGFloat(layout.rows.count) / OverlayKeyboardLayout.rowWidth
         let maxHeight = max(size.height - inset, 1)
@@ -80,8 +97,14 @@ struct GameModePanel: View {
             height = maxHeight
             width = height / ratio
         }
+        return CGSize(width: width, height: height)
+    }
+
+    /// 板いっぱいのキーボード
+    private func keyboardPane(in size: CGSize) -> some View {
+        let fitted = keyboardSize(in: size)
         return OverlayKeysView(session: session, layout: layout)
-            .frame(width: width, height: height)
+            .frame(width: fitted.width, height: fitted.height)
             .padding(6)
             .glass(in: RoundedRectangle(cornerRadius: UIMetrics.panelRadius, style: .continuous))
     }
@@ -184,15 +207,52 @@ struct GameModePanel: View {
         .foregroundStyle(.white)
     }
 
+    private func isOn(_ item: GameModePane) -> Bool {
+        switch item {
+        case .keyboard: showKeyboard
+        case .trackpad: showTrackpad
+        case .controller: showController
+        }
+    }
+
+    /// 押した板を切り替える。コントローラは、単独だけ。キーボードとトラックパッドは、一緒に出せる（全部消すことはできない）
+    private func toggle(_ item: GameModePane) {
+        switch item {
+        case .controller:
+            showController = true
+            showKeyboard = false
+            showTrackpad = false
+        case .keyboard:
+            if showController {
+                showController = false
+                showKeyboard = true
+            } else if showKeyboard {
+                if showTrackpad { showKeyboard = false }
+            } else {
+                showKeyboard = true
+            }
+        case .trackpad:
+            if showController {
+                showController = false
+                showTrackpad = true
+            } else if showTrackpad {
+                if showKeyboard { showTrackpad = false }
+            } else {
+                showTrackpad = true
+            }
+        }
+    }
+
     private func paneButton(_ item: GameModePane) -> some View {
         Button {
-            pane = item
+            toggle(item)
         } label: {
             Image(systemName: item.systemImage)
                 .frame(width: 48, height: Self.toolbarHeight)
-                .glass(in: Capsule(), tint: pane == item ? .accentColor : nil, interactive: true)
+                .glass(in: Capsule(), tint: isOn(item) ? .accentColor : nil, interactive: true)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(item.label)
+        .accessibilityAddTraits(isOn(item) ? .isSelected : [])
     }
 }

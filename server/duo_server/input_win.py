@@ -23,6 +23,10 @@ EXTENDED_VKS = {
 }
 
 
+class AudioMuteError(Exception):
+    """PC のスピーカーを、消音にできなかった（または、元に戻せなかった）。"""
+
+
 class PowerError(Exception):
     """電源の操作（シャットダウン、再起動、スリープ）が、できなかった。"""
 
@@ -77,6 +81,10 @@ class _BringMixin:
             self.virtual_off()
         except VirtualDisplayError as e:
             log.warning("仮想ディスプレイを無効に戻せませんでした: %s", e)
+        try:
+            self.mute_output(False)
+        except AudioMuteError as e:
+            log.warning("PC のスピーカーの消音を戻せませんでした: %s", e)
 
 
 class NullInput(_BringMixin):
@@ -98,6 +106,10 @@ class NullInput(_BringMixin):
         self._virtual_height = 1080
         self.clipboard = ""
         self.keep_awake_calls: list[bool] = []  # keep_awake に渡された値の記録
+        self.mute_calls: list[bool] = []  # mute_output に渡された値の記録
+        self.mute_error: str | None = None  # 設定すると、mute_output が失敗する
+        self.output_muted = False
+        self.leftover_mute = False  # True のとき、mute_cleanup_leftover が、消音を戻す
         self.power_calls: list[tuple[str, bool]] = []  # power に渡された値の記録
         self.power_error: str | None = None  # 設定すると、power が失敗する
         # クリップボードの、ファイルと画像（テスト用）。画像は ("png", PNGのバイト列) か ("dib", DIBのバイト列)
@@ -259,6 +271,19 @@ class NullInput(_BringMixin):
 
     def keep_awake(self, on: bool) -> None:
         self.keep_awake_calls.append(on)  # calls には入れない（入力の記録と分けておく）
+
+    def mute_output(self, on: bool) -> None:
+        if self.mute_error:
+            raise AudioMuteError(self.mute_error)
+        if on == self.output_muted:
+            return
+        self.mute_calls.append(on)
+        self.output_muted = on
+
+    def mute_cleanup_leftover(self) -> bool:
+        was = self.leftover_mute
+        self.leftover_mute = False
+        return was
 
     def power(self, action: str, force: bool = False) -> None:
         if self.power_error:
@@ -1085,6 +1110,42 @@ if sys.platform == "win32":
             if not kernel32.SetThreadExecutionState(flags):
                 log.warning("SetThreadExecutionState が失敗しました")
 
+        # 消音にする前の、スピーカーの消音の状態。消音にしていないときは None
+        _muted_prev: bool | None = None
+
+        def mute_output(self, on: bool) -> None:
+            """既定のスピーカーを、消音にする（on）、元に戻す（off）。PC の音を iPhone に送る取り込み
+            （ループバック）は、スピーカーの消音の前の音を取るので、消音にしても、iPhone には届く。
+            消音にしたまま、サーバーが止まったときのために、目印のファイルを残す。"""
+            if on:
+                if self._muted_prev is not None:
+                    return
+                previous = _endpoint_mute(None)
+                self._muted_prev = previous
+                if not previous:
+                    _endpoint_mute(True)
+                    _mute_marker().write_text("unmute")
+            else:
+                if self._muted_prev is None:
+                    return
+                previous, self._muted_prev = self._muted_prev, None
+                if not previous:
+                    _endpoint_mute(False)
+                _mute_marker().unlink(missing_ok=True)
+
+        def mute_cleanup_leftover(self) -> bool:
+            """サーバーが、消音を戻さずに止められたあと、目印が残っていれば、消音を戻す。戻したときは True。"""
+            marker = _mute_marker()
+            if not marker.exists():
+                return False
+            try:
+                _endpoint_mute(False)
+            except AudioMuteError as e:
+                log.warning("前回の消音を戻せませんでした: %s", e)
+                return False
+            marker.unlink(missing_ok=True)
+            return True
+
         def power(self, action: str, force: bool = False) -> None:
             """PC の電源を操作する。シャットダウンと再起動は、3秒後に始める（返事を返す時間のため）。
             force が真のときは、開いているアプリを、保存の確認なしで閉じる。"""
@@ -1117,6 +1178,46 @@ if sys.platform == "win32":
 
         def clip_set_image(self, path: str) -> None:
             _clip_set_image(path)
+
+
+def _mute_marker():
+    import tempfile
+    from pathlib import Path
+
+    return Path(tempfile.gettempdir()) / "duo-remote-output-muted"
+
+
+def _endpoint_mute(value: bool | None) -> bool | None:
+    """既定のスピーカーの消音を、読む（None）、設定する（True / False）。読んだときは、今の状態を返す。"""
+    try:
+        import comtypes
+    except ImportError as e:
+        raise AudioMuteError("pycaw が入っていません。requirements.txt のとおりに入れてください") from e
+    comtypes.CoInitialize()
+    try:
+        return _endpoint_mute_inner(value)
+    finally:
+        comtypes.CoUninitialize()
+
+
+def _endpoint_mute_inner(value: bool | None) -> bool | None:
+    try:
+        from ctypes import POINTER, cast
+
+        from comtypes import CLSCTX_ALL
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+
+        device = AudioUtilities.GetSpeakers()
+        volume = getattr(device, "EndpointVolume", None)  # 新しい pycaw
+        if volume is None:  # 古い pycaw
+            interface = device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            volume = cast(interface, POINTER(IAudioEndpointVolume))
+        if value is None:
+            return bool(volume.GetMute())
+        volume.SetMute(1 if value else 0, None)
+        return None
+    except Exception as e:
+        raise AudioMuteError(str(e) or type(e).__name__) from e
 
 
 def create_input():

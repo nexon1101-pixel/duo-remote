@@ -135,6 +135,9 @@ async def run(args: argparse.Namespace) -> None:
     if virtual and await asyncio.to_thread(backend.virtual_cleanup_leftover):
         # 前回、サーバーが後片付けをせずに止められると、有効のまま残る。使っていないときは無効、が決まり
         print("前回から有効のまま残っていた仮想ディスプレイを、無効に戻しました")
+    if await asyncio.to_thread(backend.mute_cleanup_leftover):
+        # 前回、サーバーが後片付けをせずに止められると、PC のスピーカーが消音のまま残る
+        print("前回から消音のまま残っていた、PC のスピーカーを戻しました")
     control_server = None
     if args.control_port and args.control_key:
         try:
