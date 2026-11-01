@@ -195,7 +195,7 @@ def test_window_on_virtual_monitor_is_captured_there_and_restored_on_disconnect(
         stream = streams[-1]
         assert stream.monitor["virtual"]
         assert stream.region == backend.windows[102]["rect"]  # ウィンドウの範囲（デスクトップ上の位置）
-        assert ("virtual_aspect", round(951 / 669, 3)) in backend.calls
+        assert ("virtual_aspect", round(951 / 669, 3), 1.0) in backend.calls
         await ws.close()
         await asyncio.sleep(0.3)
 
@@ -409,3 +409,47 @@ def test_capture_is_paused_while_virtual_display_changes_and_resumed_after():
     asyncio.run(with_server(body, backend, streams))
     assert seen == [True]
     assert len(streams) == 2 and streams[1].monitor is None  # 本物の画面を、撮り直した
+
+
+def _aspect_calls(backend):
+    return [c for c in backend.calls if c[0] == "virtual_aspect"]
+
+
+def test_vscale_is_passed_to_virtual_set_aspect():
+    backend = make_backend()
+
+    async def body(url):
+        ws, _ = await open_session(url)
+        cases = [(dict(vscale=1.5), 1.5), ({}, 1.0), (dict(vscale=5.0), 2.0), (dict(vscale="1.5"), 1.0),
+                 (dict(vscale=0.5), 1.0), (dict(vscale=1.25), 1.25)]
+        for extra, _expected in cases:
+            await send(ws, t="mode", mode="desktop", fit_w=951, fit_h=669, **extra)
+            await recv_json(ws, "mode")
+        await send(ws, t="mode", mode="window", id=102, to_virtual=True, fit_w=951, fit_h=669, vscale=1.5)
+        await recv_json(ws, "mode")
+        await send(ws, t="mode", mode="window", id=102, to_virtual=True, fit_w=951, fit_h=669)  # 省略は 1.0
+        await recv_json(ws, "mode")
+        await ws.close()
+        await asyncio.sleep(0.3)
+        scales = [c[2] for c in _aspect_calls(backend)]
+        assert scales == [e for _, e in cases] + [1.5, 1.0]
+
+    asyncio.run(with_server(body, backend))
+
+
+def test_vscale_changes_virtual_monitor_size_and_survives_quality_change():
+    backend = make_backend()
+
+    async def body(url):
+        ws, _ = await open_session(url)
+        await send(ws, t="mode", mode="desktop", fit_w=951, fit_h=669, vscale=2.0)
+        await recv_json(ws, "mode")
+        assert backend.monitors()[-1]["rect"][3] == 2160
+        await send(ws, t="quality", max_height=720)
+        await asyncio.sleep(0.3)
+        assert backend.monitors()[-1]["rect"][3] == 2160  # 撮り直しても、解像度は戻らない
+        assert len(_aspect_calls(backend)) == 1
+        await ws.close()
+        await asyncio.sleep(0.3)
+
+    asyncio.run(with_server(body, backend))

@@ -91,6 +91,7 @@ class NullInput(_BringMixin):
         self.virtual_enabled = False
         self.virtual_error: str | None = None  # 設定すると、virtual_on が失敗する
         self._virtual_width = 1536
+        self._virtual_height = 1080
         self.clipboard = ""
         self.keep_awake_calls: list[bool] = []  # keep_awake に渡された値の記録
         # クリップボードの、ファイルと画像（テスト用）。画像は ("png", PNGのバイト列) か ("dib", DIBのバイト列)
@@ -112,9 +113,9 @@ class NullInput(_BringMixin):
             "primary": True, "virtual": False, "adapter": 0, "output": 0, "description": "",
         }]
         if self.virtual_enabled:
-            vw = self._virtual_width
+            vw, vh = self._virtual_width, self._virtual_height
             found.append({
-                "name": "\\\\.\\DISPLAY2", "rect": (w, 0, vw, 1080), "work": (w, 0, vw, 1040),
+                "name": "\\\\.\\DISPLAY2", "rect": (w, 0, vw, vh), "work": (w, 0, vw, vh - 40),
                 "primary": False, "virtual": True, "adapter": 0, "output": 1, "description": "Virtual Display Driver",
             })
         return found
@@ -142,9 +143,10 @@ class NullInput(_BringMixin):
         self.virtual_off()
         return was
 
-    def virtual_set_aspect(self, aspect: float) -> dict:
-        self.calls.append(("virtual_aspect", round(aspect, 3)))
-        self._virtual_width = round(1080 * aspect / 2) * 2
+    def virtual_set_aspect(self, aspect: float, scale: float = 1.0) -> dict:
+        self.calls.append(("virtual_aspect", round(aspect, 3), scale))
+        self._virtual_height = round(1080 * scale / 2) * 2
+        self._virtual_width = round(self._virtual_height * aspect / 2) * 2
         return self.monitors()[-1]
 
     def window_placement(self, wid: int) -> dict | None:
@@ -821,8 +823,8 @@ if sys.platform == "win32":
                 log.warning("有効のまま残っている仮想ディスプレイを、無効に戻せませんでした: %s", e)
                 return False
 
-        def virtual_set_aspect(self, aspect: float) -> dict:
-            self._vd.set_resolution(aspect)
+        def virtual_set_aspect(self, aspect: float, scale: float = 1.0) -> dict:
+            self._vd.set_resolution(aspect, scale)
             monitor = self._vd.monitor()
             if monitor is None:
                 raise VirtualDisplayError("仮想モニターが出ていません")

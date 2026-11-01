@@ -31,7 +31,30 @@ TARGET_HEIGHT = 1080
 # iPhone Duo の画面の縦横比に合う幅を含める（高さ1080のとき）:
 #   内側 1878x2670px: 縦持ち 760、横持ち 1536 / 外側 1398x2034px: 縦持ち 742、横持ち 1572
 PRESET_WIDTHS = (720, 742, 760, 810, 900, 1080, 1200, 1296, 1440, 1536, 1572, 1620, 1728, 1800, 1920, 2160, 2400, 2560)
+# 設定ファイルに書く高さ。標準（1080）と、その1.25倍、1.5倍、2倍。
+# 幅は、高さ1080の幅に H / 1080 を掛けて、偶数に丸める（縦横比はほぼ同じ）。
+# 解像度の数は、高さ4つ × 幅18 = 72 以下（重複は除く）。ドライバーが受け付ける数に上限があるかもしれない
+PRESET_HEIGHTS = (1080, 1350, 1620, 2160)
 REFRESH_RATES = (60,)
+# set_resolution の scale の範囲
+MIN_SCALE, MAX_SCALE = 1.0, 2.0
+
+
+def clamp_scale(scale) -> float:
+    """scale を 1.0〜2.0 に収める。数でない値、NaN、inf は 1.0。"""
+    if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(scale):
+        return MIN_SCALE
+    return min(max(float(scale), MIN_SCALE), MAX_SCALE)
+
+
+def widths_for_height(height: int, widths: tuple[int, ...] = PRESET_WIDTHS) -> tuple[int, ...]:
+    """高さ1080の幅の並びから、height に合わせた幅の並びを作る（偶数に丸め、重複は除く）。"""
+    out: list[int] = []
+    for w in widths:
+        scaled = round(w * height / TARGET_HEIGHT / 2) * 2
+        if scaled not in out:
+            out.append(scaled)
+    return tuple(out)
 
 
 class VirtualDisplayError(RuntimeError):
@@ -65,10 +88,11 @@ def build_vdd_settings(
     gpu_name: str | None = None,
     count: int = 1,
     widths: tuple[int, ...] = PRESET_WIDTHS,
-    height: int = TARGET_HEIGHT,
+    heights: tuple[int, ...] = PRESET_HEIGHTS,
     rates: tuple[int, ...] = REFRESH_RATES,
 ) -> str:
-    """Virtual Display Driver の設定ファイル（vdd_settings.xml）の中身を作る。"""
+    """Virtual Display Driver の設定ファイル（vdd_settings.xml）の中身を作る。
+    widths は高さ1080のときの幅。heights の高さごとに、幅を掛け直して、全部の組み合わせを書く。"""
     lines = [
         "<?xml version='1.0' encoding='utf-8'?>",
         "<vdd_settings>",
@@ -83,15 +107,16 @@ def build_vdd_settings(
         "    </global>",
         "    <resolutions>",
     ]
-    for w in widths:
-        for r in rates:
-            lines += [
-                "        <resolution>",
-                f"            <width>{w}</width>",
-                f"            <height>{height}</height>",
-                f"            <refresh_rate>{r}</refresh_rate>",
-                "        </resolution>",
-            ]
+    for height in heights:
+        for w in widths_for_height(height, widths):
+            for r in rates:
+                lines += [
+                    "        <resolution>",
+                    f"            <width>{w}</width>",
+                    f"            <height>{height}</height>",
+                    f"            <refresh_rate>{r}</refresh_rate>",
+                    "        </resolution>",
+                ]
     lines += [
         "    </resolutions>",
         "    <options>",
@@ -451,12 +476,15 @@ class VirtualDisplay:
             set_pnp_enabled(device["InstanceId"], False)
         self._we_enabled = False
 
-    def set_resolution(self, aspect: float) -> tuple[int, int, int]:
-        """縦横比が aspect に近い解像度に変える。変えたあとの (幅, 高さ, Hz) を返す。"""
+    def set_resolution(self, aspect: float, scale: float = 1.0) -> tuple[int, int, int]:
+        """縦横比が aspect に近い解像度に変える。変えたあとの (幅, 高さ, Hz) を返す。
+        scale（1.0〜2.0）が大きいほど、高さが大きいものを選ぶ。設定ファイルに大きい高さがなければ、1080 のまま。"""
         monitor = self.monitor()
         if monitor is None:
             raise VirtualDisplayError("仮想モニターが出ていません")
-        mode = choose_mode(list_modes(monitor["name"]), aspect)
+        mode = choose_mode(
+            list_modes(monitor["name"]), aspect, round(TARGET_HEIGHT * clamp_scale(scale))
+        )
         if mode is None:
             raise VirtualDisplayError("仮想モニターが出せる解像度が見つかりません")
         if current_mode(monitor["name"]) != mode:
@@ -536,7 +564,7 @@ def main(argv: list[str] | None = None) -> None:
                     print(f"元の設定を {backup} に控えました")
             CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
             CONFIG_PATH.write_text(xml, encoding="utf-8")
-            print(f"設定を書きました: {CONFIG_PATH}（高さ {TARGET_HEIGHT}、幅 {PRESET_WIDTHS[0]}〜{PRESET_WIDTHS[-1]}）")
+            print(f"設定を書きました: {CONFIG_PATH}（高さ {', '.join(map(str, PRESET_HEIGHTS))} の4つ、幅は高さごとに最大 {len(PRESET_WIDTHS)} 通り）")
             if args.apply:
                 device = vd.device()
                 if device is None:

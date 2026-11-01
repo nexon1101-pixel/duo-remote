@@ -19,7 +19,7 @@ from .audio import ALLOWED_CHANNELS, ALLOWED_CODECS, ALLOWED_RATES, OPUS_RATE, A
 from .capture import StreamError, output_size
 from .input_win import ClipboardError, from_windows_newlines, to_windows_newlines
 from .udp import UdpEndpoint, UdpPeer
-from .virtual_display import VirtualDisplayError, monitor_of
+from .virtual_display import VirtualDisplayError, clamp_scale, monitor_of
 
 log = logging.getLogger(__name__)
 
@@ -288,6 +288,7 @@ class Session:
         # 撮っているモニター。Noneなら主モニター。仮想ディスプレイのデスクトップを映すときは、そのモニター
         self.monitor: dict | None = None
         self.size = (0, 0)
+        self._vscale = 1.0  # 最後の mode で指定された、仮想ディスプレイの解像度の倍率（1.0〜2.0）
         loop = asyncio.get_running_loop()
         self.failed: asyncio.Future = loop.create_future()
         # 別の端末がつながったときに、この接続を終わらせる合図
@@ -815,7 +816,7 @@ class Session:
 
     async def _ensure_virtual(self, fit_w: float | None = None, fit_h: float | None = None) -> dict | None:
         """仮想ディスプレイを出して、そのモニターを返す。出せないときは、理由を知らせて None。
-        fit_w、fit_h があれば、その縦横比に近い解像度にする。"""
+        fit_w、fit_h があれば、その縦横比に近い解像度にする（高さは self._vscale に合わせる）。"""
         if not self.backend.virtual_available():
             await self.send({"t": "error", "message": "仮想ディスプレイのドライバーが入っていません"})
             return None
@@ -827,7 +828,7 @@ class Session:
         try:
             monitor = await asyncio.to_thread(self.backend.virtual_on)
             if fit_w and fit_h and fit_w > 0 and fit_h > 0:
-                monitor = await asyncio.to_thread(self.backend.virtual_set_aspect, fit_w / fit_h)
+                monitor = await asyncio.to_thread(self.backend.virtual_set_aspect, fit_w / fit_h, self._vscale)
         except VirtualDisplayError as e:
             log.warning("仮想ディスプレイを出せませんでした: %s", e)
             await self.send({"t": "error", "message": str(e)})
@@ -1008,6 +1009,9 @@ class Session:
                 await self.send({"t": "mode", "mode": "screen"})
                 await self._switch(None, None)
             return
+        if mode in ("desktop", "window"):
+            # 省略したときは 1.0（前の値は引き継がない）。範囲の外は収め、数でない値は 1.0
+            self._vscale = clamp_scale(msg.get("vscale"))
         if mode == "desktop":
             monitor = await self._ensure_virtual(_num(msg.get("fit_w")), _num(msg.get("fit_h")))
             if monitor is None:
