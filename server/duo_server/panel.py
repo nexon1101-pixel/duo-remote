@@ -1,6 +1,6 @@
 """サーバーの管理画面。PCの中だけで使うウェブページを出し、サーバー（python -m duo_server）を動かす。
 
-起動: python -m duo_server.panel [--port 8770] [--autostart] [--no-window] [--restart]
+起動: python -m duo_server.panel [--port 8770] [--autostart] [--no-window] [--no-tray] [--restart]
 127.0.0.1 だけで待ち受ける。起動のたびに新しい鍵を作り、鍵のない要求は断る。
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, control, driver, gamepad, virtual_display
+from . import __version__, control, driver, gamepad, tray, virtual_display
 from .control import SERVER_DIR, SettingsError
 
 DEFAULT_PORT = 8770
@@ -277,6 +277,7 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
             "port": control.read_settings(config)["port"],
             "udp_port": control.read_settings(config)["port"],  # UDP も、WebSocket と同じ番号
             "autostart": control.autostart_enabled(),
+            "tray": control.read_settings(config).get("tray", True) is not False,
         }
 
     def update_log() -> dict[str, Any]:
@@ -291,6 +292,54 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
         if snap["done"]:
             snap["next_key"] = next_key
         return {**snap, "previous": previous}
+
+    def virtual_cleanup() -> tuple[int, dict[str, Any], None]:
+        """仮想ディスプレイを今すぐ無効にし、持ってきたウィンドウを戻す。ページとトレイのメニューが、これを呼ぶ。"""
+        endpoint = process.control_endpoint() if process.running else None
+        if endpoint is not None:
+            try:
+                r = control_call(endpoint, "cleanup")
+            except (OSError, ValueError):
+                r = None  # つながらない。直接の方法にする
+            if r is not None:
+                if not r.get("ok"):
+                    return 502, {"error": str(r.get("error") or "サーバーが片付けに失敗しました")}, None
+                restored, was_on = int(r.get("restored") or 0), bool(r.get("was_on"))
+                off_error = None if r.get("virtual_off") else str(r.get("error") or "仮想ディスプレイを無効にできませんでした")
+                return 200, {
+                    "restored": restored, "virtual_off": off_error is None, "was_on": was_on, "via": "server",
+                    "message": cleanup_message(restored, was_on, off_error, "server"),
+                    **({"error": off_error} if off_error else {}),
+                }, None
+        if not control.is_admin():
+            return 400, {"error": ADMIN_REQUIRED}, None
+        try:
+            was_on = direct_virtual_off()
+        except virtual_display.VirtualDisplayError as e:
+            return 400, {"error": str(e) or "仮想ディスプレイを無効にできませんでした"}, None
+        except Exception as e:  # noqa: BLE001 PowerShell が使えないなど
+            return 500, {"error": f"仮想ディスプレイを無効にできませんでした（{type(e).__name__}）"}, None
+        return 200, {
+            "restored": 0, "virtual_off": True, "was_on": was_on, "via": "direct",
+            "message": cleanup_message(0, was_on, None, "direct"),
+        }, None
+
+    def quit_panel() -> None:
+        """サーバーを止めて、管理画面を終わる合図を出す。"""
+        process.stop()
+        exit_event.set()
+
+    def tray_message(result: tuple[int, dict[str, Any], None]) -> str:
+        return str(result[1].get("message") or result[1].get("error") or "")
+
+    # トレイのメニューが呼ぶもの。ページの操作と同じ処理を呼ぶ（main が、「管理画面を開く」を足す）
+    actions: dict[str, Callable[[], Any]] = {
+        tray.START: lambda: process.start(args_for_server()),
+        tray.STOP: lambda: process.stop(),
+        tray.RESTART: lambda: process.restart(args_for_server()),
+        tray.VIRTUAL_OFF: lambda: tray_message(virtual_cleanup()),
+        tray.QUIT: quit_panel,
+    }
 
     def finish_and_exit(relaunch_args: list[str] | None) -> None:
         """サーバーを止め、必要なら新しい管理画面を起動してから、終わる合図を出す。"""
@@ -340,6 +389,9 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
         server_version = "DuoPanel"
         exit_signal = exit_event
         update_state = update
+        tray_actions = actions
+        # 設定の tray が変わったときに main が呼ぶもの（引数は、新しい値）
+        hooks: dict[str, Callable[[bool], None] | None] = {"tray": None}
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 画面に出さない
             pass
@@ -467,6 +519,9 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
                 saved = control.save_settings(changes, config)
             except SettingsError as e:
                 return 400, {"error": str(e)}, None
+            hook = self.hooks.get("tray")
+            if "tray" in changes and hook is not None:
+                hook(bool(saved["tray"]))
             return 200, {"settings": saved, "restart_needed": bool(process.running)}, None
 
         def _token(self):
@@ -516,35 +571,8 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
             return 200, {"started": True}, None
 
         def _virtual_cleanup(self):
-            """仮想ディスプレイを今すぐ無効にし、持ってきたウィンドウを戻す。利用者への確認は、ページの側でする。"""
-            endpoint = process.control_endpoint() if process.running else None
-            if endpoint is not None:
-                try:
-                    r = control_call(endpoint, "cleanup")
-                except (OSError, ValueError):
-                    r = None  # つながらない。直接の方法にする
-                if r is not None:
-                    if not r.get("ok"):
-                        return 502, {"error": str(r.get("error") or "サーバーが片付けに失敗しました")}, None
-                    restored, was_on = int(r.get("restored") or 0), bool(r.get("was_on"))
-                    off_error = None if r.get("virtual_off") else str(r.get("error") or "仮想ディスプレイを無効にできませんでした")
-                    return 200, {
-                        "restored": restored, "virtual_off": off_error is None, "was_on": was_on, "via": "server",
-                        "message": cleanup_message(restored, was_on, off_error, "server"),
-                        **({"error": off_error} if off_error else {}),
-                    }, None
-            if not control.is_admin():
-                return 400, {"error": ADMIN_REQUIRED}, None
-            try:
-                was_on = direct_virtual_off()
-            except virtual_display.VirtualDisplayError as e:
-                return 400, {"error": str(e) or "仮想ディスプレイを無効にできませんでした"}, None
-            except Exception as e:  # noqa: BLE001 PowerShell が使えないなど
-                return 500, {"error": f"仮想ディスプレイを無効にできませんでした（{type(e).__name__}）"}, None
-            return 200, {
-                "restored": 0, "virtual_off": True, "was_on": was_on, "via": "direct",
-                "message": cleanup_message(0, was_on, None, "direct"),
-            }, None
+            """利用者への確認は、ページの側でする。"""
+            return virtual_cleanup()
 
         def _admin(self):
             if not run_as_admin(["--key", next_key]):
@@ -586,11 +614,20 @@ def browser_of(args: argparse.Namespace) -> str:
         return "edge"
 
 
+def tray_enabled() -> bool:
+    """設定で、トレイのアイコンを出すことになっているか。"""
+    try:
+        return control.read_settings().get("tray", True) is not False
+    except (OSError, ValueError):
+        return True
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="duo_server.panel", description="サーバーの管理画面")
     p.add_argument("--port", type=int, default=DEFAULT_PORT, help="管理画面のポート（127.0.0.1だけで待ち受ける）")
     p.add_argument("--autostart", action="store_true", help="ログイン時の自動起動（ウィンドウを開かない）")
     p.add_argument("--no-window", action="store_true", help="ウィンドウを開かない")
+    p.add_argument("--no-tray", action="store_true", help="タスクトレイのアイコンを出さない（設定より優先する）")
     p.add_argument("--restart", action="store_true", help="更新などの起動し直し（前の管理画面が終わるのを待つ）")
     p.add_argument("--key", help="起動し直しのとき、前の管理画面から渡される鍵（ページが、そのまま移れるように）")
     p.add_argument(
@@ -647,7 +684,15 @@ def main(argv: list[str] | None = None) -> int:
     control.refresh_autostart()
     LOCK_PATH.write_text(json.dumps({"port": port, "key": key, "pid": os.getpid()}), encoding="utf-8")
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    icon = tray.Tray(lambda: tray.state_of(process), {
+        **handler.tray_actions,
+        tray.OPEN: lambda: open_window(url, browser_of(args)),  # すでに開いていても、もう一度開く
+    })
+    if not args.no_tray:
+        handler.hooks["tray"] = lambda enabled: icon.start() if enabled else icon.stop()
     try:
+        if not args.no_tray and tray_enabled():
+            icon.start()
         process.start(control.server_args(control.read_settings(), control.DEFAULT_CONFIG))
         if show_window:
             open_window(url, browser_of(args))
@@ -657,6 +702,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("終了します")
     finally:
+        icon.stop()
         process.stop()
         httpd.shutdown()
         httpd.server_close()

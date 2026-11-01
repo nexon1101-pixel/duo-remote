@@ -34,7 +34,7 @@ ENCODERS = ("auto", "h264_nvenc", "libx264")
 PANEL_BROWSERS = ("edge", "chrome", "default")
 DEFAULTS: dict[str, Any] = {
     "port": 8765, "fps": 60, "bitrate_kbps": 8000, "max_height": 0, "encoder": "auto", "output_idx": 0,
-    "panel_browser": "edge",
+    "panel_browser": "edge", "tray": True,
 }
 
 
@@ -62,6 +62,10 @@ def save_settings(changes: dict[str, Any], path: Path = DEFAULT_CONFIG) -> dict[
         elif key == "panel_browser":
             if value not in PANEL_BROWSERS:
                 raise SettingsError(f"panel_browser は {'、'.join(PANEL_BROWSERS)} のどれかにしてください")
+            cfg[key] = value
+        elif key == "tray":
+            if not isinstance(value, bool):
+                raise SettingsError("tray は true か false にしてください")
             cfg[key] = value
         elif key == "encoder":
             if value not in ENCODERS:
