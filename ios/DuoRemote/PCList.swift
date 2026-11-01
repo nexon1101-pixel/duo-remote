@@ -70,6 +70,7 @@ struct PCListSection: View {
             case .manual: ManualTab(connect: connect)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -93,6 +94,7 @@ private struct ManualTab: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .lineLimit(1)
                 }
                 Divider().overlay(Color.white.opacity(0.1))
                 row("globe") {
@@ -100,6 +102,7 @@ private struct ManualTab: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .lineLimit(1)
                 }
                 Divider().overlay(Color.white.opacity(0.1))
                 row("number") {
@@ -226,6 +229,7 @@ private struct UpSnapTab: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .lineLimit(1)
                 }
                 Divider().overlay(Color.white.opacity(0.1))
                 field("globe") {
@@ -233,6 +237,7 @@ private struct UpSnapTab: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .lineLimit(1)
                 }
                 Divider().overlay(Color.white.opacity(0.1))
                 field("envelope") {
@@ -274,6 +279,7 @@ private struct UpSnapTab: View {
             Text("自宅の NAS などで動かしている UpSnap にログインすると、登録した PC の一覧と、オン・オフが見えます。外出先では、Tailscale をオンにしてください。パスワードは、この iPhone のキーチェーンにだけ入ります")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -549,6 +555,7 @@ private struct DeviceSettingsSheet: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .lineLimit(1)
                     TextField("ポート", text: $settings.port)
                         .keyboardType(.numberPad)
                     HStack {

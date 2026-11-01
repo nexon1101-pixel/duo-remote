@@ -655,6 +655,13 @@ struct ContentView: View {
     }
 
     private var connectForm: some View {
+        // 中身の幅を、画面（余白を除いた幅）に固定する。広い部品があっても、横にはみ出さないようにする
+        GeometryReader { proxy in
+            connectFormContent(width: min(proxy.size.width, 560))
+        }
+    }
+
+    private func connectFormContent(width: CGFloat) -> some View {
         ScrollView {
             VStack(spacing: 24) {
                 header
@@ -698,7 +705,7 @@ struct ContentView: View {
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 32)
-            .frame(maxWidth: 520)
+            .frame(width: width)
             .frame(maxWidth: .infinity)
             .animation(.spring(duration: 0.35), value: session.errorMessage)
             .animation(.spring(duration: 0.35), value: session.state)
