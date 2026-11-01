@@ -326,3 +326,83 @@ final class PCWaker: ObservableObject {
         detail = ""
     }
 }
+
+/// 一覧の画面から、つながずに、PC の電源（シャットダウン、再起動、スリープ）を操作する。
+/// PC のサーバーに、短い接続をして、`power` を送る
+enum PowerClient {
+    enum Failure: LocalizedError {
+        case rejected(String)
+        case timedOut
+        case closed
+
+        var errorDescription: String? {
+            switch self {
+            case .rejected(let message): return message
+            case .timedOut: return "PC から応答がありません"
+            case .closed: return "PC に接続できません。サーバーが動いているか、トークンを確認してください"
+            }
+        }
+    }
+
+    static func send(hosts: [String], port: Int, token: String, action: String, force: Bool) async throws {
+        var lastError: Error = Failure.closed
+        for host in hosts where !host.isEmpty {
+            do {
+                try await withTimeout(seconds: 8) {
+                    try await sendOnce(host: host, port: port, token: token, action: action, force: force)
+                }
+                return
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError
+    }
+
+    private static func sendOnce(host: String, port: Int, token: String, action: String, force: Bool) async throws {
+        guard let url = URL(string: "ws://\(host):\(port)/") else { throw Failure.closed }
+        let task = URLSession.shared.webSocketTask(with: url)
+        task.resume()
+        defer { task.cancel(with: .normalClosure, reason: nil) }
+
+        // 映像は要らないので、小さく、遅くしてもらう
+        let hello: [String: Any] = ["t": "hello", "v": 1, "token": token, "fps": 5, "max_height": 240, "codecs": ["h264"]]
+        try await task.send(.string(json(hello)))
+        try await waitFor(["welcome"], on: task)
+        try await task.send(.string(json(["t": "power", "action": action, "force": force])))
+        try await waitFor(["notice"], on: task)
+    }
+
+    /// 指定した種類のメッセージが来るまで待つ。`error` が来たら、その内容で失敗にする
+    private static func waitFor(_ types: Set<String>, on task: URLSessionWebSocketTask) async throws {
+        while true {
+            let message: URLSessionWebSocketTask.Message
+            do {
+                message = try await task.receive()
+            } catch {
+                throw Failure.closed
+            }
+            guard case .string(let text) = message,
+                  let object = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any],
+                  let type = object["t"] as? String else { continue }
+            if types.contains(type) { return }
+            if type == "error" { throw Failure.rejected((object["message"] as? String) ?? "操作できませんでした") }
+        }
+    }
+
+    private static func json(_ object: [String: Any]) -> String {
+        String(decoding: (try? JSONSerialization.data(withJSONObject: object)) ?? Data(), as: UTF8.self)
+    }
+
+    private static func withTimeout<T: Sendable>(seconds: Double, _ body: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await body() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw Failure.timedOut
+            }
+            defer { group.cancelAll() }
+            return try await group.next()!
+        }
+    }
+}
