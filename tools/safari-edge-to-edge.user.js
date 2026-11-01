@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         帯の下まで表示
-// @description  iPhone Duo の外側の画面で、Safari の右の帯の下まで、ページを広げる。右の帯の空いている所のボタンで、サイトごとに切り替える。内側の画面では、何もしない
-// @version      3.3
+// @description  iPhone Duo の外側の画面で、Safari の右の帯の下まで、ページを広げる。右の端のボタンで、サイトごとに切り替える。内側の画面では、何もしない
+// @version      3.4
 // @match        *://*/*
 // @run-at       document-start
 // ==/UserScript==
@@ -130,28 +130,15 @@
       (document.head || document.documentElement).appendChild(style);
       if (on) fixFixed(q.g);
     }
-    placeHandle(q);
+    placeHandle();
   }
 
-  // ボタンの置き場所は、右の帯の、戻るボタンと「＋」ボタンの間。固定表示は、帯の手前までしか描かれないので、
-  // ページの中に置いて、スクロールのたびに位置を合わせる
-  function placeHandle(q) {
+  // ボタンは、ページの右の端（帯の手前）に、固定して置く。帯の中は、タップが届かないので、置かない
+  function placeHandle() {
     if (!handle) return;
     handle.style.display = '';
     handle.textContent = on ? '\u2192\u2190' : '\u2190\u2192';
-    var w = document.documentElement.clientWidth;
-    if (q.cover) {
-      handle.mode = 'fixed';
-      handle.style.cssText = BUTTON_CSS + 'position:fixed;top:70%;left:' + (w - 54) + 'px';
-    } else {
-      handle.mode = 'follow';
-      handle.style.cssText = BUTTON_CSS + 'position:absolute;left:' + (w + q.g - 54) + 'px';
-      followHandle();
-    }
-  }
-
-  function followHandle() {
-    if (handle && handle.mode === 'follow') handle.style.top = (window.scrollY + window.innerHeight * 0.7) + 'px';
+    handle.style.cssText = BUTTON_CSS + 'position:fixed;top:70%;right:6px;';
   }
 
   function patchAllOff() {
@@ -163,9 +150,9 @@
   }
 
   var BUTTON_CSS =
-    'width:40px;height:40px;border-radius:20px;color:#222;' +
+    'width:36px;height:36px;border-radius:18px;color:#222;opacity:0.7;' +
     'background:linear-gradient(#ececf0,#b4b4bc);box-shadow:0 2px 8px rgba(0,0,0,0.35),inset 0 1px 0 rgba(255,255,255,0.8);' +
-    'font:700 15px/40px sans-serif;letter-spacing:-1px;text-align:center;' +
+    'font:700 14px/36px sans-serif;letter-spacing:-1px;text-align:center;' +
     'z-index:2147483647;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;';
 
   // 押すと、このサイトだけ、オン・オフを切り替える
@@ -185,7 +172,6 @@
     new MutationObserver(scheduleFix).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class'] });
   });
   window.addEventListener('load', apply);
-  window.addEventListener('scroll', followHandle, { passive: true });
   window.addEventListener('orientationchange', function () { setTimeout(apply, 300); });
   window.addEventListener('resize', function () { setTimeout(apply, 300); });
 })();
