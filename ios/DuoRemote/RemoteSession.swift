@@ -277,8 +277,40 @@ final class RemoteSession: ObservableObject {
         open()
     }
 
+    /// 接続先の文字から、つなぎ方を決める。
+    /// - `wss://名前` や `https://名前`: 暗号化（TLS）でつなぐ。ポートの指定がなければ 443（Tailscale Funnel など）
+    /// - `ws://名前`、`http://名前`、または、頭に何も付けない: 暗号化なし。ポートの指定がなければ、設定のポート
+    /// - `名前:ポート`: ポートを指定する（設定のポートより優先）
+    struct Endpoint: Equatable {
+        let host: String
+        let port: Int
+        let isTLS: Bool
+    }
+
+    static func endpoint(host raw: String, defaultPort: Int) -> Endpoint {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var tls = false
+        for (prefix, secure) in [("wss://", true), ("https://", true), ("ws://", false), ("http://", false)] {
+            if text.lowercased().hasPrefix(prefix) {
+                text = String(text.dropFirst(prefix.count))
+                tls = secure
+                break
+            }
+        }
+        if let slash = text.firstIndex(of: "/") { text = String(text[..<slash]) }
+        var port = tls ? 443 : defaultPort
+        // 名前:ポート（IPv6 の `[::1]` のような形は、ここでは扱わない）
+        if let colon = text.lastIndex(of: ":"), !text.contains("["),
+           let value = Int(text[text.index(after: colon)...]), (1...65535).contains(value) {
+            port = value
+            text = String(text[..<colon])
+        }
+        return Endpoint(host: text, port: port, isTLS: tls)
+    }
+
     private static func url(host: String, port: Int) -> URL? {
-        URL(string: "ws://\(host):\(port)/")
+        let e = endpoint(host: host, defaultPort: port)
+        return URL(string: "\(e.isTLS ? "wss" : "ws")://\(e.host):\(e.port)/")
     }
 
     /// 候補を試す順番を、最後につながった候補から始め直す
@@ -360,10 +392,13 @@ final class RemoteSession: ObservableObject {
         transportName = "TCP"
         guard let port = json["udp_port"] as? Int, let key = json["udp_key"] as? String,
               let hosts = target?.hosts, hosts.indices.contains(hostIndex) else { return }
+        // 暗号化（wss）の接続先は、UDP を通せない（Tailscale Funnel など）。TCP のまま続ける
+        let endpoint = Self.endpoint(host: hosts[hostIndex], defaultPort: target?.port ?? 8765)
+        if endpoint.isTLS { return }
         let wanted = UserDefaults.standard.string(forKey: Self.transportKey) ?? "tcp"
         guard wanted == "udp" || wanted == "auto" else { return }
         let receiver = UDPVideoReceiver(
-            host: hosts[hostIndex], port: port, udpKey: key, video: renderer, audio: audio,
+            host: endpoint.host, port: port, udpKey: key, video: renderer, audio: audio,
             onBound: { [weak self] in
                 Task { @MainActor in
                     guard let self, self.udpReceiver != nil else { return }
