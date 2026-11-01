@@ -37,7 +37,7 @@
     button = document.createElement('div');
     button.textContent = '⇔';
     button.style.cssText =
-      'position:fixed;left:8px;bottom:90px;width:36px;height:36px;border-radius:18px;' +
+      'position:fixed;left:8px;top:45%;width:36px;height:36px;border-radius:18px;' +
       'background:#000;color:#fff;font:18px/36px sans-serif;text-align:center;' +
       'z-index:2147483647;user-select:none;-webkit-user-select:none';
     button.addEventListener('click', function () {
