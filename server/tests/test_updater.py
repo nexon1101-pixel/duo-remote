@@ -170,3 +170,15 @@ def test_git_apply_failure(tmp_path):
 
 def test_install_method_zip_without_git_dir(tmp_path):
     assert updater.install_method(tmp_path) == "zip"
+
+
+def test_latest_version_avoids_cached_copy(monkeypatch):
+    seen = {}
+
+    def fake_download(url, timeout):
+        seen["url"] = url
+        return b'__version__ = "1.2.3"\n'
+
+    monkeypatch.setattr(updater, "_download", fake_download)
+    assert updater.latest_version() == "1.2.3"
+    assert "?nocache=" in seen["url"]

@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -56,13 +57,15 @@ def install_method(root: Path = REPO_ROOT) -> str:
 
 
 def _download(url: str, timeout: float) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "duo-remote-updater"})
+    # raw.githubusercontent.com は、数分間、古い内容を返すことがある。古い表示を読まないようにする
+    req = urllib.request.Request(url, headers={"User-Agent": "duo-remote-updater", "Cache-Control": "no-cache"})
     with urllib.request.urlopen(req, timeout=timeout) as res:
         return res.read()
 
 
 def latest_version(timeout: float = 10) -> str:
-    url = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/server/duo_server/__init__.py"
+    # 毎回違う値を付けて、途中の保存（キャッシュ）に残った古い内容を読まないようにする
+    url = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/server/duo_server/__init__.py?nocache={int(time.time())}"
     try:
         text = _download(url, timeout).decode("utf-8")
         return parse_version(text)
