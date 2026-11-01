@@ -399,7 +399,7 @@ private struct UpSnapTab: View {
                         Text(device.name)
                             .font(.headline)
                             .foregroundStyle(.primary)
-                        Text(isWaking ? "起動を待っています" : statusText(device.status))
+                        Text(isWaking ? "起動中…" : statusText(device.status))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -407,7 +407,7 @@ private struct UpSnapTab: View {
                     if isWaking {
                         ProgressView()
                     } else {
-                        Text(isOnline ? "接続" : "起こして接続")
+                        Text(isOnline ? "接続" : "電源を入れる")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(isOnline ? Color.accentColor : Color.orange)
                     }

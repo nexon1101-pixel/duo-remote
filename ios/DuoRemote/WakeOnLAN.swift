@@ -260,7 +260,7 @@ final class PCWaker: ObservableObject {
                 let broadcast = config.broadcast.isEmpty ? "255.255.255.255" : config.broadcast
                 do {
                     try WakeOnLAN.sendMagicPacket(mac: config.mac, broadcast: broadcast)
-                    notes.append("自宅のネットワークに信号を送りました")
+                    notes.append("電源を入れる信号を送りました")
                 } catch {
                     errors.append(error.localizedDescription)
                 }
@@ -270,7 +270,7 @@ final class PCWaker: ObservableObject {
                     try await WakeOnLAN.wakeWithUpSnap(
                         baseURL: config.upsnapURL, email: config.upsnapEmail,
                         password: config.upsnapPassword, deviceIP: config.deviceIP)
-                    notes.append("UpSnap に起動を頼みました")
+                    notes.append("UpSnap で電源を入れました。起動したら、自動で接続します")
                 } catch {
                     errors.append(error.localizedDescription)
                 }
