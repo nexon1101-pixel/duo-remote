@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         帯の下まで表示
 // @description  iPhone Duo の外側の画面で、Safari の右の帯の下まで、ページを広げる。右の帯の空いている所のボタンで、サイトごとに切り替える。内側の画面では、何もしない
-// @version      3.2
+// @version      3.3
 // @match        *://*/*
 // @run-at       document-start
 // ==/UserScript==
@@ -59,12 +59,15 @@
   }
 
   // --- Safari が広げなかったときの方法。ページの幅を、帯の分だけ無理に広げる
-  function css(g) {
-    var w = document.documentElement.clientWidth + g;
+  // html（外枠）は、いつも、帯の分だけ広げておく。そうすると、帯の中に、ボタンを置ける。
+  // body（中身）は、オンのときだけ広げる。オフのときは、元の幅のままにする
+  function css(g, wide) {
+    var base = document.documentElement.clientWidth;
+    var w = base + g;
     return (
       'html{width:' + w + 'px!important;min-width:' + w + 'px!important;' +
       'overflow-x:clip!important;touch-action:pan-y pinch-zoom!important;overscroll-behavior-x:none!important}' +
-      'body{width:100%!important;overflow-x:clip!important}' +
+      'body{width:' + (wide ? '100%' : base + 'px') + '!important;overflow-x:clip!important}' +
       'html::-webkit-scrollbar{display:none!important}'
     );
   }
@@ -120,31 +123,29 @@
       return;
     }
     patchAll();
-    if (on && !q.cover) {
-      // Safari が、帯まで広げていない。幅を無理に広げる
-      hackGap = q.g;
-      style.textContent = css(q.g);
+    if (!q.cover) {
+      // Safari が、帯まで広げていない。外枠を広げる（中身を広げるのは、オンのときだけ）
+      hackGap = on ? q.g : 0;
+      style.textContent = css(q.g, on);
       (document.head || document.documentElement).appendChild(style);
-      fixFixed(q.g);
+      if (on) fixFixed(q.g);
     }
     placeHandle(q);
   }
 
-  // ボタンの置き場所。右の帯の、戻るボタンと「＋」ボタンの間。固定表示は、帯の手前までしか描かれないので、
-  // 幅を広げているときは、ページの中に置いて、スクロールのたびに位置を合わせる。オフのときは、左の端の細いつまみにする
+  // ボタンの置き場所は、右の帯の、戻るボタンと「＋」ボタンの間。固定表示は、帯の手前までしか描かれないので、
+  // ページの中に置いて、スクロールのたびに位置を合わせる
   function placeHandle(q) {
     if (!handle) return;
     handle.style.display = '';
+    handle.textContent = on ? '\u2192\u2190' : '\u2190\u2192';
     var w = document.documentElement.clientWidth;
-    if (!on) {
-      handle.mode = 'tab';
-      handle.style.cssText = TAB_CSS;
-    } else if (q.cover) {
+    if (q.cover) {
       handle.mode = 'fixed';
-      handle.style.cssText = BUTTON_CSS + 'position:fixed;top:70%;left:' + (w - 50) + 'px';
+      handle.style.cssText = BUTTON_CSS + 'position:fixed;top:70%;left:' + (w - 54) + 'px';
     } else {
       handle.mode = 'follow';
-      handle.style.cssText = BUTTON_CSS + 'position:absolute;left:' + (w + q.g - 50) + 'px';
+      handle.style.cssText = BUTTON_CSS + 'position:absolute;left:' + (w + q.g - 54) + 'px';
       followHandle();
     }
   }
@@ -162,19 +163,14 @@
   }
 
   var BUTTON_CSS =
-    'width:36px;height:36px;border-radius:18px;background:#000;color:#fff;opacity:0.8;' +
-    'font:18px/36px sans-serif;text-align:center;box-shadow:0 0 0 1px rgba(255,255,255,0.7);' +
+    'width:40px;height:40px;border-radius:20px;color:#222;' +
+    'background:linear-gradient(#ececf0,#b4b4bc);box-shadow:0 2px 8px rgba(0,0,0,0.35),inset 0 1px 0 rgba(255,255,255,0.8);' +
+    'font:700 15px/40px sans-serif;letter-spacing:-1px;text-align:center;' +
     'z-index:2147483647;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;';
-  var TAB_CSS =
-    'position:fixed;left:0;top:70%;width:12px;height:56px;border-radius:0 8px 8px 0;font-size:0;overflow:hidden;' +
-    'background:#000;opacity:0.35;box-shadow:0 0 0 1px rgba(255,255,255,0.7);' +
-    'z-index:2147483647;-webkit-tap-highlight-color:transparent';
 
   // 押すと、このサイトだけ、オン・オフを切り替える
   function makeHandle() {
     handle = document.createElement('div');
-    handle.textContent = '\u21D4';
-    handle.style.cssText = TAB_CSS;
     handle.addEventListener('click', function () {
       on = !on;
       safeSet(KEY, on ? 'on' : 'off');
