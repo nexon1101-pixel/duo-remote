@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         帯の下まで表示
 // @description  iPhone Duo の外側の画面で、Safari の右の帯の下まで、ページを広げる。「⇔」で、サイトごとに切り替える。内側の画面では、何もしない
-// @version      2.2
+// @version      2.3
 // @match        *://*/*
 // @run-at       document-start
 // ==/UserScript==
@@ -19,9 +19,9 @@
     return d > 20 && d < 400 ? d : 0;
   }
 
-  // 外側の画面か。右の帯があり、画面の幅が狭いとき（内側の広い画面では、何もしない）
+  // 外側の画面か。右の帯があるとき（画面の幅と、ページの幅に、差があるとき）。内側の画面には帯がないので、何もしない
   function isOuter(g) {
-    return g > 0 && Math.min(screen.width, screen.height) < 600;
+    return g > 0;
   }
 
   function viewport() {
