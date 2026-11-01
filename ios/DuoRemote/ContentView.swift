@@ -11,9 +11,11 @@ struct ContentView: View {
     @AppStorage("hostRemote") private var hostRemote = ""
     /// 前回つながったホスト（0: 家、1: 外）。次は、こちらから試す
     @AppStorage("lastHostIndex") private var lastHostIndex = 0
+    /// 前回つないだ PC（PC が変わったら、家と外の順をやり直す）
+    @AppStorage("lastPCID") private var lastPCID = ""
     @AppStorage("port") private var port = "8765"
     @State private var token = ""
-    @State private var showToken = false
+
 
     @AppStorage("pointerMode") private var pointerMode = PointerMode.direct
     @AppStorage(KeyCaptureView.commandAsControlKey) private var commandAsControl = false
@@ -658,49 +660,7 @@ struct ContentView: View {
                 header
                     .padding(.top, 40)
 
-                card(title: "接続先", systemImage: "network") {
-                    field(systemImage: "server.rack") {
-                        TextField("自宅のホスト（例: 192.168.1.10）", text: $host)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
-                    }
-                    Divider().overlay(Color.white.opacity(0.1))
-                    field(systemImage: "globe") {
-                        TextField("外出先のホスト（Tailscale、任意）", text: $hostRemote)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
-                    }
-                    Divider().overlay(Color.white.opacity(0.1))
-                    field(systemImage: "number") {
-                        TextField("ポート", text: $port)
-                            .keyboardType(.numberPad)
-                    }
-                    Divider().overlay(Color.white.opacity(0.1))
-                    field(systemImage: "key.fill") {
-                        // 伏せ字のままだと、打ち間違いに気づけないので、目のボタンで表示を切り替える
-                        Group {
-                            if showToken {
-                                TextField("トークン", text: $token)
-                            } else {
-                                SecureField("トークン", text: $token)
-                            }
-                        }
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.asciiCapable) // 日本語のキーボードで、全角の文字が入らないようにする
-                        .font(.body.monospaced())
-                        Button {
-                            showToken.toggle()
-                        } label: {
-                            Image(systemName: showToken ? "eye.slash" : "eye")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel(showToken ? "トークンを非表示" : "トークンを表示")
-                    }
-                }
+                PCListSection { pc, savedToken in connect(pc, token: savedToken) }
 
                 card(title: "画質", systemImage: "sparkles.tv") {
                     Picker("画質", selection: qualityChoice) {
@@ -725,35 +685,12 @@ struct ContentView: View {
                         .transition(.opacity)
                 }
 
-                VStack(spacing: 10) {
-                    Button {
-                        // 貼り付けたときに付いてくる空白や、全角の英数字を直してから使う
-                        host = Self.cleaned(host)
-                        hostRemote = Self.cleaned(hostRemote)
-                        port = Self.cleaned(port)
-                        token = Self.cleaned(token)
-                        Keychain.save("token", token)
-                        session.setAudio(audioOn, mixWithOthers: audioMix)
-                        session.connect(hosts: hostCandidates(), port: Int(port) ?? 8765, token: token, quality: quality)
-                    } label: {
+                if session.state == .connecting {
+                    VStack(spacing: 10) {
                         HStack(spacing: 10) {
-                            if session.state == .connecting {
-                                ProgressView().tint(.white)
-                                Text("接続中…")
-                            } else {
-                                Image(systemName: "bolt.horizontal.fill")
-                                Text("接続")
-                            }
+                            ProgressView().tint(.white)
+                            Text("接続中…").font(.headline)
                         }
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                    }
-                    .glassButton(prominent: true)
-                    .controlSize(.large)
-                    .disabled((host.isEmpty && hostRemote.isEmpty) || token.isEmpty || session.state == .connecting)
-
-                    if session.state == .connecting {
                         Button("キャンセル", role: .cancel) { session.disconnect() }
                             .glassButton()
                     }
@@ -832,6 +769,20 @@ struct ContentView: View {
         if active == host { return "自宅（\(active)）" }
         if active == hostRemote { return "外出先（\(active)）" }
         return active
+    }
+
+    /// 選んだ PC につなぐ。接続の情報は、今のホスト・ポート・トークンとして覚える
+    private func connect(_ pc: PCProfile, token savedToken: String) {
+        if lastPCID != pc.id {
+            lastPCID = pc.id
+            lastHostIndex = 0
+        }
+        host = Self.cleaned(pc.host)
+        hostRemote = Self.cleaned(pc.hostRemote)
+        port = Self.cleaned(pc.port)
+        token = Self.cleaned(savedToken)
+        session.setAudio(audioOn, mixWithOthers: audioMix)
+        session.connect(hosts: hostCandidates(), port: Int(port) ?? 8765, token: token, quality: quality)
     }
 
     private func loadToken() {
