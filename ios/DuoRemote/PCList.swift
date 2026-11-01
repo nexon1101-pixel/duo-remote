@@ -98,7 +98,7 @@ private struct ManualTab: View {
                 }
                 Divider().overlay(Color.white.opacity(0.1))
                 row("globe") {
-                    TextField("外出先のホスト（Tailscale、任意）", text: $hostRemote)
+                    TextField("外出先のホスト（Tailscale・任意）", text: $hostRemote)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
@@ -235,7 +235,7 @@ private struct UpSnapTab: View {
                 }
                 Divider().overlay(Color.white.opacity(0.1))
                 field("globe") {
-                    TextField("外出先のアドレス（Tailscale、任意）", text: $urlRemote)
+                    TextField("外出先のアドレス（Tailscale・任意）", text: $urlRemote)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
@@ -278,7 +278,7 @@ private struct UpSnapTab: View {
                     .font(.footnote)
                     .foregroundStyle(.orange)
             }
-            Text("自宅の NAS などで動かしている UpSnap にログインすると、登録した PC の一覧と、オン・オフが見えます。外出先では、Tailscale をオンにしてください。パスワードは、この iPhone のキーチェーンにだけ入ります")
+            Text("UpSnap にログインすると、PC の一覧と状態が表示されます。外出先では Tailscale をオンにしてください。パスワードは、この iPhone のキーチェーンに保存されます。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -292,7 +292,7 @@ private struct UpSnapTab: View {
         urlRemote = ContentView.cleaned(urlRemote)
         email = ContentView.cleaned(email)
         guard let base = await resolveBase() else {
-            message = "UpSnap につながりません。アドレスを確認してください（外出先では、Tailscale をオンにしてください）"
+            message = "UpSnap に接続できません。アドレスを確認してください。外出先では Tailscale をオンにしてください。"
             return
         }
         do {
@@ -344,7 +344,7 @@ private struct UpSnapTab: View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(spacing: 0) {
                 if devices.isEmpty {
-                    Text(loaded ? "UpSnap に PC が登録されていません" : "読み込み中…")
+                    Text(loaded ? "UpSnap に登録された PC がありません" : "読み込み中…")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -357,7 +357,7 @@ private struct UpSnapTab: View {
                 }
                 Divider().overlay(Color.white.opacity(0.1))
                 HStack {
-                    Text("\(email)（\(activeIndex == 1 ? "外出先" : activeIndex == 0 ? "自宅" : "未接続")のアドレス）")
+                    Text("\(email)（\(activeIndex == 1 ? "外出先" : activeIndex == 0 ? "自宅" : "未接続")）")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -401,7 +401,7 @@ private struct UpSnapTab: View {
                         Text(device.name)
                             .font(.headline)
                             .foregroundStyle(.primary)
-                        Text(isWaking ? "起動中…" : (serverDown(device) ? "オン（サーバーにつながりません）" : statusText(device.status)))
+                        Text(isWaking ? "起動中…" : (serverDown(device) ? "オン・サーバーに接続できません" : statusText(device.status)))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -455,7 +455,7 @@ private struct UpSnapTab: View {
         case "online": return "オン"
         case "offline": return "オフ"
         case "pending": return "起動中"
-        default: return "状態は不明"
+        default: return "状態不明"
         }
     }
 
@@ -501,7 +501,7 @@ private struct UpSnapTab: View {
     private func reload() async {
         do {
             if activeBase == nil, await resolveBase() == nil {
-                throw WakeOnLAN.WakeError.upsnap("どのアドレスにもつながりません")
+                throw WakeOnLAN.WakeError.upsnap("UpSnap に接続できません")
             }
             do {
                 devices = try await fetchDevices()
@@ -515,7 +515,7 @@ private struct UpSnapTab: View {
             await probeServers()
         } catch {
             if Task.isCancelled { return }
-            message = "UpSnap から読めません（\(WakeOnLAN.message(for: error))）"
+            message = "UpSnap から取得できません（\(WakeOnLAN.message(for: error))）"
         }
         loaded = true
     }
@@ -582,7 +582,7 @@ private struct DeviceSettingsSheet: View {
                         Spacer()
                         Text(device.ip).foregroundStyle(.secondary)
                     }
-                    TextField("外出先のホスト（Tailscale、任意）", text: $settings.hostRemote)
+                    TextField("外出先のホスト（Tailscale・任意）", text: $settings.hostRemote)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
@@ -609,7 +609,7 @@ private struct DeviceSettingsSheet: View {
                         .buttonStyle(.borderless)
                     }
                 } footer: {
-                    Text("自宅のホストは、UpSnap に登録した IP アドレスです。外では、Tailscale のアドレスでつなぎます。トークンは、この iPhone のキーチェーンにだけ入ります")
+                    Text("自宅のホストは、UpSnap に登録した IP アドレスです。外出先では、Tailscale のアドレスに接続します。トークンは、この iPhone のキーチェーンに保存されます。")
                 }
             }
             .navigationTitle(device.name)

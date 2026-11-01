@@ -305,7 +305,7 @@ def test_power_rejects_unknown_action():
         ws, _ = await open_session(url)
         await ws.send(json.dumps({"t": "power", "action": "format"}))
         err = await recv_json(ws, "error")
-        assert "使えない" in err["message"]
+        assert "使えません" in err["message"]
         await ws.close()
 
     asyncio.run(with_server(body, backend))

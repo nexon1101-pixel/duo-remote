@@ -365,7 +365,7 @@ struct ContentView: View {
             if let action = pendingPower {
                 Button(powerLabel(action)) { session.power(action) }
                 if action != "sleep" {
-                    Button("開いているアプリを閉じて\(powerLabel(action))", role: .destructive) {
+                    Button("強制的に\(powerLabel(action))", role: .destructive) {
                         session.power(action, force: true)
                     }
                 }
@@ -373,7 +373,7 @@ struct ContentView: View {
             Button("キャンセル", role: .cancel) {}
         } message: {
             if pendingPower != nil && pendingPower != "sleep" {
-                Text("保存していない内容がある場合、アプリが止めることがあります。「アプリを閉じて」を選ぶと、保存していない内容は失われます")
+                Text("保存していない作業があると、アプリが止めることがあります。強制的に実行すると、保存していない内容は失われます。")
             }
         }
         .fileSendPickers(

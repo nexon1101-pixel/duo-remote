@@ -893,7 +893,7 @@ class Session:
         無効に戻してから、電源を操作する。force が真なら、開いているアプリを強制的に閉じる。"""
         action = msg.get("action")
         if action not in self.POWER_LABELS:
-            await self.send({"t": "error", "message": "使えない操作です"})
+            await self.send({"t": "error", "message": "この操作は使えません"})
             return
         force = msg.get("force") is True and action != "sleep"
         label = self.POWER_LABELS[action]
