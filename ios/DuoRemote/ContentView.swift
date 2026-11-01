@@ -15,6 +15,16 @@ struct ContentView: View {
     @State private var token = ""
     @State private var showToken = false
 
+    // PC を起こす設定（パスワード以外は端末に覚える。パスワードはキーチェーン）
+    @AppStorage("wakeMAC") private var wakeMAC = ""
+    @AppStorage("wakeBroadcast") private var wakeBroadcast = ""
+    @AppStorage("upsnapURL") private var upsnapURL = ""
+    @AppStorage("upsnapEmail") private var upsnapEmail = ""
+    @AppStorage("upsnapDeviceIP") private var upsnapDeviceIP = ""
+    @State private var upsnapPassword = ""
+    @State private var showWakeSettings = false
+    @StateObject private var waker = PCWaker()
+
     @AppStorage("pointerMode") private var pointerMode = PointerMode.direct
     @AppStorage(KeyCaptureView.commandAsControlKey) private var commandAsControl = false
     @AppStorage("quality") private var quality = VideoQuality.high
@@ -702,6 +712,98 @@ struct ContentView: View {
                     }
                 }
 
+                card(title: "PC を起こす", systemImage: "power") {
+                    Button {
+                        startWake()
+                    } label: {
+                        HStack(spacing: 10) {
+                            if waker.isBusy {
+                                ProgressView().tint(.white)
+                                Text(waker.phase == .sending ? "信号を送っています…" : "起動を待っています…")
+                            } else {
+                                Image(systemName: "power")
+                                Text("PC を起こして接続")
+                            }
+                        }
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                    }
+                    .glassButton()
+                    .controlSize(.large)
+                    .disabled(waker.isBusy || !PCWaker.canWake(wakeConfig()))
+
+                    if waker.isBusy {
+                        Button("やめる", role: .cancel) { waker.cancel() }
+                            .glassButton()
+                    }
+                    if !waker.detail.isEmpty {
+                        Text(waker.detail)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    if case .failed(let message) = waker.phase {
+                        Label(message, systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
+
+                    DisclosureGroup("起こすための設定", isExpanded: $showWakeSettings) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Divider().overlay(Color.white.opacity(0.1))
+                            field(systemImage: "network") {
+                                TextField("PC の MAC アドレス（有線）", text: $wakeMAC)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .keyboardType(.asciiCapable)
+                                    .font(.body.monospaced())
+                            }
+                            Divider().overlay(Color.white.opacity(0.1))
+                            field(systemImage: "dot.radiowaves.left.and.right") {
+                                TextField("ブロードキャスト（例: 192.168.0.255）", text: $wakeBroadcast)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .keyboardType(.numbersAndPunctuation)
+                            }
+                            Text("自宅の Wi-Fi では、この2つだけで起こせます")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            Divider().overlay(Color.white.opacity(0.1))
+                            field(systemImage: "externaldrive.connected.to.line.below") {
+                                TextField("UpSnap のアドレス（例: 100.x.x.x:8090）", text: $upsnapURL)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .keyboardType(.URL)
+                            }
+                            Divider().overlay(Color.white.opacity(0.1))
+                            field(systemImage: "envelope") {
+                                TextField("UpSnap のメールアドレス", text: $upsnapEmail)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .keyboardType(.emailAddress)
+                            }
+                            Divider().overlay(Color.white.opacity(0.1))
+                            field(systemImage: "lock") {
+                                SecureField("UpSnap のパスワード", text: $upsnapPassword)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                            }
+                            Divider().overlay(Color.white.opacity(0.1))
+                            field(systemImage: "desktopcomputer") {
+                                TextField("UpSnap に登録した PC の IP（空なら自宅のホスト）", text: $upsnapDeviceIP)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .keyboardType(.numbersAndPunctuation)
+                            }
+                            Text("外出先では、Tailscale をオンにすると、自宅の NAS の UpSnap 経由で起こせます")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.top, 8)
+                    }
+                    .tint(.secondary)
+                }
+
                 card(title: "画質", systemImage: "sparkles.tv") {
                     Picker("画質", selection: qualityChoice) {
                         Text("自動").tag(Self.autoChoice)
@@ -834,7 +936,32 @@ struct ContentView: View {
         return active
     }
 
+    private func wakeConfig() -> PCWaker.Config {
+        PCWaker.Config(
+            mac: Self.cleaned(wakeMAC),
+            broadcast: Self.cleaned(wakeBroadcast),
+            upsnapURL: Self.cleaned(upsnapURL),
+            upsnapEmail: Self.cleaned(upsnapEmail),
+            upsnapPassword: upsnapPassword,
+            deviceIP: Self.cleaned(upsnapDeviceIP).isEmpty ? Self.cleaned(host) : Self.cleaned(upsnapDeviceIP),
+            hosts: hostCandidates(),
+            port: Int(port) ?? 8765)
+    }
+
+    /// 起こして、つながるようになったら、そのまま接続する
+    private func startWake() {
+        Keychain.save("upsnapPassword", upsnapPassword)
+        waker.wake(wakeConfig()) {
+            host = Self.cleaned(host)
+            hostRemote = Self.cleaned(hostRemote)
+            Keychain.save("token", token)
+            session.setAudio(audioOn, mixWithOthers: audioMix)
+            session.connect(hosts: hostCandidates(), port: Int(port) ?? 8765, token: token, quality: quality)
+        }
+    }
+
     private func loadToken() {
+        upsnapPassword = Keychain.load("upsnapPassword") ?? ""
         if let saved = Keychain.load("token") {
             token = saved
         } else if let old = UserDefaults.standard.string(forKey: "token") {
