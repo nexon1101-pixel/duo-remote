@@ -67,16 +67,16 @@ enum WakeOnLAN {
 
     // MARK: UpSnap
 
-    /// UpSnap にログインし、IP アドレスが合う機器を起こす
-    static func wakeWithUpSnap(baseURL: String, email: String, password: String, deviceIP: String) async throws {
+    private static func upsnapRoot(_ baseURL: String) throws -> URL {
         var base = baseURL.trimmingCharacters(in: .whitespaces)
         if !base.contains("://") { base = "http://" + base }
         while base.hasSuffix("/") { base.removeLast() }
         guard let root = URL(string: base) else { throw WakeError.upsnap("UpSnap のアドレスが正しくありません") }
+        return root
+    }
 
-        let token = try await login(root: root, email: email, password: password)
-
-        // 機器の一覧から、IP アドレスが合うものを探す
+    /// ログインして、UpSnap の機器の一覧（IP アドレス、名前、状態）を読む
+    private static func upsnapDevices(root: URL, token: String) async throws -> [[String: Any]] {
         var listComponents = URLComponents(url: root.appendingPathComponent("api/collections/devices/records"), resolvingAgainstBaseURL: false)!
         listComponents.queryItems = [URLQueryItem(name: "perPage", value: "200")]
         var listRequest = URLRequest(url: listComponents.url!, timeoutInterval: 8)
@@ -87,6 +87,27 @@ enum WakeOnLAN {
               let items = list["items"] as? [[String: Any]] else {
             throw WakeError.upsnap("UpSnap の機器の一覧を読めませんでした")
         }
+        return items
+    }
+
+    /// UpSnap に登録された機器の状態を、IP アドレスごとに返す（"online"、"offline"、"pending"）
+    static func upsnapStatuses(baseURL: String, email: String, password: String) async throws -> [String: String] {
+        let root = try upsnapRoot(baseURL)
+        let token = try await login(root: root, email: email, password: password)
+        var result: [String: String] = [:]
+        for item in try await upsnapDevices(root: root, token: token) {
+            if let ip = item["ip"] as? String, let status = item["status"] as? String {
+                result[ip] = status
+            }
+        }
+        return result
+    }
+
+    /// UpSnap にログインし、IP アドレスが合う機器を起こす
+    static func wakeWithUpSnap(baseURL: String, email: String, password: String, deviceIP: String) async throws {
+        let root = try upsnapRoot(baseURL)
+        let token = try await login(root: root, email: email, password: password)
+        let items = try await upsnapDevices(root: root, token: token)
         let wanted = deviceIP.trimmingCharacters(in: .whitespaces)
         guard let device = items.first(where: { ($0["ip"] as? String) == wanted }),
               let id = device["id"] as? String else {
