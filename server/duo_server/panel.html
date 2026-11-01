@@ -147,6 +147,9 @@ footer { text-align: center; margin-top: 24px; }
     <div class="row"><span class="label">自動起動</span>
       <label class="switch"><input type="checkbox" id="autostart"><span></span></label>
       <span>ログインしたときに自動で起動する</span></div>
+    <div class="row" id="trayRow"><span class="label">トレイ</span>
+      <label class="switch"><input type="checkbox" id="trayOn"><span></span></label>
+      <span>タスクトレイにアイコンを出す</span></div>
     <div class="row"><span class="label">管理画面のブラウザー</span>
       <select id="panelBrowser">
         <option value="edge">Edge（ウィンドウ）</option>
@@ -243,6 +246,8 @@ function renderStatus() {
   $("padHelp").hidden = !st.pad || padOk;
   renderPadInstall(padOk);
   $("autostart").checked = st.autostart;
+  $("trayRow").hidden = st.windows === false;  // Windows のときだけ出す
+  $("trayOn").checked = st.tray !== false;
   $("portShow").textContent = st.port;
   $("udpNote").textContent = "UDP も同じポート（" + (st.udp_port || st.port) + "）";
   const hosts = $("hosts"); hosts.textContent = "";
@@ -353,6 +358,14 @@ $("autostart").onchange = async (ev) => {
   const want = ev.target.checked;
   try { await api("/api/autostart", "POST", { enabled: want }); toast(want ? "自動起動を設定しました" : "自動起動を外しました"); }
   catch (e) { ev.target.checked = !want; fail(e); }
+};
+
+$("trayOn").onchange = async (ev) => {
+  const want = ev.target.checked;
+  try {
+    const r = await api("/api/settings", "POST", { changes: { tray: want } });
+    cfg.settings = r.settings; toast(want ? "タスクトレイにアイコンを出しました" : "タスクトレイのアイコンを外しました");
+  } catch (e) { ev.target.checked = !want; fail(e); }
 };
 
 $("panelBrowser").onchange = async (ev) => {
