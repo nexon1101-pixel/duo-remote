@@ -85,7 +85,7 @@ struct SettingsView: View {
                         Text("フロート").tag(false)
                         Text("下部に固定").tag(true)
                     }
-                    Toggle("下部に固定のとき、映像をその上に収める", isOn: $videoAboveDock)
+                    Toggle("固定した部分を避けて映像を表示", isOn: $videoAboveDock)
                     Toggle("トラックパッドを表示", isOn: $showTrackpad)
                     Picker("ピンチ操作", selection: $trackpadPinch) {
                         Text("映像を拡大・縮小").tag("video")
@@ -102,7 +102,7 @@ struct SettingsView: View {
                 } header: {
                     Text("アプリ内キーボードとトラックパッド")
                 } footer: {
-                    Text("フロートは、映像の上で動かせます。下部に固定すると、画面の下に並びます。「映像をその上に収める」をオンにすると、固定した部分に映像を出さず、その上の範囲に映します。")
+                    Text("フロートは、映像の上で自由に動かせます。下部に固定すると、画面の下に並びます。「固定した部分を避けて映像を表示」をオンにすると、固定したキーボードやトラックパッドに映像が隠れません。")
                 }
 
                 Section {

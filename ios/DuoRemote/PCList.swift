@@ -98,7 +98,7 @@ private struct ManualTab: View {
                 }
                 Divider().overlay(Color.white.opacity(0.1))
                 row("globe") {
-                    TextField("外出先のホスト（Tailscale、任意）", text: $hostRemote)
+                    TextField("外出先のホスト（Tailscale・任意）", text: $hostRemote)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
@@ -198,6 +198,15 @@ private struct UpSnapTab: View {
     @StateObject private var waker = PCWaker()
     @State private var wakingID: String?
     @State private var editing: WakeOnLAN.UpSnapDevice?
+    /// 確認中の電源の操作
+    @State private var pendingPower: PowerRequest?
+    @State private var powerNotice: String?
+
+    struct PowerRequest: Identifiable {
+        let device: WakeOnLAN.UpSnapDevice
+        let action: String
+        var id: String { device.id + action }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -208,6 +217,20 @@ private struct UpSnapTab: View {
             }
         }
         .onAppear { password = Keychain.load("upsnapPassword") ?? "" }
+        .confirmationDialog(
+            powerTitle, isPresented: Binding(get: { pendingPower != nil }, set: { if !$0 { pendingPower = nil } }),
+            titleVisibility: .visible, presenting: pendingPower
+        ) { request in
+            Button(Self.powerLabel(request.action)) { runPower(request, force: false) }
+            if request.action != "sleep" {
+                Button("強制的に\(Self.powerLabel(request.action))", role: .destructive) { runPower(request, force: true) }
+            }
+            Button("キャンセル", role: .cancel) {}
+        } message: { request in
+            if request.action != "sleep" {
+                Text("保存していない作業があると、アプリが止めることがあります。強制的に実行すると、保存していない内容は失われます。")
+            }
+        }
         .sheet(item: $editing) { device in
             DeviceSettingsSheet(device: device)
         }
@@ -235,7 +258,7 @@ private struct UpSnapTab: View {
                 }
                 Divider().overlay(Color.white.opacity(0.1))
                 field("globe") {
-                    TextField("外出先のアドレス（Tailscale、任意）", text: $urlRemote)
+                    TextField("外出先のアドレス（Tailscale・任意）", text: $urlRemote)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
@@ -278,7 +301,7 @@ private struct UpSnapTab: View {
                     .font(.footnote)
                     .foregroundStyle(.orange)
             }
-            Text("自宅の NAS などで動かしている UpSnap にログインすると、登録した PC の一覧と、オン・オフが見えます。外出先では、Tailscale をオンにしてください。パスワードは、この iPhone のキーチェーンにだけ入ります")
+            Text("UpSnap にログインすると、PC の一覧と状態が表示されます。外出先では Tailscale をオンにしてください。パスワードは、この iPhone のキーチェーンに保存されます。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -292,7 +315,7 @@ private struct UpSnapTab: View {
         urlRemote = ContentView.cleaned(urlRemote)
         email = ContentView.cleaned(email)
         guard let base = await resolveBase() else {
-            message = "UpSnap につながりません。アドレスを確認してください（外出先では、Tailscale をオンにしてください）"
+            message = "UpSnap に接続できません。アドレスを確認してください。外出先では Tailscale をオンにしてください。"
             return
         }
         do {
@@ -344,7 +367,7 @@ private struct UpSnapTab: View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(spacing: 0) {
                 if devices.isEmpty {
-                    Text(loaded ? "UpSnap に PC が登録されていません" : "読み込み中…")
+                    Text(loaded ? "UpSnap に登録された PC がありません" : "読み込み中…")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -357,7 +380,7 @@ private struct UpSnapTab: View {
                 }
                 Divider().overlay(Color.white.opacity(0.1))
                 HStack {
-                    Text("\(email)（\(activeIndex == 1 ? "外出先" : activeIndex == 0 ? "自宅" : "未接続")のアドレス）")
+                    Text("\(email)（\(activeIndex == 1 ? "外出先" : activeIndex == 0 ? "自宅" : "未接続")）")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -374,6 +397,9 @@ private struct UpSnapTab: View {
                 Label(message, systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote)
                     .foregroundStyle(.orange)
+            }
+            if let powerNotice {
+                Text(powerNotice).font(.footnote).foregroundStyle(.secondary)
             }
             if !waker.detail.isEmpty {
                 Text(waker.detail).font(.footnote).foregroundStyle(.secondary)
@@ -401,7 +427,7 @@ private struct UpSnapTab: View {
                         Text(device.name)
                             .font(.headline)
                             .foregroundStyle(.primary)
-                        Text(isWaking ? "起動中…" : (serverDown(device) ? "オン（サーバーにつながりません）" : statusText(device.status)))
+                        Text(isWaking ? "起動中…" : (serverDown(device) ? "オン・サーバーに接続できません" : statusText(device.status)))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -424,13 +450,18 @@ private struct UpSnapTab: View {
                     .font(.subheadline)
                     .buttonStyle(.borderless)
             } else {
-                Button {
-                    editing = device
+                Menu {
+                    Button("接続の設定", systemImage: "slider.horizontal.3") { editing = device }
+                    if device.status == "online" {
+                        Divider()
+                        Button("スリープ", systemImage: "moon") { askPower(device, "sleep") }
+                        Button("再起動", systemImage: "arrow.clockwise") { askPower(device, "restart") }
+                        Button("シャットダウン", systemImage: "power") { askPower(device, "shutdown") }
+                    }
                 } label: {
-                    Image(systemName: "slider.horizontal.3").foregroundStyle(.secondary)
+                    Image(systemName: "ellipsis.circle").foregroundStyle(.secondary)
                 }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("\(device.name)の接続の設定")
+                .accessibilityLabel("\(device.name)のメニュー")
             }
         }
         .padding(.horizontal, 16)
@@ -455,11 +486,52 @@ private struct UpSnapTab: View {
         case "online": return "オン"
         case "offline": return "オフ"
         case "pending": return "起動中"
-        default: return "状態は不明"
+        default: return "状態不明"
         }
     }
 
     // MARK: 動き
+
+    private static func powerLabel(_ action: String) -> String {
+        switch action {
+        case "sleep": return "スリープ"
+        case "restart": return "再起動"
+        default: return "シャットダウン"
+        }
+    }
+
+    private var powerTitle: String {
+        guard let request = pendingPower else { return "" }
+        return "\(request.device.name)を\(Self.powerLabel(request.action))しますか？"
+    }
+
+    private func askPower(_ device: WakeOnLAN.UpSnapDevice, _ action: String) {
+        // トークンがないと、サーバーに接続できない。先に、設定を開く
+        if DeviceSettingsStore.token(device.id).isEmpty {
+            editing = device
+            return
+        }
+        pendingPower = PowerRequest(device: device, action: action)
+    }
+
+    private func runPower(_ request: PowerRequest, force: Bool) {
+        let settings = DeviceSettingsStore.load(request.device.id)
+        let token = DeviceSettingsStore.token(request.device.id)
+        let hosts = [request.device.ip, settings.hostRemote].filter { !$0.isEmpty }
+        let label = Self.powerLabel(request.action)
+        powerNotice = "\(label)を送信しています…"
+        Task {
+            do {
+                try await PowerClient.send(hosts: hosts, port: Int(settings.port) ?? 8765, token: token,
+                                           action: request.action, force: force)
+                powerNotice = "\(request.device.name)を\(label)します"
+            } catch {
+                powerNotice = "\(label)できませんでした（\(WakeOnLAN.message(for: error))）"
+            }
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            powerNotice = nil
+        }
+    }
 
     private func profile(for device: WakeOnLAN.UpSnapDevice) -> PCProfile {
         let settings = DeviceSettingsStore.load(device.id)
@@ -501,7 +573,7 @@ private struct UpSnapTab: View {
     private func reload() async {
         do {
             if activeBase == nil, await resolveBase() == nil {
-                throw WakeOnLAN.WakeError.upsnap("どのアドレスにもつながりません")
+                throw WakeOnLAN.WakeError.upsnap("UpSnap に接続できません")
             }
             do {
                 devices = try await fetchDevices()
@@ -515,7 +587,7 @@ private struct UpSnapTab: View {
             await probeServers()
         } catch {
             if Task.isCancelled { return }
-            message = "UpSnap から読めません（\(WakeOnLAN.message(for: error))）"
+            message = "UpSnap から取得できません（\(WakeOnLAN.message(for: error))）"
         }
         loaded = true
     }
@@ -582,7 +654,7 @@ private struct DeviceSettingsSheet: View {
                         Spacer()
                         Text(device.ip).foregroundStyle(.secondary)
                     }
-                    TextField("外出先のホスト（Tailscale、任意）", text: $settings.hostRemote)
+                    TextField("外出先のホスト（Tailscale・任意）", text: $settings.hostRemote)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
@@ -609,7 +681,7 @@ private struct DeviceSettingsSheet: View {
                         .buttonStyle(.borderless)
                     }
                 } footer: {
-                    Text("自宅のホストは、UpSnap に登録した IP アドレスです。外では、Tailscale のアドレスでつなぎます。トークンは、この iPhone のキーチェーンにだけ入ります")
+                    Text("自宅のホストは、UpSnap に登録した IP アドレスです。外出先では、Tailscale のアドレスに接続します。トークンは、この iPhone のキーチェーンに保存されます。")
                 }
             }
             .navigationTitle(device.name)

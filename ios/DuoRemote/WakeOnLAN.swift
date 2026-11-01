@@ -85,7 +85,7 @@ enum WakeOnLAN {
         try check(listResponse)
         guard let list = try JSONSerialization.jsonObject(with: listData) as? [String: Any],
               let items = list["items"] as? [[String: Any]] else {
-            throw WakeError.upsnap("UpSnap の機器の一覧を読めませんでした")
+            throw WakeError.upsnap("PC の一覧を取得できませんでした")
         }
         return items
     }
@@ -141,7 +141,7 @@ enum WakeOnLAN {
         let wanted = deviceIP.trimmingCharacters(in: .whitespaces)
         guard let device = items.first(where: { ($0["ip"] as? String) == wanted }),
               let id = device["id"] as? String else {
-            throw WakeError.upsnap("UpSnap に \(wanted) の機器がありません")
+            throw WakeError.upsnap("UpSnap に \(wanted) の PC が登録されていません")
         }
 
         // UpSnap は、PC が起動するまで返事を返さないことがある。数秒で返事がなくても、
@@ -160,10 +160,10 @@ enum WakeOnLAN {
     static func message(for error: Error) -> String {
         if let urlError = error as? URLError {
             switch urlError.code {
-            case .timedOut: return "接続がタイムアウトしました"
-            case .notConnectedToInternet, .dataNotAllowed: return "ネットワークにつながっていません"
+            case .timedOut: return "応答がありません（タイムアウト）"
+            case .notConnectedToInternet, .dataNotAllowed: return "ネットワークに接続されていません"
             case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost, .dnsLookupFailed:
-                return "UpSnap につながりません"
+                return "UpSnap に接続できません"
             default: break
             }
         }
@@ -179,7 +179,7 @@ enum WakeOnLAN {
 
     private static func check(_ response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw WakeError.upsnap("UpSnap が受け付けませんでした")
+            throw WakeError.upsnap("UpSnap に拒否されました")
         }
     }
 
@@ -280,7 +280,7 @@ final class PCWaker: ObservableObject {
                 let broadcast = config.broadcast.isEmpty ? "255.255.255.255" : config.broadcast
                 do {
                     try WakeOnLAN.sendMagicPacket(mac: config.mac, broadcast: broadcast)
-                    notes.append("電源を入れる信号を送りました")
+                    notes.append("電源を入れる信号を送信しました")
                 } catch {
                     errors.append(WakeOnLAN.message(for: error))
                 }
@@ -290,14 +290,14 @@ final class PCWaker: ObservableObject {
                     try await WakeOnLAN.wakeWithUpSnap(
                         baseURL: config.upsnapURL, email: config.upsnapEmail,
                         password: config.upsnapPassword, deviceIP: config.deviceIP)
-                    notes.append("UpSnap で電源を入れました。起動したら、自動で接続します")
+                    notes.append("電源を入れています。起動したら自動で接続します")
                 } catch {
                     errors.append(WakeOnLAN.message(for: error))
                 }
             }
             if Task.isCancelled { return }
             if notes.isEmpty {
-                self.phase = .failed(errors.first ?? "起動の設定がありません")
+                self.phase = .failed(errors.first ?? "電源を入れる方法が設定されていません")
                 return
             }
             self.detail = notes.joined(separator: "。")
@@ -316,7 +316,7 @@ final class PCWaker: ObservableObject {
                     }
                 }
             }
-            self.phase = .failed("3分待っても PC につながりません。電源や設定を確認してください")
+            self.phase = .failed("3分待っても PC に接続できません。電源と設定を確認してください")
         }
     }
 
@@ -324,5 +324,85 @@ final class PCWaker: ObservableObject {
         task?.cancel()
         phase = .idle
         detail = ""
+    }
+}
+
+/// 一覧の画面から、つながずに、PC の電源（シャットダウン、再起動、スリープ）を操作する。
+/// PC のサーバーに、短い接続をして、`power` を送る
+enum PowerClient {
+    enum Failure: LocalizedError {
+        case rejected(String)
+        case timedOut
+        case closed
+
+        var errorDescription: String? {
+            switch self {
+            case .rejected(let message): return message
+            case .timedOut: return "PC から応答がありません"
+            case .closed: return "PC に接続できません。サーバーが動いているか、トークンを確認してください"
+            }
+        }
+    }
+
+    static func send(hosts: [String], port: Int, token: String, action: String, force: Bool) async throws {
+        var lastError: Error = Failure.closed
+        for host in hosts where !host.isEmpty {
+            do {
+                try await withTimeout(seconds: 8) {
+                    try await sendOnce(host: host, port: port, token: token, action: action, force: force)
+                }
+                return
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError
+    }
+
+    private static func sendOnce(host: String, port: Int, token: String, action: String, force: Bool) async throws {
+        guard let url = URL(string: "ws://\(host):\(port)/") else { throw Failure.closed }
+        let task = URLSession.shared.webSocketTask(with: url)
+        task.resume()
+        defer { task.cancel(with: .normalClosure, reason: nil) }
+
+        // 映像は要らないので、小さく、遅くしてもらう
+        let hello: [String: Any] = ["t": "hello", "v": 1, "token": token, "fps": 5, "max_height": 240, "codecs": ["h264"]]
+        try await task.send(.string(json(hello)))
+        try await waitFor(["welcome"], on: task)
+        try await task.send(.string(json(["t": "power", "action": action, "force": force])))
+        try await waitFor(["notice"], on: task)
+    }
+
+    /// 指定した種類のメッセージが来るまで待つ。`error` が来たら、その内容で失敗にする
+    private static func waitFor(_ types: Set<String>, on task: URLSessionWebSocketTask) async throws {
+        while true {
+            let message: URLSessionWebSocketTask.Message
+            do {
+                message = try await task.receive()
+            } catch {
+                throw Failure.closed
+            }
+            guard case .string(let text) = message,
+                  let object = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any],
+                  let type = object["t"] as? String else { continue }
+            if types.contains(type) { return }
+            if type == "error" { throw Failure.rejected((object["message"] as? String) ?? "操作できませんでした") }
+        }
+    }
+
+    private static func json(_ object: [String: Any]) -> String {
+        String(decoding: (try? JSONSerialization.data(withJSONObject: object)) ?? Data(), as: UTF8.self)
+    }
+
+    private static func withTimeout<T: Sendable>(seconds: Double, _ body: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await body() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw Failure.timedOut
+            }
+            defer { group.cancelAll() }
+            return try await group.next()!
+        }
     }
 }
