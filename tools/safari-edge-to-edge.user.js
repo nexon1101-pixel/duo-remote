@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         帯の下まで表示
 // @description  iPhone Duo の外側の画面で、Safari の右の帯の下まで、ページを広げる。左下のボタンで、サイトごとに切り替える。内側の画面では、何もしない
-// @version      3.7
+// @version      4.0
 // @match        *://*/*
 // @run-at       document-start
 // ==/UserScript==
@@ -58,6 +58,20 @@
     patchAll();
   }
 
+  // --- 描画の前に広げる。覚えた帯の幅があれば、スクリプトが動いた瞬間に、CSS を入れる
+  // （100vw は、広げる前の幅。html は広げ、body は、オンのときだけ広げる）
+  var earlyStyle = null;
+  (function () {
+    var saved = parseInt(safeGet(GKEY) || '0', 10);
+    if (!saved) return;
+    earlyStyle = document.createElement('style');
+    earlyStyle.textContent =
+      'html{width:calc(100vw + ' + saved + 'px)!important;min-width:calc(100vw + ' + saved + 'px)!important;' +
+      'overflow-x:clip!important;touch-action:pan-y pinch-zoom!important;overscroll-behavior-x:none!important}' +
+      'body{width:' + (on ? '100%' : '100vw') + '!important;overflow-x:clip!important}';
+    (document.head || document.documentElement).appendChild(earlyStyle);
+  })();
+
   // --- Safari が広げなかったときの方法。ページの幅を、帯の分だけ無理に広げる
   // html（外枠）は、いつも、帯の分だけ広げておく。そうすると、帯の中に、ボタンを置ける。
   // body（中身）は、オンのときだけ広げる。オフのときは、元の幅のままにする
@@ -107,11 +121,12 @@
   var timer = null;
   function scheduleFix() {
     if (timer || !on || !hackGap) return;
-    timer = setTimeout(function () { timer = null; if (on && hackGap) fixFixed(hackGap); }, 400);
+    timer = setTimeout(function () { timer = null; if (on && hackGap) fixFixed(hackGap); }, 1200);
   }
 
   function apply() {
     // 広げた状態では、幅を測れないので、いったん元に戻してから測る
+    if (earlyStyle) { earlyStyle.remove(); earlyStyle = null; }
     style.remove();
     unfixFixed();
     hackGap = 0;
@@ -179,7 +194,8 @@
   document.addEventListener('DOMContentLoaded', function () {
     makeHandle();
     apply();
-    new MutationObserver(scheduleFix).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class'] });
+    new MutationObserver(scheduleFix).observe(document.documentElement, { childList: true, subtree: true });
+    document.addEventListener('click', function () { setTimeout(function () { if (on && hackGap) fixFixed(hackGap); }, 300); }, true);
   });
   window.addEventListener('load', apply);
   window.addEventListener('orientationchange', function () { setTimeout(apply, 300); });
