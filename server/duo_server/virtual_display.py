@@ -31,10 +31,14 @@ TARGET_HEIGHT = 1080
 # iPhone Duo の画面の縦横比に合う幅を含める（高さ1080のとき）:
 #   内側 1878x2670px: 縦持ち 760、横持ち 1536 / 外側 1398x2034px: 縦持ち 742、横持ち 1572
 PRESET_WIDTHS = (720, 742, 760, 810, 900, 1080, 1200, 1296, 1440, 1536, 1572, 1620, 1728, 1800, 1920, 2160, 2400, 2560)
-# 設定ファイルに書く高さ。標準（1080）と、その1.25倍、1.5倍、2倍。
+# 設定ファイルに書ける高さ。標準（1080）と、その1.25倍、1.5倍、2倍。
 # 幅は、高さ1080の幅に H / 1080 を掛けて、偶数に丸める（縦横比はほぼ同じ）。
-# 解像度の数は、高さ4つ × 幅18 = 72 以下（重複は除く）。ドライバーが受け付ける数に上限があるかもしれない
-PRESET_HEIGHTS = (1080, 1350, 1620, 2160)
+# 4つ全部を書くと、解像度が 72 件になる。実機（RTX 3070 Ti）では、この長い一覧で、ドライバーが起動に失敗した
+# （デバイスの状態が Error になり、モニターが出なかった）。そのため、初めは 1080 だけを書く（18 件。動くことを確認ずみ）。
+# 大きい解像度が欲しいときだけ、write-config --heights で、増やす（エラーになったら、減らす）
+ALL_HEIGHTS = (1080, 1350, 1620, 2160)
+DEFAULT_HEIGHTS = (1080,)
+PRESET_HEIGHTS = DEFAULT_HEIGHTS
 REFRESH_RATES = (60,)
 # set_resolution の scale の範囲
 MIN_SCALE, MAX_SCALE = 1.0, 2.0
@@ -520,11 +524,45 @@ def _print_monitors() -> None:
         print(f"    {m['description']}")
 
 
+def parse_heights(text: str | None) -> tuple[int, ...]:
+    """--heights の値（"1080,1350" など）を、高さの並びにする。省略すると、初めの設定（1080 だけ）。"""
+    if not text:
+        return DEFAULT_HEIGHTS
+    try:
+        values = tuple(dict.fromkeys(int(part) for part in text.split(",") if part.strip()))
+    except ValueError as e:
+        raise VirtualDisplayError(f"--heights は、数をカンマで区切ってください（例: 1080,1350）: {text}") from e
+    bad = [v for v in values if v not in ALL_HEIGHTS]
+    if not values or bad:
+        raise VirtualDisplayError(f"使えない高さです: {bad or text}。使えるのは {', '.join(map(str, ALL_HEIGHTS))} です")
+    return tuple(sorted(values))
+
+
+def apply_driver(vd: "VirtualDisplay", sleep=time.sleep, wait: int = 8) -> bool:
+    """ドライバーを無効にして有効に戻し、正常に動いた（状態が OK になった）かを返す。"""
+    device = vd.device()
+    if device is None:
+        raise VirtualDisplayError("ドライバーが見つかりません")
+    set_pnp_enabled(device["InstanceId"], False)
+    sleep(1)
+    set_pnp_enabled(device["InstanceId"], True)
+    for _ in range(wait):
+        sleep(1)
+        current = vd.device()
+        if current is not None and current.get("Status") == "OK":
+            return True
+    return False
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="duo_server.virtual_display", description="仮想ディスプレイの状態を調べる・操作する")
     p.add_argument("command", choices=["status", "monitors", "modes", "on", "off", "write-config"])
     p.add_argument("--gpu", help="write-config: 使うグラフィックボードの名前（省略すると default）")
-    p.add_argument("--apply", action="store_true", help="write-config: 書いたあと、ドライバーを入れ直して反映する（管理者）")
+    p.add_argument("--apply", action="store_true", help="write-config: 書いたあと、ドライバーを入れ直して反映する（管理者）。ドライバーがエラーになったら、1080 だけの設定に戻す")
+    p.add_argument(
+        "--heights", default=None,
+        help="write-config: 書く高さ（カンマ区切り。使えるのは " + ", ".join(map(str, ALL_HEIGHTS)) + "。初めは 1080 だけ）",
+    )
     args = p.parse_args(argv)
     vd = VirtualDisplay()
 
@@ -556,7 +594,8 @@ def main(argv: list[str] | None = None) -> None:
             vd.off(force=True)
             print("仮想モニターを無効にしました")
         elif args.command == "write-config":
-            xml = build_vdd_settings(args.gpu)
+            heights = parse_heights(args.heights)
+            xml = build_vdd_settings(args.gpu, heights=heights)
             if CONFIG_PATH.exists():
                 backup = CONFIG_PATH.with_suffix(".xml.bak")
                 if not backup.exists():
@@ -564,15 +603,21 @@ def main(argv: list[str] | None = None) -> None:
                     print(f"元の設定を {backup} に控えました")
             CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
             CONFIG_PATH.write_text(xml, encoding="utf-8")
-            print(f"設定を書きました: {CONFIG_PATH}（高さ {', '.join(map(str, PRESET_HEIGHTS))} の4つ、幅は高さごとに最大 {len(PRESET_WIDTHS)} 通り）")
+            print(f"設定を書きました: {CONFIG_PATH}（高さ {', '.join(map(str, heights))}）")
             if args.apply:
-                device = vd.device()
-                if device is None:
-                    raise VirtualDisplayError("ドライバーが見つかりません")
-                set_pnp_enabled(device["InstanceId"], False)
-                time.sleep(1)
-                set_pnp_enabled(device["InstanceId"], True)
-                print("ドライバーを入れ直しました")
+                ok = apply_driver(vd)
+                if ok:
+                    print("ドライバーを入れ直しました。正常に動いています")
+                elif heights != DEFAULT_HEIGHTS:
+                    # 長い一覧で、ドライバーが止まることがある。1080 だけの、安全な設定に戻す
+                    print("ドライバーが、エラーになりました。1080 だけの設定に戻して、もう一度試します")
+                    CONFIG_PATH.write_text(build_vdd_settings(args.gpu, heights=DEFAULT_HEIGHTS), encoding="utf-8")
+                    if apply_driver(vd):
+                        print("1080 だけの設定で、正常に動いています。高さを減らして、もう一度試してください（例: --heights 1080,1350）")
+                    else:
+                        raise VirtualDisplayError("1080 だけの設定でも、ドライバーがエラーのままです。デバイス マネージャーで状態を見るか、ドライバーを入れ直してください")
+                else:
+                    raise VirtualDisplayError("ドライバーがエラーのままです。デバイス マネージャーで状態を見るか、ドライバーを入れ直してください")
             else:
                 print("反映するには、--apply を付けるか、デバイス マネージャーでドライバーを無効にして有効に戻してください")
     except VirtualDisplayError as e:
