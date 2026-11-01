@@ -538,6 +538,9 @@ struct ContentView: View {
             if session.viewMode != .screen {
                 Button("メイン画面を表示", systemImage: "display") { session.showScreen() }
             }
+            Button("カーソルを中央へ", systemImage: "scope") {
+                NotificationCenter.default.post(name: .duoCenterCursor, object: nil)
+            }
             Divider()
             Toggle("PC の音声を再生", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
             Toggle("ゲームモード", systemImage: "gamecontroller", isOn: $gameMode)

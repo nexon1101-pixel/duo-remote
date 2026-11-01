@@ -5,7 +5,7 @@ import UIKit
 /// 半開きの Duo の下の画面と、重ねて出す形（OverlayTrackpad）で使う。
 ///
 /// - 1本指で動かす＝カーソルを動かす（速く動かすほど、多めに動く）
-/// - 1本指でタップ＝左クリック、2本指でタップ＝右クリック
+/// - 1本指でタップ＝左クリック、2本指でタップ＝右クリック、3本指でタップ＝カーソルを、見えている映像の真ん中に持ってくる
 /// - 2本指で動かす＝スクロール（指を離したあとも、少し流れ続ける）。映像を拡大しているときは、スクロールではなく、映像を映す位置を動かす
 /// - 右端の細い帯を、1本指で上下になぞる＝スクロール
 /// - 長押ししてから動かす＝左ボタンを押したまま動かす（ドラッグ）
@@ -287,6 +287,9 @@ final class TrackpadCoordinator: NSObject, UIGestureRecognizerDelegate {
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
         let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap))
         twoFingerTap.numberOfTouchesRequired = 2
+        // 3本指でタップ＝カーソルを、見えている映像の真ん中に持ってくる（見失ったとき）
+        let threeFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleThreeFingerTap))
+        threeFingerTap.numberOfTouchesRequired = 3
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress))
         longPress.minimumPressDuration = Self.dragHoldDuration
         let move = UIPanGestureRecognizer(target: self, action: #selector(handleMove))
@@ -303,7 +306,7 @@ final class TrackpadCoordinator: NSObject, UIGestureRecognizerDelegate {
         scrollRecognizer = scroll
         pinchRecognizer = pinch
 
-        for recognizer in [tap, twoFingerTap, longPress, move, scroll, pinch] {
+        for recognizer in [tap, twoFingerTap, threeFingerTap, longPress, move, scroll, pinch] {
             view.addGestureRecognizer(recognizer)
         }
     }
@@ -378,6 +381,12 @@ final class TrackpadCoordinator: NSObject, UIGestureRecognizerDelegate {
         guard recognizer.state == .ended else { return }
         haptics.impactOccurred()
         click("left")
+    }
+
+    @objc private func handleThreeFingerTap(_ recognizer: UITapGestureRecognizer) {
+        guard recognizer.state == .ended else { return }
+        haptics.impactOccurred()
+        NotificationCenter.default.post(name: .duoCenterCursor, object: nil)
     }
 
     @objc private func handleTwoFingerTap(_ recognizer: UITapGestureRecognizer) {

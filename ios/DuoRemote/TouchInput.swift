@@ -463,6 +463,12 @@ final class TouchInput: NSObject, UIGestureRecognizerDelegate, UIPointerInteract
         send(message)
     }
 
+    /// 見えている映像の真ん中に、PC のカーソルを動かす（カーソルを見失ったとき）。拡大しているときは、いま見えている範囲の真ん中
+    func centerCursor() {
+        guard let view else { return }
+        moveMouse(to: CGPoint(x: view.bounds.midX, y: view.bounds.midY))
+    }
+
     private func moveMouse(to location: CGPoint) {
         guard let p = normalized(location, clamp: true) else { return }
         cursor = p

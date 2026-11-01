@@ -62,6 +62,40 @@ final class VideoContainerView: UIView {
         NotificationCenter.default.addObserver(
             self, selector: #selector(handlePanRequest(_:)), name: .duoPanVideo, object: nil
         )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleCenterCursor), name: .duoCenterCursor, object: nil
+        )
+    }
+
+    /// カーソルを、見えている映像の真ん中に持ってくる。持ってきた場所が分かるように、輪を一瞬出す
+    @objc private func handleCenterCursor() {
+        touchInput.centerCursor()
+        showLocator(at: CGPoint(x: bounds.midX, y: bounds.midY))
+    }
+
+    private func showLocator(at point: CGPoint) {
+        let ring = CAShapeLayer()
+        ring.path = UIBezierPath(ovalIn: CGRect(x: -32, y: -32, width: 64, height: 64)).cgPath
+        ring.position = point
+        ring.fillColor = UIColor.clear.cgColor
+        ring.strokeColor = UIColor.systemYellow.cgColor
+        ring.lineWidth = 4
+        ring.opacity = 0
+        layer.addSublayer(ring)
+
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = 1.8
+        scale.toValue = 0.5
+        let fade = CAKeyframeAnimation(keyPath: "opacity")
+        fade.values = [0.0, 1.0, 1.0, 0.0]
+        fade.keyTimes = [0, 0.15, 0.7, 1]
+        let group = CAAnimationGroup()
+        group.animations = [scale, fade]
+        group.duration = 0.8
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { ring.removeFromSuperlayer() }
+        ring.add(group, forKey: "locator")
+        CATransaction.commit()
     }
 
     /// トラックパッドの2本指（拡大しているとき）から、映像を動かすように頼まれる
@@ -183,6 +217,9 @@ enum VideoZoomState {
 }
 
 extension Notification.Name {
+    /// カーソルを、見えている映像の真ん中に持ってくる頼み。メニューと、トラックパッドの3本指のタップが送る
+    static let duoCenterCursor = Notification.Name("duoCenterCursor")
+
     /// 拡大している映像を、動かす頼み（userInfo の "dx"、"dy": 動かす量。画面のポイント）。トラックパッドの2本指が送る
     static let duoPanVideo = Notification.Name("duoPanVideo")
 
