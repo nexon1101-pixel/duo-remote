@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         帯の下まで表示
-// @description  iPhone Duo の外側の画面で、Safari の右の帯の下まで、ページを広げる。右の端のボタンで、サイトごとに切り替える。内側の画面では、何もしない
-// @version      3.4
+// @description  iPhone Duo の外側の画面で、Safari の右の帯の下まで、ページを広げる。左下のボタンで、サイトごとに切り替える。内側の画面では、何もしない
+// @version      3.5
 // @match        *://*/*
 // @run-at       document-start
 // ==/UserScript==
@@ -133,12 +133,17 @@
     placeHandle();
   }
 
-  // ボタンは、ページの右の端（帯の手前）に、固定して置く。帯の中は、タップが届かないので、置かない
+  // ボタンは、ページの左下（Safari の下のバーの上）に、固定して置く。帯の中は、タップが届かないので、置かない
+  var ICON =
+    '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:9px">' +
+    '<path d="M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg>';
+
   function placeHandle() {
     if (!handle) return;
     handle.style.display = '';
-    handle.textContent = on ? '\u2192\u2190' : '\u2190\u2192';
-    handle.style.cssText = BUTTON_CSS + 'position:fixed;top:70%;right:6px;';
+    if (!handle.firstChild) handle.innerHTML = ICON;
+    handle.style.cssText = BUTTON_CSS + 'position:fixed;left:12px;bottom:92px;' + (on ? 'color:#fff;' : 'color:rgba(255,255,255,0.4);');
   }
 
   function patchAllOff() {
@@ -150,9 +155,9 @@
   }
 
   var BUTTON_CSS =
-    'width:36px;height:36px;border-radius:18px;color:#222;opacity:0.7;' +
-    'background:linear-gradient(#ececf0,#b4b4bc);box-shadow:0 2px 8px rgba(0,0,0,0.35),inset 0 1px 0 rgba(255,255,255,0.8);' +
-    'font:700 14px/36px sans-serif;letter-spacing:-1px;text-align:center;' +
+    'width:40px;height:40px;border-radius:20px;box-sizing:border-box;' +
+    'background:rgba(28,28,32,0.62);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);' +
+    'border:1px solid rgba(255,255,255,0.28);box-shadow:0 2px 10px rgba(0,0,0,0.35);' +
     'z-index:2147483647;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;';
 
   // 押すと、このサイトだけ、オン・オフを切り替える
