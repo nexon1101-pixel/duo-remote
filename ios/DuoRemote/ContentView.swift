@@ -22,6 +22,7 @@ struct ContentView: View {
     @AppStorage("audioMix") private var audioMix = false
     /// 画面の端の余白（ポイント）。Duo の角が丸く、映像の角が削れるときに、広げる
     @AppStorage("edgeMargin") private var edgeMargin = 0
+    @AppStorage(RemoteSession.virtualScaleKey) private var virtualScale = 1.0
     @AppStorage("showLatency") private var showLatency = true
     @AppStorage(RemoteSession.useHEVCKey) private var useHEVC = true
     @AppStorage(RemoteSession.autoQualityKey) private var autoQuality = true
@@ -42,6 +43,8 @@ struct ContentView: View {
     @State private var showingWindows = false
     @State private var showingMonitors = false
     @State private var showingSettings = false
+    /// 映像を拡大しているか（「拡大を戻す」のボタンを出すため）
+    @State private var videoZoomed = false
     /// 写真・ファイルの選択画面を出すか、と、PC のクリップボードにも入れるか
     @State private var showingPhotoPicker = false
     @State private var showingFileImporter = false
@@ -132,6 +135,11 @@ struct ContentView: View {
             // 画質で、音の形も変わる（低画質は、24000Hz のモノラル）。つなぎ直しのあと、あらためて頼まれる
         }
         .onChange(of: edgeMargin) { _, _ in refitWindow() }
+        // 仮想画面の大きさを変えたら、いま映している仮想画面を、新しい大きさで撮り直す
+        .onChange(of: virtualScale) { _, _ in refitWindow() }
+        .onReceive(NotificationCenter.default.publisher(for: .duoZoomChanged)) { note in
+            videoZoomed = note.userInfo?["zoomed"] as? Bool ?? false
+        }
         .onChange(of: audioOn) { _, _ in session.setAudio(audioOn, mixWithOthers: audioMix) }
         .onChange(of: audioMix) { _, _ in session.setAudio(audioOn, mixWithOthers: audioMix) }
         // 音を始められなかったら、スイッチをオフに戻す
@@ -328,7 +336,10 @@ struct ContentView: View {
             MonitorPicker()
         }
         .sheet(isPresented: $showingSettings, onDismiss: { refocus += 1 }) {
-            SettingsView(qualityChoice: qualityChoice, autoChoice: Self.autoChoice, info: settingsInfo)
+            SettingsView(
+                qualityChoice: qualityChoice, autoChoice: Self.autoChoice, info: settingsInfo,
+                virtualAspect: fitSize.height > 0 ? Double(fitSize.width / fitSize.height) : 0
+            )
         }
         .fileSendPickers(
             photosShown: $showingPhotoPicker,
@@ -416,6 +427,17 @@ struct ContentView: View {
     private func windowsButton(compact: Bool) -> some View {
         let tint: Color = session.viewMode == .window || session.viewMode == .desktop ? .accentColor : .white
         HStack(spacing: UIMetrics.spacing) {
+            if videoZoomed {
+                Button {
+                    NotificationCenter.default.post(name: .duoResetZoom, object: nil)
+                } label: {
+                    Image(systemName: "arrow.down.right.and.arrow.up.left")
+                        .modifier(BarButtonLabel(tint: .accentColor, compact: compact))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("拡大を戻す")
+                .transition(.scale.combined(with: .opacity))
+            }
             if let previous = session.previousWindow, previous.id != session.currentWindow?.id {
                 Button {
                     WindowPicker.open(previous, session: session, fitSize: fitSize)
@@ -438,6 +460,7 @@ struct ContentView: View {
             .accessibilityLabel("ウィンドウを選択")
         }
         .animation(.spring(duration: 0.3), value: session.previousWindow?.id)
+        .animation(.spring(duration: 0.3), value: videoZoomed)
     }
 
     /// トラックパッドを出す・しまうボタン（重ねて出す形）
@@ -510,6 +533,9 @@ struct ContentView: View {
         }
         rows.append(("画面", screenDescription.replacingOccurrences(of: "画面: ", with: "")))
         rows.append(("通信", session.transportName))
+        if session.videoSize.width > 0 {
+            rows.append(("映像の大きさ", "\(Int(session.videoSize.width))×\(Int(session.videoSize.height))"))
+        }
         rows.append(("映像", (session.codec == "hevc" ? "H.265" : "H.264")
                      + (session.autoLevel.map { "（自動: \($0.shortLabel)）" } ?? "")))
         return rows
@@ -537,6 +563,25 @@ struct ContentView: View {
             }
             if session.viewMode != .screen {
                 Button("メイン画面を表示", systemImage: "display") { session.showScreen() }
+            }
+            if session.virtualAvailable {
+                Menu("仮想画面の大きさ", systemImage: "arrow.up.left.and.arrow.down.right") {
+                    Picker("仮想画面の大きさ", selection: $virtualScale) {
+                        ForEach(VirtualScale.all, id: \.self) { scale in
+                            Text(VirtualScale.label(scale, aspect: fitSize.height > 0 ? Double(fitSize.width / fitSize.height) : 0))
+                                .tag(scale)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }
+            }
+            if videoZoomed {
+                Button("拡大を戻す", systemImage: "arrow.down.right.and.arrow.up.left") {
+                    NotificationCenter.default.post(name: .duoResetZoom, object: nil)
+                }
+            }
+            Button("カーソルを中央へ", systemImage: "scope") {
+                NotificationCenter.default.post(name: .duoCenterCursor, object: nil)
             }
             Divider()
             Toggle("PC の音声を再生", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)

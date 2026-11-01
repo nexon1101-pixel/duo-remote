@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, control, gamepad
+from . import __version__, control, driver, gamepad
 from .control import SERVER_DIR, SettingsError
 
 DEFAULT_PORT = 8770
@@ -185,9 +185,34 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
                 pad_cache.update(key=key, value={"available": ok, "reason": reason})
             return dict(pad_cache["value"])
 
+    # ViGEmBus を入れる作業の進み具合。作業は別のスレッドで動く
+    pad_install: dict[str, Any] = {"state": "idle", "message": "", "running": False}
+    pad_install_lock = threading.Lock()
+
+    def set_pad_install(state: str, message: str) -> None:
+        with pad_install_lock:
+            pad_install.update(state=state, message=message)
+        if state == "done":
+            # 入れた直後は、使えるかをもう一度調べる（サーバーの起動ごとの1回、という決まりの例外）
+            with pad_lock:
+                pad_cache.update(key=object(), value=None)
+
+    def run_pad_install() -> None:
+        try:
+            driver.install_vigem(set_pad_install)
+        except Exception as e:  # noqa: BLE001 入れる作業の失敗で管理画面を落とさない
+            set_pad_install("error", f"入れられませんでした（{type(e).__name__}）")
+        finally:
+            with pad_install_lock:
+                pad_install["running"] = False
+
     def status() -> dict[str, Any]:
+        with pad_install_lock:
+            install = {"state": pad_install["state"], "message": pad_install["message"]}
         return {
             "pad": pad_status(),
+            "pad_install": install,
+            "windows": sys.platform == "win32",
             "running": process.running,
             "started_at": process.started_at,
             "last_exit": process.last_exit,
@@ -342,6 +367,7 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
                 ("GET", "/api/update"): lambda: self._update_check(),
                 ("POST", "/api/update"): lambda: self._update_start(),
                 ("GET", "/api/update/log"): lambda: (200, update_log(), None),
+                ("POST", "/api/driver/vigem"): lambda: self._driver_vigem(),
                 ("POST", "/api/admin"): lambda: self._admin(),
                 ("POST", "/api/quit"): lambda: self._quit(),
             }
@@ -424,6 +450,15 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
                 update.lines = []
             threading.Thread(target=run_update, daemon=True).start()
             return 200, {"started": True, "next_key": next_key}, None
+
+        def _driver_vigem(self):
+            # 利用者への確認は、ページの側でする
+            with pad_install_lock:
+                if pad_install["running"]:
+                    return 409, {"error": "ドライバーを入れている途中です"}, None
+                pad_install.update(running=True, state="downloading", message="ダウンロード中…")
+            threading.Thread(target=run_pad_install, daemon=True).start()
+            return 200, {"started": True}, None
 
         def _admin(self):
             if not run_as_admin(["--key", next_key]):
