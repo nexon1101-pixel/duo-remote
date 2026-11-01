@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         帯の下まで表示
-// @description  iPhone Duo の外側の画面で、Safari の右の帯の下まで、ページを広げる。左の端のつまみで、サイトごとに切り替える。内側の画面では、何もしない
-// @version      3.1
+// @description  iPhone Duo の外側の画面で、Safari の右の帯の下まで、ページを広げる。右の帯の空いている所のボタンで、サイトごとに切り替える。内側の画面では、何もしない
+// @version      3.2
 // @match        *://*/*
 // @run-at       document-start
 // ==/UserScript==
@@ -119,7 +119,6 @@
       if (handle) handle.style.display = 'none';
       return;
     }
-    if (handle) { handle.style.display = ''; handle.style.opacity = on ? '0.8' : '0.35'; }
     patchAll();
     if (on && !q.cover) {
       // Safari が、帯まで広げていない。幅を無理に広げる
@@ -128,6 +127,30 @@
       (document.head || document.documentElement).appendChild(style);
       fixFixed(q.g);
     }
+    placeHandle(q);
+  }
+
+  // ボタンの置き場所。右の帯の、戻るボタンと「＋」ボタンの間。固定表示は、帯の手前までしか描かれないので、
+  // 幅を広げているときは、ページの中に置いて、スクロールのたびに位置を合わせる。オフのときは、左の端の細いつまみにする
+  function placeHandle(q) {
+    if (!handle) return;
+    handle.style.display = '';
+    var w = document.documentElement.clientWidth;
+    if (!on) {
+      handle.mode = 'tab';
+      handle.style.cssText = TAB_CSS;
+    } else if (q.cover) {
+      handle.mode = 'fixed';
+      handle.style.cssText = BUTTON_CSS + 'position:fixed;top:70%;left:' + (w - 50) + 'px';
+    } else {
+      handle.mode = 'follow';
+      handle.style.cssText = BUTTON_CSS + 'position:absolute;left:' + (w + q.g - 50) + 'px';
+      followHandle();
+    }
+  }
+
+  function followHandle() {
+    if (handle && handle.mode === 'follow') handle.style.top = (window.scrollY + window.innerHeight * 0.7) + 'px';
   }
 
   function patchAllOff() {
@@ -138,13 +161,20 @@
     }
   }
 
-  // 左の端の、細長いつまみ。ページの左の余白に収める。押すと、このサイトだけ、オン・オフを切り替える
+  var BUTTON_CSS =
+    'width:36px;height:36px;border-radius:18px;background:#000;color:#fff;opacity:0.8;' +
+    'font:18px/36px sans-serif;text-align:center;box-shadow:0 0 0 1px rgba(255,255,255,0.7);' +
+    'z-index:2147483647;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;';
+  var TAB_CSS =
+    'position:fixed;left:0;top:70%;width:12px;height:56px;border-radius:0 8px 8px 0;font-size:0;overflow:hidden;' +
+    'background:#000;opacity:0.35;box-shadow:0 0 0 1px rgba(255,255,255,0.7);' +
+    'z-index:2147483647;-webkit-tap-highlight-color:transparent';
+
+  // 押すと、このサイトだけ、オン・オフを切り替える
   function makeHandle() {
     handle = document.createElement('div');
-    handle.style.cssText =
-      'position:fixed;left:0;top:70%;width:12px;height:56px;border-radius:0 8px 8px 0;' +
-      'background:#000;box-shadow:0 0 0 1px rgba(255,255,255,0.7);' +
-      'z-index:2147483647;-webkit-tap-highlight-color:transparent';
+    handle.textContent = '\u21D4';
+    handle.style.cssText = TAB_CSS;
     handle.addEventListener('click', function () {
       on = !on;
       safeSet(KEY, on ? 'on' : 'off');
@@ -159,6 +189,7 @@
     new MutationObserver(scheduleFix).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class'] });
   });
   window.addEventListener('load', apply);
+  window.addEventListener('scroll', followHandle, { passive: true });
   window.addEventListener('orientationchange', function () { setTimeout(apply, 300); });
   window.addEventListener('resize', function () { setTimeout(apply, 300); });
 })();
