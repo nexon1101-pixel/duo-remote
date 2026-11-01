@@ -197,7 +197,10 @@ struct ContentView: View {
 
             // 遅れは、メニューの中に置くと、数字が変わるたびに、メニューのスクロールが戻る。画面に出し続ける
             if showLatency {
-                LatencyBadge()
+                HStack(spacing: 6) {
+                    LatencyBadge()
+                    if session.audioOn { AudioMeterBar(width: 44) }
+                }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(8)
                     .padding(.top, safeInsets.top)
@@ -655,7 +658,7 @@ struct ContentView: View {
             Toggle("PC の音声を再生", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
             Menu("音量", systemImage: "speaker.wave.2") {
                 Picker("音量", selection: $audioVolume) {
-                    ForEach([1.0, 0.75, 0.5, 0.25], id: \.self) { level in
+                    ForEach([3.0, 2.0, 1.5, 1.0, 0.75, 0.5, 0.25], id: \.self) { level in
                         Text("\(Int(level * 100))%").tag(level)
                     }
                 }

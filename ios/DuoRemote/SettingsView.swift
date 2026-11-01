@@ -171,13 +171,14 @@ struct SettingsView: View {
                             Spacer()
                             Text("\(Int(audioVolume * 100))%").foregroundStyle(.secondary).monospacedDigit()
                         }
-                        Slider(value: $audioVolume, in: 0...1)
+                        Slider(value: $audioVolume, in: 0...3, step: 0.05)
+                        AudioMeterBar(width: 160)
                     }
                     Toggle("接続中、PC のスピーカーを消音", isOn: $muteLocal)
                 } header: {
                     Text("音声")
                 } footer: {
-                    Text("音量は、この iPhone で鳴らす音の大きさです。「PC のスピーカーを消音」をオンにすると、接続している間、PC のスピーカーから音が出なくなります（iPhone には届きます）。切断すると、元に戻ります。PC の音声を再生していなくても、PC のスピーカーは消音になります。")
+                    Text("音量は、この iPhone で鳴らす音の大きさです（0〜300%。100% を超えた分は、増幅します）。下の棒は、いま鳴っている音の大きさで、赤くなると、割れています。「PC のスピーカーを消音」をオンにすると、接続している間、PC のスピーカーから音が出なくなります（iPhone には届きます）。切断すると、元に戻ります。PC の音声を再生していなくても、PC のスピーカーは消音になります。")
                 }
 
                 if !info.isEmpty {

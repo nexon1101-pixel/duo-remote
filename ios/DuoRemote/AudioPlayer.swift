@@ -1,3 +1,4 @@
+import AudioToolbox
 import AVFoundation
 
 /// PCから届いた音を鳴らす。音の形は2つ。
@@ -23,8 +24,11 @@ final class AudioPlayer: @unchecked Sendable {
     private var converter: AVAudioConverter?
     private var mixWithOthers = false
     private var queuedFrames = 0
-    /// 音量（0〜1）
+    /// 音量（0〜3）。1 までは、そのまま小さくする。1 を超えた分は、増幅する（3 で、約 +9.5dB）
     private var volume: Float = 1
+    /// 増幅の部品（EQ の全体のゲイン）と、割れを抑えるリミッター
+    private var boost: AVAudioUnitEQ?
+    private var level = (peak: Float(0), at: CFAbsoluteTime(0))
     private var observers: [NSObjectProtocol] = []
 
     /// 鳴らし始める。すでに鳴らしていれば、やり直す
@@ -76,6 +80,7 @@ final class AudioPlayer: @unchecked Sendable {
             if Double(queuedFrames) > format.sampleRate * Self.maxQueuedSeconds { return }
             let decoded = converter != nil ? decodeOpus(data, to: format) : decodePCM(data, to: format)
             guard let buffer = decoded, buffer.frameLength > 0 else { return }
+            measure(buffer)
             let frames = Int(buffer.frameLength)
             queuedFrames += frames
             node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
@@ -84,12 +89,36 @@ final class AudioPlayer: @unchecked Sendable {
         }
     }
 
-    /// 音量を変える（0〜1）。鳴らしている最中でも、鳴らす前でも使える
+    /// 音量を変える（0〜3）。鳴らしている最中でも、鳴らす前でも使える
     func setVolume(_ value: Float) {
         queue.async { [self] in
-            volume = min(max(value, 0), 1)
-            engine?.mainMixerNode.outputVolume = volume
+            volume = min(max(value, 0), Self.maxVolume)
+            applyVolume()
         }
+    }
+
+    static let maxVolume: Float = 3
+
+    /// 1 までは、ミキサーの音量で小さくする。1 を超えた分は、EQ のゲイン（dB）で増幅する
+    private func applyVolume() {
+        engine?.mainMixerNode.outputVolume = min(volume, 1)
+        boost?.globalGain = volume > 1 ? 20 * log10(volume) : 0
+    }
+
+    /// 鳴らす音の大きさ（0〜1。増幅したあとの大きさ）を、メーターに伝える。0.06 秒ごとに、その間の最大を出す
+    private func measure(_ buffer: AVAudioPCMBuffer) {
+        guard let channels = buffer.floatChannelData else { return }
+        var peak: Float = 0
+        for ch in 0..<Int(buffer.format.channelCount) {
+            let samples = channels[ch]
+            for i in 0..<Int(buffer.frameLength) { peak = max(peak, abs(samples[i])) }
+        }
+        level.peak = max(level.peak, peak * max(volume, 0))
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - level.at >= 0.06 else { return }
+        let value = min(level.peak, 1.2)
+        level = (0, now)
+        DispatchQueue.main.async { AudioLevel.shared.value = value }
     }
 
     /// 止める。他のアプリが、続きを再生できる状態に戻す
@@ -164,12 +193,21 @@ final class AudioPlayer: @unchecked Sendable {
         guard let format else { return }
         let engine = AVAudioEngine()
         let node = AVAudioPlayerNode()
+        let boost = AVAudioUnitEQ(numberOfBands: 1)
+        let limiter = AVAudioUnitEffect(audioComponentDescription: AudioComponentDescription(
+            componentType: kAudioUnitType_Effect, componentSubType: kAudioUnitSubType_PeakLimiter,
+            componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0))
         engine.attach(node)
-        engine.connect(node, to: engine.mainMixerNode, format: format)
-        engine.mainMixerNode.outputVolume = volume
+        engine.attach(boost)
+        engine.attach(limiter)
+        engine.connect(node, to: boost, format: format)
+        engine.connect(boost, to: limiter, format: format)
+        engine.connect(limiter, to: engine.mainMixerNode, format: format)
+        self.engine = engine
+        self.boost = boost
+        applyVolume()
         try engine.start()
         node.play()
-        self.engine = engine
         self.node = node
         queuedFrames = 0
     }
@@ -202,15 +240,47 @@ final class AudioPlayer: @unchecked Sendable {
         node?.stop()
         engine?.stop()
         node = nil
+        boost = nil
         engine = nil
         format = nil
         converter = nil
         opusFormat = nil
         queuedFrames = 0
+        publishSilence()
+    }
+
+    private func publishSilence() {
+        DispatchQueue.main.async { AudioLevel.shared.value = 0 }
     }
 
     private func fail(_ message: String) {
         let handler = onFailure
         DispatchQueue.main.async { handler?(message) }
+    }
+}
+
+
+/// いま鳴らしている音の大きさ（0〜1。1 を超えると、割れる）。メーターが見る。
+/// 画面全体を、細かく描き直さないように、ここだけが変わる
+final class AudioLevel: ObservableObject {
+    static let shared = AudioLevel()
+    @Published var value: Float = 0
+}
+
+/// 音の大きさの棒（メーター）。大きすぎて割れそうなときは、赤くなる
+struct AudioMeterBar: View {
+    @ObservedObject private var level = AudioLevel.shared
+    var width: CGFloat = 80
+
+    var body: some View {
+        let value = CGFloat(min(max(level.value, 0), 1))
+        let color: Color = level.value > 1 ? .red : (level.value > 0.8 ? .orange : .green)
+        ZStack(alignment: .leading) {
+            Capsule().fill(Color.white.opacity(0.2))
+            Capsule().fill(color).frame(width: width * value)
+        }
+        .frame(width: width, height: 6)
+        .animation(.linear(duration: 0.06), value: level.value)
+        .accessibilityLabel("音の大きさ")
     }
 }
