@@ -21,6 +21,7 @@ struct SettingsView: View {
     @AppStorage(OverlayKeyboard.layoutKey) private var overlayLayout = OverlayKeyboardLayout.us
     @AppStorage(OverlayKeyboard.atBottomKey) private var keyboardAtBottom = false
     @AppStorage(OverlayKeyboard.padAtBottomKey) private var padAtBottom = false
+    @AppStorage("videoAboveDock") private var videoAboveDock = false
     @AppStorage("showFloatingTrackpad") private var showTrackpad = false
     @AppStorage(TrackpadCoordinator.pinchModeKey) private var trackpadPinch = "video"
     @AppStorage(OverlayKeyboard.opacityKey) private var overlayOpacity = 0.8
@@ -84,6 +85,7 @@ struct SettingsView: View {
                         Text("フロート").tag(false)
                         Text("下部に固定").tag(true)
                     }
+                    Toggle("下部に固定のとき、映像をその上に収める", isOn: $videoAboveDock)
                     Toggle("トラックパッドを表示", isOn: $showTrackpad)
                     Picker("ピンチ操作", selection: $trackpadPinch) {
                         Text("映像を拡大・縮小").tag("video")
@@ -100,7 +102,7 @@ struct SettingsView: View {
                 } header: {
                     Text("アプリ内キーボードとトラックパッド")
                 } footer: {
-                    Text("フロートは、映像の上で動かせます。下部に固定すると、画面の下に並びます。")
+                    Text("フロートは、映像の上で動かせます。下部に固定すると、画面の下に並びます。「映像をその上に収める」をオンにすると、固定した部分に映像を出さず、その上の範囲に映します。")
                 }
 
                 Section {

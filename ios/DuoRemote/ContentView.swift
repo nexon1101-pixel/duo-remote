@@ -80,6 +80,10 @@ struct ContentView: View {
     private var bottomKeys: Bool { inputMode == .overlay && keyboardAtBottom }
     /// 下部に固定したトラックパッドを出すか
     private var bottomPad: Bool { showTrackpad && padAtBottom }
+    /// 下部に固定したキーボードやトラックパッドの下に、映像を出さない（映像を、その上の範囲に収める）
+    @AppStorage("videoAboveDock") private var videoAboveDock = false
+    /// 下部に固定したキーボードとトラックパッドの高さ（出ていないときは 0）
+    @State private var dockedBottomHeight: CGFloat = 0
 
     /// 前の版の「置き方」（free / keyboard / both）を、キーボードとトラックパッドの2つの設定に引き継ぐ
     private func migrateDockMode() {
@@ -173,8 +177,8 @@ struct ContentView: View {
             )
             .padding(CGFloat(edgeMargin))
             .ignoresSafeArea() // キーボードの分も含めて、動かさない
-            // 半開きのときは、折り目より上だけに映す
-            .frame(height: dockedFold.map { $0.minY })
+            // 半開きのときは、折り目より上だけに映す。下部に固定したときは、設定によって、その上だけに映す
+            .frame(height: videoAreaHeight)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             if let fold = dockedFold {
@@ -257,6 +261,11 @@ struct ContentView: View {
                             onUndock: { keyboardAtBottom = false },
                             onUndockPad: { padAtBottom = false }
                         )
+                        .background {
+                            GeometryReader { proxy in
+                                Color.clear.preference(key: DockHeightKey.self, value: proxy.size.height)
+                            }
+                        }
                         .transition(.move(edge: .bottom))
                     }
                 }
@@ -272,7 +281,10 @@ struct ContentView: View {
                 .ignoresSafeArea()
         }
         .animation(.spring(duration: 0.4), value: dockedFold)
+        .animation(.spring(duration: 0.35), value: videoAreaHeight)
         .onChange(of: dockedFold) { _, _ in refitWindow() }
+        .onChange(of: videoAreaHeight) { _, _ in refitWindow() }
+        .onPreferenceChange(DockHeightKey.self) { dockedBottomHeight = $0 }
         .background {
             HardwareKeyView(
                 isActive: inputMode == .hardware && !showingWindows,
@@ -400,9 +412,19 @@ struct ContentView: View {
     /// 映像を出している範囲の大きさ（余白を除く）。ウィンドウや仮想画面の大きさを、これに合わせる
     private var fitSize: CGSize {
         let margin = CGFloat(edgeMargin) * 2
-        // 半開きのときは、折り目より上の大きさに合わせる
-        let height = dockedFold.map { $0.minY } ?? fullSize.height
+        // 半開きのときは、折り目より上の大きさに合わせる。下部に固定したときも、設定によって、その上の大きさに合わせる
+        let height = videoAreaHeight ?? fullSize.height
         return CGSize(width: max(fullSize.width - margin, 1), height: max(height - margin, 1))
+    }
+
+    /// 映像を出す範囲の高さ。画面いっぱいなら nil。半開きなら折り目より上、下部に固定していて、
+    /// 設定がオンなら、固定した部分より上
+    private var videoAreaHeight: CGFloat? {
+        if let fold = dockedFold { return fold.minY }
+        guard videoAboveDock, !gameMode, halfOpenFold == nil, bottomKeys || bottomPad, dockedBottomHeight > 0 else {
+            return nil
+        }
+        return max(fullSize.height - dockedBottomHeight, 1)
     }
 
     /// 半開きで、下の画面を入力に使うときの、折り目の位置。そうでなければ nil
@@ -888,5 +910,14 @@ struct BarButtonLabel: ViewModifier {
             .foregroundStyle(tint)
             .glass(in: Capsule(), interactive: true)
             .contentShape(Capsule())
+    }
+}
+
+
+/// 下部に固定したキーボードとトラックパッドの高さを、親に伝える
+private struct DockHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
