@@ -144,10 +144,30 @@ enum WakeOnLAN {
             throw WakeError.upsnap("UpSnap に \(wanted) の機器がありません")
         }
 
-        var wakeRequest = URLRequest(url: root.appendingPathComponent("api/upsnap/wake/\(id)"), timeoutInterval: 8)
+        // UpSnap は、PC が起動するまで返事を返さないことがある。数秒で返事がなくても、
+        // 信号はすでに送られているので、失敗にはしない（起動したかは、あとで PC への接続で確認する）
+        var wakeRequest = URLRequest(url: root.appendingPathComponent("api/upsnap/wake/\(id)"), timeoutInterval: 5)
         wakeRequest.setValue(token, forHTTPHeaderField: "Authorization")
-        let (_, wakeResponse) = try await session.data(for: wakeRequest)
-        try check(wakeResponse)
+        do {
+            let (_, wakeResponse) = try await session.data(for: wakeRequest)
+            try check(wakeResponse)
+        } catch let error as URLError where error.code == .timedOut {
+            return
+        }
+    }
+
+    /// 画面に出す、エラーの説明（日本語にする）
+    static func message(for error: Error) -> String {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut: return "接続がタイムアウトしました"
+            case .notConnectedToInternet, .dataNotAllowed: return "ネットワークにつながっていません"
+            case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost, .dnsLookupFailed:
+                return "UpSnap につながりません"
+            default: break
+            }
+        }
+        return error.localizedDescription
     }
 
     private static let session: URLSession = {
@@ -262,7 +282,7 @@ final class PCWaker: ObservableObject {
                     try WakeOnLAN.sendMagicPacket(mac: config.mac, broadcast: broadcast)
                     notes.append("電源を入れる信号を送りました")
                 } catch {
-                    errors.append(error.localizedDescription)
+                    errors.append(WakeOnLAN.message(for: error))
                 }
             }
             if !config.upsnapURL.isEmpty, !config.upsnapEmail.isEmpty {
@@ -272,7 +292,7 @@ final class PCWaker: ObservableObject {
                         password: config.upsnapPassword, deviceIP: config.deviceIP)
                     notes.append("UpSnap で電源を入れました。起動したら、自動で接続します")
                 } catch {
-                    errors.append(error.localizedDescription)
+                    errors.append(WakeOnLAN.message(for: error))
                 }
             }
             if Task.isCancelled { return }

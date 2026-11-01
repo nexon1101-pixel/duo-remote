@@ -300,7 +300,7 @@ private struct UpSnapTab: View {
             message = nil
             loggedIn = true
         } catch {
-            message = error.localizedDescription
+            message = WakeOnLAN.message(for: error)
         }
     }
 
@@ -508,7 +508,7 @@ private struct UpSnapTab: View {
             message = nil
         } catch {
             if Task.isCancelled { return }
-            message = "UpSnap から読めません（\(error.localizedDescription)）"
+            message = "UpSnap から読めません（\(WakeOnLAN.message(for: error))）"
         }
         loaded = true
     }
