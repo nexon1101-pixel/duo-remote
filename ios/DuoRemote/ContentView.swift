@@ -773,8 +773,8 @@ struct ContentView: View {
 
     /// 選んだ PC につなぐ。接続の情報は、今のホスト・ポート・トークンとして覚える
     private func connect(_ pc: PCProfile, token savedToken: String) {
-        if lastPCID != pc.id.uuidString {
-            lastPCID = pc.id.uuidString
+        if lastPCID != pc.id {
+            lastPCID = pc.id
             lastHostIndex = 0
         }
         host = Self.cleaned(pc.host)

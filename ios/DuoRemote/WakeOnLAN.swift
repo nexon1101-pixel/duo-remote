@@ -90,6 +90,26 @@ enum WakeOnLAN {
         return items
     }
 
+    struct UpSnapDevice: Identifiable, Equatable {
+        let id: String
+        let name: String
+        let ip: String
+        /// "online"、"offline"、"pending"
+        let status: String
+    }
+
+    /// UpSnap に登録された機器の一覧（名前、IP アドレス、状態）
+    static func upsnapDeviceList(baseURL: String, email: String, password: String) async throws -> [UpSnapDevice] {
+        let root = try upsnapRoot(baseURL)
+        let token = try await login(root: root, email: email, password: password)
+        return try await upsnapDevices(root: root, token: token).compactMap { item in
+            guard let id = item["id"] as? String, let ip = item["ip"] as? String else { return nil }
+            return UpSnapDevice(id: id, name: (item["name"] as? String) ?? ip, ip: ip,
+                                status: (item["status"] as? String) ?? "")
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
     /// UpSnap に登録された機器の状態を、IP アドレスごとに返す（"online"、"offline"、"pending"）
     static func upsnapStatuses(baseURL: String, email: String, password: String) async throws -> [String: String] {
         let root = try upsnapRoot(baseURL)

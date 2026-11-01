@@ -1,258 +1,360 @@
 import SwiftUI
 
-/// 登録した PC 1台分の設定。トークンだけは、キーチェーンにしまう
-struct PCProfile: Codable, Identifiable, Equatable {
-    var id = UUID()
+/// つなぐ PC 1台分の接続先
+struct PCProfile: Equatable {
+    /// 同じ PC かを見分ける印（UpSnap の機器の ID、または "manual"）
+    var id = "manual"
     var name = ""
     /// 自宅のホスト
     var host = ""
     /// 外出先（Tailscale）のホスト
     var hostRemote = ""
     var port = "8765"
-    /// 有線 LAN の MAC アドレス（直接起こすときに使う）
-    var mac = ""
-    /// ブロードキャスト（例: 192.168.0.255）
-    var broadcast = ""
-    /// UpSnap に登録した IP アドレス。空なら、自宅のホスト
-    var deviceIP = ""
-
-    /// UpSnap の機器と突き合わせる IP アドレス
-    var upsnapIP: String {
-        let own = deviceIP.trimmingCharacters(in: .whitespaces)
-        return own.isEmpty ? host.trimmingCharacters(in: .whitespaces) : own
-    }
-
-    var displayName: String {
-        name.isEmpty ? (host.isEmpty ? hostRemote : host) : name
-    }
-
-    /// 起こすための設定がそろっているか
-    var canWakeDirectly: Bool { !mac.isEmpty }
 }
 
-/// 登録した PC の一覧。端末に覚える
-@MainActor
-final class PCStore: ObservableObject {
-    @Published private(set) var profiles: [PCProfile] = []
+/// UpSnap の機器ごとに、端末に覚えておく接続の設定。トークンは、キーチェーンにしまう
+struct DeviceSettings: Codable, Equatable {
+    var hostRemote = ""
+    var port = "8765"
+}
 
-    private let key = "pcProfiles"
+enum DeviceSettingsStore {
+    private static let key = "upsnapDeviceSettings"
 
-    init() {
-        load()
-        if profiles.isEmpty { migrateFromSingleHost() }
+    static func load(_ id: String) -> DeviceSettings {
+        all()[id] ?? DeviceSettings()
     }
 
-    func token(for id: UUID) -> String {
-        Keychain.load("token.\(id.uuidString)") ?? ""
-    }
-
-    func save(_ profile: PCProfile, token: String) {
-        if let index = profiles.firstIndex(where: { $0.id == profile.id }) {
-            profiles[index] = profile
-        } else {
-            profiles.append(profile)
-        }
-        Keychain.save("token.\(profile.id.uuidString)", token)
-        persist()
-    }
-
-    func delete(_ id: UUID) {
-        profiles.removeAll { $0.id == id }
-        Keychain.save("token.\(id.uuidString)", "")
-        persist()
-    }
-
-    private func load() {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let decoded = try? JSONDecoder().decode([PCProfile].self, from: data) else { return }
-        profiles = decoded
-    }
-
-    private func persist() {
-        if let data = try? JSONEncoder().encode(profiles) {
+    static func save(_ settings: DeviceSettings, token: String, id: String) {
+        var map = all()
+        map[id] = settings
+        if let data = try? JSONEncoder().encode(map) {
             UserDefaults.standard.set(data, forKey: key)
         }
+        Keychain.save("token.\(id)", token)
     }
 
-    /// 0.22 までは、PC を1台だけ覚えていた。その設定を、最初の1台として引き継ぐ
-    private func migrateFromSingleHost() {
-        let defaults = UserDefaults.standard
-        let host = defaults.string(forKey: "host") ?? ""
-        let remote = defaults.string(forKey: "hostRemote") ?? ""
-        guard !host.isEmpty || !remote.isEmpty else { return }
-        var profile = PCProfile()
-        profile.name = "自宅の PC"
-        profile.host = host
-        profile.hostRemote = remote
-        profile.port = defaults.string(forKey: "port") ?? "8765"
-        profile.mac = defaults.string(forKey: "wakeMAC") ?? ""
-        profile.broadcast = defaults.string(forKey: "wakeBroadcast") ?? ""
-        profile.deviceIP = defaults.string(forKey: "upsnapDeviceIP") ?? ""
-        save(profile, token: Keychain.load("token") ?? "")
+    static func token(_ id: String) -> String {
+        Keychain.load("token.\(id)") ?? ""
+    }
+
+    private static func all() -> [String: DeviceSettings] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let map = try? JSONDecoder().decode([String: DeviceSettings].self, from: data) else { return [:] }
+        return map
     }
 }
 
-/// 接続の画面の、PC の一覧。UpSnap の状態を見て、オン・オフを出す
+/// 接続の画面の上の部分。「UpSnap」と「手入力」のタブで分ける
 struct PCListSection: View {
-    @EnvironmentObject private var session: RemoteSession
-
     /// つなぐ PC と、そのトークン。つなぐ処理は、呼ぶ側が持つ
     let connect: (PCProfile, String) -> Void
 
-    @StateObject private var store = PCStore()
-    @StateObject private var waker = PCWaker()
+    private enum Tab: String { case upsnap, manual }
+    @AppStorage("connectTab") private var tabRaw = Tab.upsnap.rawValue
 
-    @AppStorage("upsnapURL") private var upsnapURL = ""
-    @AppStorage("upsnapEmail") private var upsnapEmail = ""
-    @State private var upsnapPassword = ""
-
-    /// IP アドレスごとの状態（"online"、"offline"、"pending"）。UpSnap から読めなかったときは空
-    @State private var statuses: [String: String] = [:]
-    @State private var statusError: String?
-    @State private var statusLoaded = false
-
-    @State private var editing: EditTarget?
-    @State private var showingUpSnap = false
-    /// いま起こしている PC
-    @State private var wakingID: UUID?
-
-    struct EditTarget: Identifiable {
-        var profile: PCProfile
-        var token: String
-        var isNew: Bool
-        /// 登録せずに、入力した内容で1回だけつなぐ
-        var connectOnly = false
-        var id: UUID { profile.id }
-    }
-
-    private var upsnapConfigured: Bool {
-        !upsnapURL.isEmpty && !upsnapEmail.isEmpty
+    private var tab: Binding<Tab> {
+        Binding(get: { Tab(rawValue: tabRaw) ?? .upsnap }, set: { tabRaw = $0.rawValue })
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("PC", systemImage: "desktopcomputer")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.leading, 4)
+        VStack(alignment: .leading, spacing: 14) {
+            Picker("接続の方法", selection: tab) {
+                Text("UpSnap").tag(Tab.upsnap)
+                Text("手入力").tag(Tab.manual)
+            }
+            .pickerStyle(.segmented)
 
+            switch tab.wrappedValue {
+            case .upsnap: UpSnapTab(connect: connect)
+            case .manual: ManualTab(connect: connect)
+            }
+        }
+    }
+}
+
+// MARK: - 手入力
+
+private struct ManualTab: View {
+    @EnvironmentObject private var session: RemoteSession
+    let connect: (PCProfile, String) -> Void
+
+    @AppStorage("host") private var host = ""
+    @AppStorage("hostRemote") private var hostRemote = ""
+    @AppStorage("port") private var port = "8765"
+    @State private var token = ""
+    @State private var showToken = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
+                row("server.rack") {
+                    TextField("自宅のホスト（例: 192.168.0.200）", text: $host)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                }
+                Divider().overlay(Color.white.opacity(0.1))
+                row("globe") {
+                    TextField("外出先のホスト（Tailscale、任意）", text: $hostRemote)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                }
+                Divider().overlay(Color.white.opacity(0.1))
+                row("number") {
+                    TextField("ポート", text: $port)
+                        .keyboardType(.numberPad)
+                }
+                Divider().overlay(Color.white.opacity(0.1))
+                row("key.fill") {
+                    Group {
+                        if showToken {
+                            TextField("トークン", text: $token)
+                        } else {
+                            SecureField("トークン", text: $token)
+                        }
+                    }
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.asciiCapable)
+                    .font(.body.monospaced())
+                    Button {
+                        showToken.toggle()
+                    } label: {
+                        Image(systemName: showToken ? "eye.slash" : "eye").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(showToken ? "トークンを非表示" : "トークンを表示")
+                }
+            }
+            .padding(16)
+            .glass(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+
+            Button {
+                let cleanedToken = ContentView.cleaned(token)
+                Keychain.save("token", cleanedToken)
+                var profile = PCProfile()
+                profile.host = ContentView.cleaned(host)
+                profile.hostRemote = ContentView.cleaned(hostRemote)
+                profile.port = ContentView.cleaned(port)
+                host = profile.host
+                hostRemote = profile.hostRemote
+                port = profile.port
+                connect(profile, cleanedToken)
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "bolt.horizontal.fill")
+                    Text("接続")
+                }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+            }
+            .glassButton(prominent: true)
+            .controlSize(.large)
+            .disabled((host.isEmpty && hostRemote.isEmpty) || token.isEmpty || session.state == .connecting)
+        }
+        .onAppear { token = Keychain.load("token") ?? "" }
+    }
+
+    private func row<Content: View>(_ icon: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon).foregroundStyle(.secondary).frame(width: 22)
+            content()
+        }
+    }
+}
+
+// MARK: - UpSnap
+
+private struct UpSnapTab: View {
+    @EnvironmentObject private var session: RemoteSession
+    let connect: (PCProfile, String) -> Void
+
+    @AppStorage("upsnapURL") private var url = ""
+    @AppStorage("upsnapEmail") private var email = ""
+    @State private var password = ""
+    /// ログインできた設定。これがあるときは、機器の一覧を出す
+    @AppStorage("upsnapLoggedIn") private var loggedIn = false
+
+    @State private var devices: [WakeOnLAN.UpSnapDevice] = []
+    @State private var loaded = false
+    @State private var message: String?
+    @State private var loggingIn = false
+
+    @StateObject private var waker = PCWaker()
+    @State private var wakingID: String?
+    @State private var editing: WakeOnLAN.UpSnapDevice?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if loggedIn {
+                deviceList
+            } else {
+                loginForm
+            }
+        }
+        .onAppear { password = Keychain.load("upsnapPassword") ?? "" }
+        .sheet(item: $editing) { device in
+            DeviceSettingsSheet(device: device)
+        }
+        // ログインしている間、画面が出ている6秒おきに、一覧を読み直す
+        .task(id: loggedIn) {
+            guard loggedIn else { return }
+            while !Task.isCancelled {
+                await reload()
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+            }
+        }
+    }
+
+    // MARK: ログイン
+
+    private var loginForm: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
+                field("externaldrive.connected.to.line.below") {
+                    TextField("UpSnap のアドレス（例: 100.x.x.x:8090）", text: $url)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                }
+                Divider().overlay(Color.white.opacity(0.1))
+                field("envelope") {
+                    TextField("メールアドレス", text: $email)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.emailAddress)
+                }
+                Divider().overlay(Color.white.opacity(0.1))
+                field("lock") {
+                    SecureField("パスワード", text: $password)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+            }
+            .padding(16)
+            .glass(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+
+            Button {
+                Task { await login() }
+            } label: {
+                HStack(spacing: 10) {
+                    if loggingIn { ProgressView().tint(.white) } else { Image(systemName: "person.crop.circle") }
+                    Text(loggingIn ? "ログイン中…" : "ログイン")
+                }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+            }
+            .glassButton(prominent: true)
+            .controlSize(.large)
+            .disabled(url.isEmpty || email.isEmpty || password.isEmpty || loggingIn)
+
+            if let message {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+            }
+            Text("自宅の NAS などで動かしている UpSnap にログインすると、登録した PC の一覧と、オン・オフが見えます。外出先では、Tailscale をオンにしてください。パスワードは、この iPhone のキーチェーンにだけ入ります")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func login() async {
+        loggingIn = true
+        defer { loggingIn = false }
+        do {
+            let list = try await WakeOnLAN.upsnapDeviceList(
+                baseURL: ContentView.cleaned(url), email: ContentView.cleaned(email), password: password)
+            Keychain.save("upsnapPassword", password)
+            url = ContentView.cleaned(url)
+            email = ContentView.cleaned(email)
+            devices = list
+            loaded = true
+            message = nil
+            loggedIn = true
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    private func logout() {
+        waker.cancel()
+        wakingID = nil
+        Keychain.save("upsnapPassword", "")
+        password = ""
+        devices = []
+        loaded = false
+        loggedIn = false
+    }
+
+    // MARK: 機器の一覧
+
+    private var deviceList: some View {
+        VStack(alignment: .leading, spacing: 10) {
             VStack(spacing: 0) {
-                if store.profiles.isEmpty {
-                    Text("PC を追加すると、ここから選んでつなげます")
+                if devices.isEmpty {
+                    Text(loaded ? "UpSnap に PC が登録されていません" : "読み込み中…")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(16)
                 } else {
-                    ForEach(Array(store.profiles.enumerated()), id: \.element.id) { index, profile in
+                    ForEach(Array(devices.enumerated()), id: \.element.id) { index, device in
                         if index > 0 { Divider().overlay(Color.white.opacity(0.1)) }
-                        row(profile)
+                        deviceRow(device)
                     }
                 }
                 Divider().overlay(Color.white.opacity(0.1))
                 HStack {
-                    Button {
-                        editing = EditTarget(profile: PCProfile(), token: "", isNew: true)
-                    } label: {
-                        Label("PC を追加", systemImage: "plus")
-                    }
+                    Text(email)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                     Spacer()
-                    Button {
-                        editing = EditTarget(profile: PCProfile(), token: "", isNew: true, connectOnly: true)
-                    } label: {
-                        Label("手入力", systemImage: "keyboard")
-                    }
-                    Spacer()
-                    Button {
-                        showingUpSnap = true
-                    } label: {
-                        Label("UpSnap", systemImage: "gearshape")
-                    }
+                    Button("ログアウト", role: .destructive) { logout() }
+                        .font(.subheadline)
+                        .buttonStyle(.borderless)
                 }
-                .font(.subheadline)
-                .buttonStyle(.borderless)
                 .padding(16)
             }
             .glass(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
 
-            if let message = statusError, upsnapConfigured {
+            if let message {
                 Label(message, systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote)
                     .foregroundStyle(.orange)
-                    .padding(.leading, 4)
-            } else if !upsnapConfigured {
-                Text("UpSnap を設定すると、PC のオン・オフが見えて、オフのときは起こしてつなげます")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 4)
             }
             if !waker.detail.isEmpty {
-                Text(waker.detail)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 4)
+                Text(waker.detail).font(.footnote).foregroundStyle(.secondary)
             }
-            if case .failed(let message) = waker.phase {
-                Label(message, systemImage: "exclamationmark.triangle.fill")
+            if case .failed(let failure) = waker.phase {
+                Label(failure, systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote)
                     .foregroundStyle(.orange)
-                    .padding(.leading, 4)
             }
-        }
-        .sheet(item: $editing) { target in
-            PCEditSheet(target: target) { profile, token in
-                store.save(profile, token: token)
-            } onDelete: { id in
-                store.delete(id)
-            } onConnect: { profile, token in
-                connect(profile, token)
-            }
-        }
-        .sheet(isPresented: $showingUpSnap) {
-            UpSnapSettingsSheet(url: $upsnapURL, email: $upsnapEmail, password: $upsnapPassword) {
-                Keychain.save("upsnapPassword", upsnapPassword)
-            }
-        }
-        .onAppear { upsnapPassword = Keychain.load("upsnapPassword") ?? "" }
-        // 画面が出ている間、6秒おきに状態を読む
-        .task(id: "\(upsnapURL)|\(upsnapEmail)|\(upsnapPassword)") {
-            await pollStatuses()
         }
     }
 
-    // MARK: 1行
-
-    private enum PCState { case online, offline, pending, unknown }
-
-    private func state(of profile: PCProfile) -> PCState {
-        switch statuses[profile.upsnapIP] {
-        case "online": return .online
-        case "offline": return .offline
-        case "pending": return .pending
-        default: return .unknown
-        }
-    }
-
-    private func canWake(_ profile: PCProfile) -> Bool {
-        profile.canWakeDirectly || upsnapConfigured
-    }
-
-    private func row(_ profile: PCProfile) -> some View {
-        let pcState = state(of: profile)
-        let isWaking = wakingID == profile.id && waker.isBusy
+    private func deviceRow(_ device: WakeOnLAN.UpSnapDevice) -> some View {
+        let isWaking = wakingID == device.id && waker.isBusy
+        let isOnline = device.status == "online"
         return HStack(spacing: 12) {
             Button {
-                tap(profile)
+                tap(device)
             } label: {
                 HStack(spacing: 12) {
                     Circle()
-                        .fill(color(of: pcState))
+                        .fill(dotColor(device.status))
                         .frame(width: 12, height: 12)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(profile.displayName)
+                        Text(device.name)
                             .font(.headline)
                             .foregroundStyle(.primary)
-                        Text(subtitle(profile, pcState: pcState, isWaking: isWaking))
+                        Text(isWaking ? "起動を待っています" : statusText(device.status))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -260,9 +362,9 @@ struct PCListSection: View {
                     if isWaking {
                         ProgressView()
                     } else {
-                        Text(actionLabel(profile, pcState: pcState))
+                        Text(isOnline ? "接続" : "起こして接続")
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(pcState == .offline ? Color.orange : Color.accentColor)
+                            .foregroundStyle(isOnline ? Color.accentColor : Color.orange)
                     }
                 }
                 .contentShape(Rectangle())
@@ -276,169 +378,126 @@ struct PCListSection: View {
                     .buttonStyle(.borderless)
             } else {
                 Button {
-                    editing = EditTarget(profile: profile, token: store.token(for: profile.id), isNew: false)
+                    editing = device
                 } label: {
-                    Image(systemName: "slider.horizontal.3")
-                        .foregroundStyle(.secondary)
+                    Image(systemName: "slider.horizontal.3").foregroundStyle(.secondary)
                 }
                 .buttonStyle(.borderless)
-                .accessibilityLabel("\(profile.displayName)の設定")
+                .accessibilityLabel("\(device.name)の接続の設定")
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
     }
 
-    private func color(of pcState: PCState) -> Color {
-        switch pcState {
-        case .online: return .green
-        case .offline: return Color.gray
-        case .pending: return .orange
-        case .unknown: return Color.gray.opacity(0.4)
+    private func dotColor(_ status: String) -> Color {
+        switch status {
+        case "online": return .green
+        case "offline": return .gray
+        case "pending": return .orange
+        default: return Color.gray.opacity(0.4)
         }
     }
 
-    private func subtitle(_ profile: PCProfile, pcState: PCState, isWaking: Bool) -> String {
-        if isWaking { return "起動を待っています" }
-        switch pcState {
-        case .online: return "オン"
-        case .offline: return "オフ"
-        case .pending: return "起動中"
-        case .unknown: return upsnapConfigured && !statusLoaded ? "状態を確認中" : "状態は不明"
-        }
-    }
-
-    private func actionLabel(_ profile: PCProfile, pcState: PCState) -> String {
-        switch pcState {
-        case .offline, .pending: return canWake(profile) ? "起こして接続" : "接続"
-        default: return "接続"
+    private func statusText(_ status: String) -> String {
+        switch status {
+        case "online": return "オン"
+        case "offline": return "オフ"
+        case "pending": return "起動中"
+        default: return "状態は不明"
         }
     }
 
     // MARK: 動き
 
-    private func tap(_ profile: PCProfile) {
-        let token = store.token(for: profile.id)
-        if token.isEmpty || (profile.host.isEmpty && profile.hostRemote.isEmpty) {
-            // 接続に必要なものが足りない。設定の画面を開く
-            editing = EditTarget(profile: profile, token: token, isNew: false)
+    private func profile(for device: WakeOnLAN.UpSnapDevice) -> PCProfile {
+        let settings = DeviceSettingsStore.load(device.id)
+        return PCProfile(id: device.id, name: device.name, host: device.ip,
+                         hostRemote: settings.hostRemote, port: settings.port)
+    }
+
+    private func tap(_ device: WakeOnLAN.UpSnapDevice) {
+        let token = DeviceSettingsStore.token(device.id)
+        if token.isEmpty {
+            // 初めてのときは、トークンを聞く
+            editing = device
             return
         }
-        let pcState = state(of: profile)
-        if (pcState == .offline || pcState == .pending), canWake(profile) {
-            wake(profile, token: token)
+        let pc = profile(for: device)
+        if device.status == "online" {
+            connect(pc, token)
         } else {
-            connect(profile, token)
+            wake(device, pc: pc, token: token)
         }
     }
 
-    private func wake(_ profile: PCProfile, token: String) {
-        Keychain.save("upsnapPassword", upsnapPassword)
-        wakingID = profile.id
+    private func wake(_ device: WakeOnLAN.UpSnapDevice, pc: PCProfile, token: String) {
+        wakingID = device.id
         let config = PCWaker.Config(
-            mac: ContentView.cleaned(profile.mac),
-            broadcast: ContentView.cleaned(profile.broadcast),
-            upsnapURL: ContentView.cleaned(upsnapURL),
-            upsnapEmail: ContentView.cleaned(upsnapEmail),
-            upsnapPassword: upsnapPassword,
-            deviceIP: profile.upsnapIP,
-            hosts: [profile.host, profile.hostRemote].filter { !$0.isEmpty },
-            port: Int(profile.port) ?? 8765)
+            mac: "", broadcast: "",
+            upsnapURL: ContentView.cleaned(url),
+            upsnapEmail: ContentView.cleaned(email),
+            upsnapPassword: password,
+            deviceIP: device.ip,
+            hosts: [pc.host, pc.hostRemote].filter { !$0.isEmpty },
+            port: Int(pc.port) ?? 8765)
         waker.wake(config) {
             wakingID = nil
-            connect(profile, token)
+            connect(pc, token)
         }
     }
 
-    private func pollStatuses() async {
-        guard upsnapConfigured else {
-            statuses = [:]
-            statusError = nil
-            statusLoaded = false
-            return
+    private func reload() async {
+        do {
+            let list = try await WakeOnLAN.upsnapDeviceList(
+                baseURL: ContentView.cleaned(url), email: ContentView.cleaned(email), password: password)
+            if Task.isCancelled { return }
+            devices = list
+            message = nil
+        } catch {
+            if Task.isCancelled { return }
+            message = "UpSnap から読めません（\(error.localizedDescription)）"
         }
-        while !Task.isCancelled {
-            do {
-                let result = try await WakeOnLAN.upsnapStatuses(
-                    baseURL: ContentView.cleaned(upsnapURL),
-                    email: ContentView.cleaned(upsnapEmail),
-                    password: upsnapPassword)
-                if Task.isCancelled { return }
-                statuses = result
-                statusError = nil
-            } catch {
-                if Task.isCancelled { return }
-                statuses = [:]
-                statusError = "UpSnap から状態を読めません（\(error.localizedDescription)）"
-            }
-            statusLoaded = true
-            try? await Task.sleep(nanoseconds: 6_000_000_000)
+        loaded = true
+    }
+
+    private func field<Content: View>(_ icon: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon).foregroundStyle(.secondary).frame(width: 22)
+            content()
         }
     }
 }
 
-/// PC 1台の設定
-private struct PCEditSheet: View {
+/// UpSnap の機器 1台の、接続の設定（トークン、外出先のホスト、ポート）
+private struct DeviceSettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
+    let device: WakeOnLAN.UpSnapDevice
 
-    @State private var profile: PCProfile
+    @State private var settings: DeviceSettings
     @State private var token: String
     @State private var showToken = false
-    private let isNew: Bool
-    private let onSave: (PCProfile, String) -> Void
-    private let onDelete: (UUID) -> Void
-    private let onConnect: (PCProfile, String) -> Void
-    private let connectOnly: Bool
-    @State private var confirmDelete = false
 
-    init(target: PCListSection.EditTarget,
-         onSave: @escaping (PCProfile, String) -> Void,
-         onDelete: @escaping (UUID) -> Void,
-         onConnect: @escaping (PCProfile, String) -> Void) {
-        _profile = State(initialValue: target.profile)
-        _token = State(initialValue: target.token)
-        isNew = target.isNew
-        connectOnly = target.connectOnly
-        self.onSave = onSave
-        self.onDelete = onDelete
-        self.onConnect = onConnect
-    }
-
-    private var cleanedProfile: PCProfile {
-        var saved = profile
-        saved.name = ContentView.cleaned(saved.name)
-        saved.host = ContentView.cleaned(saved.host)
-        saved.hostRemote = ContentView.cleaned(saved.hostRemote)
-        saved.port = ContentView.cleaned(saved.port).isEmpty ? "8765" : ContentView.cleaned(saved.port)
-        saved.mac = ContentView.cleaned(saved.mac)
-        saved.broadcast = ContentView.cleaned(saved.broadcast)
-        saved.deviceIP = ContentView.cleaned(saved.deviceIP)
-        return saved
-    }
-
-    private var canSave: Bool {
-        !(profile.host.trimmingCharacters(in: .whitespaces).isEmpty
-          && profile.hostRemote.trimmingCharacters(in: .whitespaces).isEmpty)
+    init(device: WakeOnLAN.UpSnapDevice) {
+        self.device = device
+        _settings = State(initialValue: DeviceSettingsStore.load(device.id))
+        _token = State(initialValue: DeviceSettingsStore.token(device.id))
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                if !connectOnly {
-                    Section("名前") {
-                        TextField("例: 自宅の PC", text: $profile.name)
-                    }
-                }
                 Section {
-                    TextField("自宅のホスト（例: 192.168.0.200）", text: $profile.host)
+                    HStack {
+                        Text("自宅のホスト")
+                        Spacer()
+                        Text(device.ip).foregroundStyle(.secondary)
+                    }
+                    TextField("外出先のホスト（Tailscale、任意）", text: $settings.hostRemote)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
-                    TextField("外出先のホスト（Tailscale、任意）", text: $profile.hostRemote)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                    TextField("ポート", text: $profile.port)
+                    TextField("ポート", text: $settings.port)
                         .keyboardType(.numberPad)
                     HStack {
                         Group {
@@ -455,115 +514,27 @@ private struct PCEditSheet: View {
                         Button {
                             showToken.toggle()
                         } label: {
-                            Image(systemName: showToken ? "eye.slash" : "eye")
-                                .foregroundStyle(.secondary)
+                            Image(systemName: showToken ? "eye.slash" : "eye").foregroundStyle(.secondary)
                         }
                         .buttonStyle(.borderless)
                     }
-                } header: {
-                    Text("接続先")
-                }
-                if !connectOnly {
-                Section {
-                    TextField("MAC アドレス（有線）", text: $profile.mac)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.asciiCapable)
-                        .font(.body.monospaced())
-                    TextField("ブロードキャスト（例: 192.168.0.255）", text: $profile.broadcast)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.numbersAndPunctuation)
-                    TextField("UpSnap に登録した IP（空なら自宅のホスト）", text: $profile.deviceIP)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.numbersAndPunctuation)
-                } header: {
-                    Text("起こすための設定")
                 } footer: {
-                    Text("自宅の Wi-Fi では、MAC アドレスとブロードキャストで直接起こせます。外出先では、UpSnap を通して起こします")
-                }
-                }
-                if isNew && !connectOnly {
-                    Section {
-                        Button("保存せずに、この内容で接続") {
-                            onConnect(cleanedProfile, ContentView.cleaned(token))
-                            dismiss()
-                        }
-                        .disabled(!canSave || token.isEmpty)
-                    }
-                }
-                if !isNew {
-                    Section {
-                        Button("この PC を削除", role: .destructive) { confirmDelete = true }
-                    }
+                    Text("自宅のホストは、UpSnap に登録した IP アドレスです。外では、Tailscale のアドレスでつなぎます。トークンは、この iPhone のキーチェーンにだけ入ります")
                 }
             }
-            .navigationTitle(connectOnly ? "手入力で接続" : (isNew ? "PC を追加" : "PC の設定"))
+            .navigationTitle(device.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("キャンセル") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    if connectOnly {
-                        Button("接続") {
-                            onConnect(cleanedProfile, ContentView.cleaned(token))
-                            dismiss()
-                        }
-                        .disabled(!canSave || token.isEmpty)
-                    } else {
-                        Button("保存") {
-                            onSave(cleanedProfile, ContentView.cleaned(token))
-                            dismiss()
-                        }
-                        .disabled(!canSave)
-                    }
-                }
-            }
-            .confirmationDialog("この PC を削除しますか？", isPresented: $confirmDelete, titleVisibility: .visible) {
-                Button("削除", role: .destructive) {
-                    onDelete(profile.id)
-                    dismiss()
-                }
-            }
-        }
-    }
-}
-
-/// UpSnap の接続の設定（全部の PC で共通）
-private struct UpSnapSettingsSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @Binding var url: String
-    @Binding var email: String
-    @Binding var password: String
-    let onDone: () -> Void
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("アドレス（例: 100.x.x.x:8090）", text: $url)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                    TextField("メールアドレス", text: $email)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.emailAddress)
-                    SecureField("パスワード", text: $password)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                } footer: {
-                    Text("自宅の NAS などで動かしている UpSnap です。外出先では、Tailscale をオンにしておきます。パスワードは、この iPhone のキーチェーンにだけ入ります")
-                }
-            }
-            .navigationTitle("UpSnap")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完了") {
-                        onDone()
+                    Button("保存") {
+                        var saved = settings
+                        saved.hostRemote = ContentView.cleaned(saved.hostRemote)
+                        let port = ContentView.cleaned(saved.port)
+                        saved.port = port.isEmpty ? "8765" : port
+                        DeviceSettingsStore.save(saved, token: ContentView.cleaned(token), id: device.id)
                         dismiss()
                     }
                 }
