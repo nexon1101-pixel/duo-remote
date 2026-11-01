@@ -1056,6 +1056,30 @@ class Session:
             await self.send({"t": "mode", "mode": "window", "id": wid, "title": info["title"]})
             await self._switch_to_window(wid, region, monitor)
 
+    def _showing_virtual(self) -> bool:
+        """仮想画面か、仮想画面に移したウィンドウを映しているか。"""
+        if self.monitor is not None and self.monitor.get("virtual"):
+            return True
+        if self.window is None:
+            return False
+        if self.window in self.backend.brought_windows():
+            return True
+        info = self.backend.window_info(self.window)
+        found = monitor_of(info["rect"], self.backend.monitors()) if info else None
+        return bool(found and found.get("virtual"))
+
+    async def leave_virtual(self) -> None:
+        """仮想画面（かそこのウィンドウ）を映していたら、画面全体の表示に戻し、お知らせを送る。"""
+        if not self._showing_virtual():
+            return
+        try:
+            await self.set_mode({"mode": "screen"})
+            await self.send({"t": "notice", "message": "仮想ディスプレイを無効にしました"})
+        except ConnectionClosed:
+            pass
+        except Exception:
+            log.exception("画面全体の表示に戻せませんでした")
+
     async def watch_window(self) -> None:
         """表示しているウィンドウが動いたら撮り直す。閉じたら画面全体に戻す。"""
         pending: tuple | None = None
@@ -1123,17 +1147,57 @@ def make_handler(
     background: set[asyncio.Task] = set()
     cleanup: dict[str, asyncio.Task | None] = {"task": None}
 
-    async def run_cleanup() -> None:
-        """持ってきたウィンドウを元に戻し、仮想ディスプレイを無効に戻す。"""
+    async def run_cleanup() -> tuple[int, str | None]:
+        """持ってきたウィンドウを元に戻し、仮想ディスプレイを無効に戻す。
+        戻したウィンドウの数と、仮想ディスプレイを無効にできなかったときの理由（できたら None）を返す。"""
         log.info("後片付けをします（ウィンドウを戻し、仮想ディスプレイを無効にします）")
+        restored = 0
+        off_error: str | None = None
         try:
-            await asyncio.to_thread(backend.restore_brought)
+            restored = len(await asyncio.to_thread(backend.restore_brought) or [])
         except Exception:
             log.exception("ウィンドウを元に戻せませんでした")
         try:
             await asyncio.to_thread(backend.virtual_off)
-        except Exception:
+        except VirtualDisplayError as e:
             log.exception("仮想ディスプレイを無効に戻せませんでした")
+            off_error = str(e) or "仮想ディスプレイを無効にできませんでした"
+        except Exception as e:
+            log.exception("仮想ディスプレイを無効に戻せませんでした")
+            off_error = f"仮想ディスプレイを無効にできませんでした（{type(e).__name__}）"
+        return restored, off_error
+
+    cleanup_lock = asyncio.Lock()
+
+    def virtual_present() -> bool:
+        return any(m.get("virtual") for m in backend.monitors())
+
+    async def cleanup_now() -> dict[str, Any]:
+        """今すぐ、ウィンドウを戻し、仮想ディスプレイを無効にする（管理画面のボタン）。サーバーは止めない。"""
+        async with cleanup_lock:
+            cancel_cleanup()  # 予定していた後片付けは、ここで済ませる
+            try:
+                was_on = bool(await asyncio.to_thread(virtual_present))
+                session = active["session"]
+                if session is not None:
+                    await session.leave_virtual()
+                restored, off_error = await run_cleanup()
+            except Exception as e:
+                log.exception("今すぐの後片付けに失敗しました")
+                return {"ok": False, "error": f"後片付けに失敗しました（{type(e).__name__}）"}
+            result: dict[str, Any] = {
+                "ok": True, "restored": restored, "virtual_off": off_error is None, "was_on": was_on,
+            }
+            if off_error is not None:
+                result["error"] = off_error
+            return result
+
+    def status_now() -> dict[str, Any]:
+        try:
+            return {"ok": True, "virtual_on": bool(virtual_present()), "brought": len(backend.brought_windows())}
+        except Exception as e:
+            log.exception("状態を調べられませんでした")
+            return {"ok": False, "error": f"状態を調べられませんでした（{type(e).__name__}）"}
 
     def cancel_cleanup() -> None:
         task = cleanup["task"]
@@ -1341,4 +1405,7 @@ def make_handler(
                 )
             session.finished.set()
 
+    # 管理画面から、動いているサーバーに頼むための入り口（localctl.py が使う）
+    handler.cleanup_now = cleanup_now
+    handler.status_now = status_now
     return handler

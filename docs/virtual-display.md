@@ -161,5 +161,6 @@ ffmpeg -hide_banner -f lavfi -i "ddagrab=output_idx=1:framerate=30:draw_mouse=1"
 ## 元に戻すには
 
 - 仮想モニターを消す（ドライバーは残す）: 管理者で `virtual.bat off`
+- サーバーを止めずに、仮想ディスプレイを無効にして、持ってきたウィンドウを戻す: サーバーの管理画面の「仮想ディスプレイ」の「無効にする」
 - ドライバーを消す: 「設定」→「アプリ」→「インストールされているアプリ」から「Virtual Display Driver」を削除する。または、デバイス マネージャーの「ディスプレイ アダプター」の「Virtual Display Driver」を右クリックして「デバイスのアンインストール」
 - 設定を元に戻す: `C:\VirtualDisplayDriver\vdd_settings.xml.bak` を、`vdd_settings.xml` に上書きする

@@ -10,6 +10,7 @@ import json
 import os
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -21,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, control, driver, gamepad
+from . import __version__, control, driver, gamepad, virtual_display
 from .control import SERVER_DIR, SettingsError
 
 DEFAULT_PORT = 8770
@@ -142,6 +143,59 @@ def running_panel(path: Path = LOCK_PATH) -> dict | None:
     if data and ping(data["port"], data["key"]):
         return data
     return None
+
+
+# --- 仮想ディスプレイを今すぐ無効にする
+
+# サーバーの制御用の入り口（localctl.py）に頼むときの待ち時間（秒）。無効にするのに、十数秒かかることがある
+CONTROL_TIMEOUT = 40.0
+ADMIN_REQUIRED = "管理者として起動し直してください（仮想ディスプレイを無効にするには、管理者の権限が要ります）"
+
+
+def control_call(endpoint: tuple[int, str], cmd: str, timeout: float = CONTROL_TIMEOUT) -> dict:
+    """動いているサーバーの制御用の入り口（127.0.0.1）に、1行の JSON で頼み、返事の辞書を返す。
+    つながらないとき、返事が読めないときは、OSError か ValueError。鍵は、ログにも例外にも出さない。"""
+    port, key = endpoint
+    with socket.create_connection(("127.0.0.1", port), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+        sock.sendall((json.dumps({"key": key, "cmd": cmd}) + "\n").encode("utf-8"))
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+            if len(data) > 65536:
+                raise ValueError("返事が長すぎます")
+    result = json.loads(data)
+    if not isinstance(result, dict):
+        raise ValueError("返事が辞書ではありません")
+    return result
+
+
+def direct_virtual_off() -> bool:
+    """サーバーを経由せず、仮想ディスプレイを無効にする（出したのが誰でも）。無効にする前に出ていたかを返す。
+    管理者でないとき、できなかったときは VirtualDisplayError。"""
+    vd = virtual_display.VirtualDisplay()
+    was_on = vd.monitor() is not None
+    vd.off(force=True)
+    return was_on
+
+
+def cleanup_message(restored: int, was_on: bool, off_error: str | None, via: str) -> str:
+    """画面に出す文。"""
+    parts = []
+    if off_error:
+        if restored:
+            parts.append(f"ウィンドウ {restored} 個を、元の位置に戻しました。")
+        parts.append(ADMIN_REQUIRED if "管理者" in off_error else off_error)
+        return "".join(parts)
+    parts.append("仮想ディスプレイを無効にしました。" if was_on else "仮想ディスプレイは、すでに無効です。")
+    if restored:
+        parts.append(f"ウィンドウ {restored} 個を、元の位置に戻しました。")
+    if via == "direct":
+        parts.append("サーバーを経由しなかったので、持ってきたウィンドウは戻していません。")
+    return "".join(parts)
 
 
 # --- HTTP
@@ -368,6 +422,7 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
                 ("POST", "/api/update"): lambda: self._update_start(),
                 ("GET", "/api/update/log"): lambda: (200, update_log(), None),
                 ("POST", "/api/driver/vigem"): lambda: self._driver_vigem(),
+                ("POST", "/api/virtual/cleanup"): lambda: self._virtual_cleanup(),
                 ("POST", "/api/admin"): lambda: self._admin(),
                 ("POST", "/api/quit"): lambda: self._quit(),
             }
@@ -459,6 +514,37 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
                 pad_install.update(running=True, state="downloading", message="ダウンロード中…")
             threading.Thread(target=run_pad_install, daemon=True).start()
             return 200, {"started": True}, None
+
+        def _virtual_cleanup(self):
+            """仮想ディスプレイを今すぐ無効にし、持ってきたウィンドウを戻す。利用者への確認は、ページの側でする。"""
+            endpoint = process.control_endpoint() if process.running else None
+            if endpoint is not None:
+                try:
+                    r = control_call(endpoint, "cleanup")
+                except (OSError, ValueError):
+                    r = None  # つながらない。直接の方法にする
+                if r is not None:
+                    if not r.get("ok"):
+                        return 502, {"error": str(r.get("error") or "サーバーが片付けに失敗しました")}, None
+                    restored, was_on = int(r.get("restored") or 0), bool(r.get("was_on"))
+                    off_error = None if r.get("virtual_off") else str(r.get("error") or "仮想ディスプレイを無効にできませんでした")
+                    return 200, {
+                        "restored": restored, "virtual_off": off_error is None, "was_on": was_on, "via": "server",
+                        "message": cleanup_message(restored, was_on, off_error, "server"),
+                        **({"error": off_error} if off_error else {}),
+                    }, None
+            if not control.is_admin():
+                return 400, {"error": ADMIN_REQUIRED}, None
+            try:
+                was_on = direct_virtual_off()
+            except virtual_display.VirtualDisplayError as e:
+                return 400, {"error": str(e) or "仮想ディスプレイを無効にできませんでした"}, None
+            except Exception as e:  # noqa: BLE001 PowerShell が使えないなど
+                return 500, {"error": f"仮想ディスプレイを無効にできませんでした（{type(e).__name__}）"}, None
+            return 200, {
+                "restored": 0, "virtual_off": True, "was_on": was_on, "via": "direct",
+                "message": cleanup_message(0, was_on, None, "direct"),
+            }, None
 
         def _admin(self):
             if not run_as_admin(["--key", next_key]):

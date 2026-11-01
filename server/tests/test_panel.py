@@ -21,6 +21,7 @@ class FakeProcess:
         self.last_exit = None
         self.calls = []
         self.lines = ["a", "b", "c"]
+        self.endpoint = None  # 制御用の入り口 (ポート, 鍵)
 
     def start(self, args):
         self.calls.append(("start", args))
@@ -33,6 +34,9 @@ class FakeProcess:
     def restart(self, args):
         self.calls.append(("restart", args))
         self.running = True
+
+    def control_endpoint(self):
+        return self.endpoint if self.running else None
 
     def log_since(self, seq):
         return len(self.lines), self.lines[seq:]
@@ -323,3 +327,150 @@ def test_main_with_handed_over_key(tmp_path, monkeypatch):
     conn.request("POST", "/api/quit", body=b"{}", headers={"X-Panel-Key": "handed", "Host": f"127.0.0.1:{port}"})
     assert conn.getresponse().status == 200
     assert done.wait(10) and result == [0]
+
+
+# --- 仮想ディスプレイを今すぐ無効にする
+
+CONTROL_KEY = "fake-control-key"
+
+
+def run_fake_control(reply):
+    """偽の制御用の入り口を、別のスレッドで動かす。(ポート, 受け取った要求の一覧, 止める関数) を返す。"""
+    import asyncio
+
+    from duo_server import localctl
+
+    received = []
+    ready = threading.Event()
+    box = {}
+
+    async def cleanup():
+        received.append("cleanup")
+        return reply
+
+    async def main():
+        server = await localctl.start_control_server(0, CONTROL_KEY, cleanup, lambda: {"ok": True})
+        box["port"] = server.sockets[0].getsockname()[1]
+        box["stop"] = asyncio.Event()
+        box["loop"] = asyncio.get_running_loop()
+        ready.set()
+        await box["stop"].wait()
+        server.close()
+
+    thread = threading.Thread(target=lambda: asyncio.run(main()), daemon=True)
+    thread.start()
+    assert ready.wait(5)
+
+    def stop():
+        box["loop"].call_soon_threadsafe(box["stop"].set)
+        thread.join(5)
+
+    return box["port"], received, stop
+
+
+def test_virtual_cleanup_needs_key(app):
+    status, _ = app("POST", "/api/virtual/cleanup", {}, key=None)
+    assert status == 403
+    status, _ = app("POST", "/api/virtual/cleanup", {}, key="wrong")
+    assert status == 403
+
+
+def test_virtual_cleanup_via_server(app, monkeypatch):
+    port, received, stop = run_fake_control({"ok": True, "restored": 2, "virtual_off": True, "was_on": True})
+    try:
+        app.process.running = True
+        app.process.endpoint = (port, CONTROL_KEY)
+        monkeypatch.setattr(panel, "direct_virtual_off", lambda: pytest.fail("直接は呼ばない"))
+        status, data = app("POST", "/api/virtual/cleanup", {})
+    finally:
+        stop()
+    assert status == 200 and received == ["cleanup"]
+    assert data["via"] == "server" and data["restored"] == 2 and data["virtual_off"] is True and data["was_on"] is True
+    assert "2 個" in data["message"] and "無効にしました" in data["message"]
+    assert CONTROL_KEY not in json.dumps(data)
+
+
+def test_virtual_cleanup_via_server_without_admin(app):
+    port, _, stop = run_fake_control({
+        "ok": True, "restored": 1, "virtual_off": False, "was_on": True,
+        "error": "仮想ディスプレイを無効にするには、管理者の権限が要ります",
+    })
+    try:
+        app.process.running = True
+        app.process.endpoint = (port, CONTROL_KEY)
+        status, data = app("POST", "/api/virtual/cleanup", {})
+    finally:
+        stop()
+    assert status == 200 and data["virtual_off"] is False and data["restored"] == 1
+    assert "管理者として起動し直してください" in data["message"] and "1 個" in data["message"]
+
+
+def test_virtual_cleanup_direct_when_server_stopped(app, monkeypatch):
+    calls = []
+    monkeypatch.setattr(control, "is_admin", lambda: True)
+    monkeypatch.setattr(panel, "direct_virtual_off", lambda: calls.append("off") or True)
+    status, data = app("POST", "/api/virtual/cleanup", {})  # サーバーは止まっている
+    assert status == 200 and calls == ["off"]
+    assert data["via"] == "direct" and data["virtual_off"] is True and data["was_on"] is True
+    assert "戻していません" in data["message"]
+
+
+def test_virtual_cleanup_direct_when_server_unreachable(app, monkeypatch):
+    import socket
+
+    with socket.socket() as s:  # 誰も待っていないポート
+        s.bind(("127.0.0.1", 0))
+        dead = s.getsockname()[1]
+    app.process.running = True
+    app.process.endpoint = (dead, CONTROL_KEY)
+    monkeypatch.setattr(control, "is_admin", lambda: True)
+    monkeypatch.setattr(panel, "direct_virtual_off", lambda: False)
+    status, data = app("POST", "/api/virtual/cleanup", {})
+    assert status == 200 and data["via"] == "direct" and data["was_on"] is False
+    assert "すでに無効" in data["message"]
+
+
+def test_virtual_cleanup_direct_calls_off_with_force(app, monkeypatch):
+    from duo_server import virtual_display
+
+    calls = []
+
+    class FakeVD:
+        def monitor(self):
+            return {"name": "x"}
+
+        def off(self, force=False):
+            calls.append(force)
+
+    monkeypatch.setattr(virtual_display, "VirtualDisplay", FakeVD)
+    monkeypatch.setattr(control, "is_admin", lambda: True)
+    status, data = app("POST", "/api/virtual/cleanup", {})
+    assert status == 200 and calls == [True] and data["was_on"] is True
+
+
+def test_virtual_cleanup_direct_needs_admin(app, monkeypatch):
+    monkeypatch.setattr(panel, "direct_virtual_off", lambda: pytest.fail("管理者でないので呼ばない"))
+    status, data = app("POST", "/api/virtual/cleanup", {})  # is_admin は False
+    assert status == 400 and "管理者として起動し直してください" in data["error"]
+
+
+def test_server_process_gives_control_port_and_key(tmp_path, monkeypatch):
+    seen = {}
+
+    class Fake(control.ServerProcess):
+        def command(self, args):
+            seen["args"] = args
+            return [sys.executable, "-c", "import time; time.sleep(30)"]
+
+    proc = Fake(cwd=tmp_path)
+    assert proc.control_endpoint() is None
+    proc.start(["--port", "1"])
+    try:
+        port, key = proc.control_endpoint()
+        args = seen["args"]
+        assert args[args.index("--control-port") + 1] == str(port) and 0 < port < 65536
+        assert args[args.index("--control-key") + 1] == key and len(key) >= 16
+        assert key not in "\n".join(proc.log_since(0)[1])  # ログに出ない
+    finally:
+        proc.stop()
+    assert proc.control_endpoint() is None
