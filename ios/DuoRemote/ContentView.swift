@@ -22,6 +22,7 @@ struct ContentView: View {
     @AppStorage("audioMix") private var audioMix = false
     /// 画面の端の余白（ポイント）。Duo の角が丸く、映像の角が削れるときに、広げる
     @AppStorage("edgeMargin") private var edgeMargin = 0
+    @AppStorage(RemoteSession.virtualScaleKey) private var virtualScale = 1.0
     @AppStorage("showLatency") private var showLatency = true
     @AppStorage(RemoteSession.useHEVCKey) private var useHEVC = true
     @AppStorage(RemoteSession.autoQualityKey) private var autoQuality = true
@@ -132,6 +133,8 @@ struct ContentView: View {
             // 画質で、音の形も変わる（低画質は、24000Hz のモノラル）。つなぎ直しのあと、あらためて頼まれる
         }
         .onChange(of: edgeMargin) { _, _ in refitWindow() }
+        // 仮想画面の大きさを変えたら、いま映している仮想画面を、新しい大きさで撮り直す
+        .onChange(of: virtualScale) { _, _ in refitWindow() }
         .onChange(of: audioOn) { _, _ in session.setAudio(audioOn, mixWithOthers: audioMix) }
         .onChange(of: audioMix) { _, _ in session.setAudio(audioOn, mixWithOthers: audioMix) }
         // 音を始められなかったら、スイッチをオフに戻す

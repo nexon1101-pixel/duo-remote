@@ -33,6 +33,7 @@ struct SettingsView: View {
     @AppStorage(RemoteSession.transportKey) private var transport = "tcp"
     @AppStorage("showLatency") private var showLatency = true
     @AppStorage("edgeMargin") private var edgeMargin = 0
+    @AppStorage(RemoteSession.virtualScaleKey) private var virtualScale = 1.0
     // 音声
     @AppStorage("audioOn") private var audioOn = false
     @AppStorage("audioMix") private var audioMix = false
@@ -121,6 +122,12 @@ struct SettingsView: View {
                     }
                     Toggle("H.265 を使用（次回接続から）", isOn: $useHEVC)
                     Toggle("遅延を表示", isOn: $showLatency)
+                    Picker("仮想画面の大きさ", selection: $virtualScale) {
+                        Text("標準（1080）").tag(1.0)
+                        Text("大（1.25倍）").tag(1.25)
+                        Text("特大（1.5倍）").tag(1.5)
+                        Text("最大（2倍）").tag(2.0)
+                    }
                     Picker("画面の余白", selection: $edgeMargin) {
                         Text("なし").tag(0)
                         Text("小（10）").tag(10)

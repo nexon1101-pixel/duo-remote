@@ -136,6 +136,8 @@ final class RemoteSession: ObservableObject {
     static let useHEVCKey = "useHEVC"
     /// 設定「通信方式」（auto、tcp、udp）
     static let transportKey = "transportMode"
+    /// 設定「仮想画面の大きさ」（仮想ディスプレイの高さの、標準（1080）に対する倍率。1.0、1.25、1.5、2.0）
+    static let virtualScaleKey = "virtualScale"
 
     /// 接続中に出すお知らせ（サーバーからのエラーなど）。数秒で消す
     @Published private(set) var notice: String?
@@ -751,7 +753,10 @@ final class RemoteSession: ObservableObject {
         lastDisplay = .window(window, fit: fit, toVirtual: toVirtual)
         var message: [String: Any] = ["t": "mode", "mode": "window", "id": window.id]
         addFit(fit, to: &message)
-        if toVirtual { message["to_virtual"] = true }
+        if toVirtual {
+            message["to_virtual"] = true
+            addVirtualScale(to: &message)
+        }
         send(message)
     }
 
@@ -760,6 +765,7 @@ final class RemoteSession: ObservableObject {
         lastDisplay = .desktop(fit: fit)
         var message: [String: Any] = ["t": "mode", "mode": "desktop"]
         addFit(fit, to: &message)
+        addVirtualScale(to: &message)
         send(message)
     }
 
@@ -794,6 +800,12 @@ final class RemoteSession: ObservableObject {
         case .monitor?, nil:
             break
         }
+    }
+
+    /// 仮想ディスプレイの解像度を、大きくする設定（標準のときは付けない）
+    private func addVirtualScale(to message: inout [String: Any]) {
+        let scale = UserDefaults.standard.object(forKey: Self.virtualScaleKey) as? Double ?? 1.0
+        if scale > 1.0 { message["vscale"] = min(scale, 2.0) }
     }
 
     private func addFit(_ fit: CGSize?, to message: inout [String: Any]) {
