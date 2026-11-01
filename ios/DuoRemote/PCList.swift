@@ -188,6 +188,8 @@ private struct UpSnapTab: View {
 
     @State private var devices: [WakeOnLAN.UpSnapDevice] = []
     @State private var loaded = false
+    /// PC がオンのときの、サーバー（8765 番）につながるか。機器の ID ごと
+    @State private var serverReachable: [String: Bool] = [:]
     @State private var message: String?
     @State private var loggingIn = false
     /// いまつながっているアドレス（0: 自宅、1: 外出先）
@@ -393,13 +395,13 @@ private struct UpSnapTab: View {
             } label: {
                 HStack(spacing: 12) {
                     Circle()
-                        .fill(dotColor(device.status))
+                        .fill(serverDown(device) ? Color.orange : dotColor(device.status))
                         .frame(width: 12, height: 12)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(device.name)
                             .font(.headline)
                             .foregroundStyle(.primary)
-                        Text(isWaking ? "起動中…" : statusText(device.status))
+                        Text(isWaking ? "起動中…" : (serverDown(device) ? "オン（サーバーにつながりません）" : statusText(device.status)))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -433,6 +435,10 @@ private struct UpSnapTab: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
+    }
+
+    private func serverDown(_ device: WakeOnLAN.UpSnapDevice) -> Bool {
+        device.status == "online" && serverReachable[device.id] == false
     }
 
     private func dotColor(_ status: String) -> Color {
@@ -506,11 +512,36 @@ private struct UpSnapTab: View {
             }
             if Task.isCancelled { return }
             message = nil
+            await probeServers()
         } catch {
             if Task.isCancelled { return }
             message = "UpSnap から読めません（\(WakeOnLAN.message(for: error))）"
         }
         loaded = true
+    }
+
+    /// オンの PC について、サーバーにつながるか、自宅と外出先のホストで試す
+    private func probeServers() async {
+        let targets = devices.filter { $0.status == "online" }
+        var result: [String: Bool] = [:]
+        await withTaskGroup(of: (String, Bool).self) { group in
+            for device in targets {
+                let settings = DeviceSettingsStore.load(device.id)
+                let hosts = [device.ip, settings.hostRemote].filter { !$0.isEmpty }
+                let port = Int(settings.port) ?? 8765
+                group.addTask {
+                    for host in hosts {
+                        if await WakeOnLAN.isReachable(host: host, port: port) {
+                            return (device.id, true)
+                        }
+                    }
+                    return (device.id, false)
+                }
+            }
+            for await (id, reachable) in group { result[id] = reachable }
+        }
+        if Task.isCancelled { return }
+        serverReachable = result
     }
 
     private func fetchDevices() async throws -> [WakeOnLAN.UpSnapDevice] {
