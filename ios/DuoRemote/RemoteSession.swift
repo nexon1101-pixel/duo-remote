@@ -822,6 +822,7 @@ final class RemoteSession: ObservableObject {
 
     /// 仮想ディスプレイの解像度を、大きくする設定（標準のときは付けない）
     private func addVirtualScale(to message: inout [String: Any]) {
+        guard VirtualScale.enabled else { return }
         let scale = UserDefaults.standard.object(forKey: Self.virtualScaleKey) as? Double ?? 1.0
         if scale > 1.0 { message["vscale"] = min(scale, 2.0) }
     }
@@ -1056,6 +1057,9 @@ final class RemoteSession: ObservableObject {
 /// 仮想画面の大きさ（仮想ディスプレイの解像度の倍率）。標準は、高さ 1080。
 /// 縦横比は、iPhone の画面に合わせる。サーバーは、設定ファイルにある解像度から、近いものを選ぶので、画面に出す大きさは「約」
 enum VirtualScale {
+    /// いまは止めている（PC の設定ファイルの解像度が、高さ 1080 だけのため、大きくならない）。
+    /// 設定と、メニューを出さず、サーバーにも送らない。また使うときは、true にする
+    static let enabled = false
     static let all: [Double] = [1.0, 1.25, 1.5, 2.0]
     static let baseHeight = 1080.0
 

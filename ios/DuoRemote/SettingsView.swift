@@ -145,9 +145,11 @@ struct SettingsView: View {
                     }
                     Toggle("H.265 を使用（次回接続から）", isOn: $useHEVC)
                     Toggle("遅延を表示", isOn: $showLatency)
-                    Picker("仮想画面の大きさ", selection: $virtualScale) {
-                        ForEach(VirtualScale.all, id: \.self) { scale in
-                            Text(VirtualScale.label(scale, aspect: virtualAspect)).tag(scale)
+                    if VirtualScale.enabled {
+                        Picker("仮想画面の大きさ", selection: $virtualScale) {
+                            ForEach(VirtualScale.all, id: \.self) { scale in
+                                Text(VirtualScale.label(scale, aspect: virtualAspect)).tag(scale)
+                            }
                         }
                     }
                     segmentedRow("画面の余白", selection: $edgeMargin) {
@@ -159,7 +161,9 @@ struct SettingsView: View {
                 } header: {
                     Text("画質と表示")
                 } footer: {
-                    Text("仮想画面の大きさは、縦横比はそのままで、解像度を大きくします。「×1」が標準（高さ 1080）で、×1.5 なら、高さ 1620 です。かっこの中は、いまの画面の縦横比のときの、おおよその大きさです（PC の仮想ディスプレイの設定ファイルを書き直したあと、使えます）。画質が「高」のとき、大きくした解像度のまま見られます。")
+                    if VirtualScale.enabled {
+                        Text("仮想画面の大きさは、縦横比はそのままで、解像度を大きくします。「×1」が標準（高さ 1080）で、×1.5 なら、高さ 1620 です。かっこの中は、いまの画面の縦横比のときの、おおよその大きさです（PC の仮想ディスプレイの設定ファイルを書き直したあと、使えます）。画質が「高」のとき、大きくした解像度のまま見られます。")
+                    }
                 }
 
                 Section {

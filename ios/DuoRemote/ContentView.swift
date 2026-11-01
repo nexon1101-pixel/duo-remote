@@ -635,7 +635,7 @@ struct ContentView: View {
             if session.viewMode != .screen {
                 Button("メイン画面を表示", systemImage: "display") { session.showScreen() }
             }
-            if session.virtualAvailable {
+            if session.virtualAvailable && VirtualScale.enabled {
                 Menu("仮想画面の大きさ", systemImage: "arrow.up.left.and.arrow.down.right") {
                     Picker("仮想画面の大きさ", selection: $virtualScale) {
                         ForEach(VirtualScale.all, id: \.self) { scale in
