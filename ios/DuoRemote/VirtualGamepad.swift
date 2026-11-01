@@ -85,8 +85,8 @@ final class VirtualGamepadUIView: UIView {
     private static let lt = 0x10000
     private static let rt = 0x20000
 
-    /// 指を動かせる半径は、スティックの直径のこの倍
-    private static let travelFactor: CGFloat = 0.8
+    /// つまみが最大になるのは、土台の真ん中から、土台の半径のこの倍だけ離れたとき
+    private static let travelFactor: CGFloat = 1.0
 
     private struct PadItem {
         let code: Int
@@ -112,10 +112,9 @@ final class VirtualGamepadUIView: UIView {
         case right
     }
 
-    /// スティック。指が触れた所を中心にして、引いた向きと量を -1.0〜1.0 にする
+    /// スティック。土台は、決まった位置から動かない。つまみの、土台の真ん中からの向きと量を -1.0〜1.0 にする
     private struct StickState {
         var touch: ObjectIdentifier?
-        var origin: CGPoint = .zero
         /// 画面の向きのまま（y は下が正）。長さは 1 まで
         var value: CGPoint = .zero
     }
@@ -210,9 +209,22 @@ final class VirtualGamepadUIView: UIView {
             )
         }
 
-        // 肩のボタンとトリガー。上の角に置く
+        // 上の段の大きさ。左右の肩のボタン（LT、LB と、RB、RT）と、真ん中の L3、Back、Start、R3 が、
+        // 重ならないように、板の幅に収まらないときは、全部を同じ割合で小さくする
         let gap: CGFloat = 6
-        let sw = u * 1.6
+        var sw = u * 1.6
+        var pillW = u * 1.1
+        var small = max(26, u * 0.55)
+        let baseRowW = small * 2 + pillW * 2 + gap * 3
+        let needed = sw * 4 + gap * 2 + baseRowW
+        let available = w - margin * 2 - gap * 2
+        if needed > available {
+            let f = max(available / needed, 0.4)
+            sw *= f
+            pillW *= f
+            small *= f
+        }
+        let pillH = max(22, min(u * 0.5, small))
         func shoulder(_ code: Int, _ label: String, _ x: CGFloat) -> PadItem {
             PadItem(
                 code: code, label: label, rect: CGRect(x: x, y: top, width: sw, height: shoulderH),
@@ -221,9 +233,6 @@ final class VirtualGamepadUIView: UIView {
         }
 
         // 真ん中の上: L3、Back、Start、R3
-        let pillW = u * 1.1
-        let pillH = max(22, u * 0.5)
-        let small = max(26, u * 0.55)
         let rowW = small * 2 + pillW * 2 + gap * 3
         let rowX = w / 2 - rowW / 2
         func center(_ code: Int, _ label: String, x: CGFloat, width: CGFloat, height: CGFloat, round: Bool) -> PadItem {
@@ -300,11 +309,11 @@ final class VirtualGamepadUIView: UIView {
         }
     }
 
-    /// スティック。触っていないときは、決まった位置に置く。触っているときは、触った所を中心にして、つまみを動かす
+    /// スティック。土台は、いつも決まった位置に置く。触っている間、つまみだけが、指に合わせて動く
     private func drawStick(ctx: CGContext, rest: CGPoint, state: StickState, accent: UIColor) {
         let active = state.touch != nil
         let r = stickRadius
-        let c = active ? state.origin : rest
+        let c = rest
         let base = CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
         ctx.saveGState()
         ctx.setShadow(offset: CGSize(width: 0, height: 2), blur: 6, color: UIColor(white: 0, alpha: 0.4).cgColor)
@@ -441,9 +450,10 @@ final class VirtualGamepadUIView: UIView {
 
     private func updateStick(_ side: Side, at p: CGPoint) {
         var s = side == .left ? leftStick : rightStick
-        let travel = stickRadius * 2 * Self.travelFactor
-        var vx = (p.x - s.origin.x) / travel
-        var vy = (p.y - s.origin.y) / travel
+        let rest = side == .left ? restLeft : restRight
+        let travel = stickRadius * Self.travelFactor
+        var vx = (p.x - rest.x) / travel
+        var vy = (p.y - rest.y) / travel
         let len = hypot(vx, vy)
         if len > 1 {
             vx /= len
@@ -461,8 +471,8 @@ final class VirtualGamepadUIView: UIView {
             if let side = stickToStart(at: p) {
                 var s = StickState()
                 s.touch = id
-                s.origin = p
                 if side == .left { leftStick = s } else { rightStick = s }
+                updateStick(side, at: p)
             } else {
                 setMask(id, mask(at: p))
             }
