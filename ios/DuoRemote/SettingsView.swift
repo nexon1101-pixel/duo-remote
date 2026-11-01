@@ -38,6 +38,23 @@ struct SettingsView: View {
     @AppStorage("audioOn") private var audioOn = false
     @AppStorage("audioMix") private var audioMix = false
 
+    /// 選択肢が少ない設定を、1回で選べる、横並びの切り替えにする（見出しは、上に小さく出す）
+    private func segmentedRow<T: Hashable, Content: View>(
+        _ title: String, selection: Binding<T>, @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Picker(title, selection: selection) {
+                content()
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
+        .padding(.vertical, 2)
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -57,11 +74,11 @@ struct SettingsView: View {
                             Text(layout.label).tag(layout)
                         }
                     }
-                    Picker("キーボードの位置", selection: $keyboardAtBottom) {
+                    segmentedRow("キーボードの位置", selection: $keyboardAtBottom) {
                         Text("フロート").tag(false)
                         Text("下部に固定").tag(true)
                     }
-                    Picker("トラックパッドの位置", selection: $padAtBottom) {
+                    segmentedRow("トラックパッドの位置", selection: $padAtBottom) {
                         Text("フロート").tag(false)
                         Text("下部に固定").tag(true)
                     }
@@ -70,7 +87,7 @@ struct SettingsView: View {
                         Text("映像を拡大・縮小").tag("video")
                         Text("PC 側で拡大・縮小（Ctrl+ホイール）").tag("pc")
                     }
-                    Picker("不透明度", selection: $overlayOpacity) {
+                    segmentedRow("不透明度", selection: $overlayOpacity) {
                         Text("100%").tag(1.0)
                         Text("80%").tag(0.8)
                         Text("60%").tag(0.6)
@@ -108,32 +125,36 @@ struct SettingsView: View {
                     Text("上半分に映像、下半分にキーボード、コントローラ、トラックパッドを出します。キーボード入力は、キーボードのキーとして送ります。ゲームパッドは、PC の仮想のゲームパッド（Xbox 360）に送ります。PC に ViGEmBus が必要で、入っていないときはキーボード入力で動きます。")
                 }
 
-                Section("画質と表示") {
+                Section {
                     Picker("画質", selection: qualityChoice) {
                         Text("自動").tag(autoChoice)
                         ForEach(VideoQuality.allCases) { q in
                             Text(q.label).tag(q.rawValue)
                         }
                     }
-                    Picker("通信方式（次回接続から）", selection: $transport) {
+                    segmentedRow("通信方式（次回接続から）", selection: $transport) {
                         Text("TCP").tag("tcp")
                         Text("UDP").tag("udp")
-                        Text("自動（UDP を試す）").tag("auto")
+                        Text("自動").tag("auto")
                     }
                     Toggle("H.265 を使用（次回接続から）", isOn: $useHEVC)
                     Toggle("遅延を表示", isOn: $showLatency)
-                    Picker("仮想画面の大きさ", selection: $virtualScale) {
-                        Text("標準（1080）").tag(1.0)
-                        Text("大（1.25倍）").tag(1.25)
-                        Text("特大（1.5倍）").tag(1.5)
-                        Text("最大（2倍）").tag(2.0)
+                    segmentedRow("仮想画面の大きさ", selection: $virtualScale) {
+                        Text("標準").tag(1.0)
+                        Text("大").tag(1.25)
+                        Text("特大").tag(1.5)
+                        Text("最大").tag(2.0)
                     }
-                    Picker("画面の余白", selection: $edgeMargin) {
+                    segmentedRow("画面の余白", selection: $edgeMargin) {
                         Text("なし").tag(0)
-                        Text("小（10）").tag(10)
-                        Text("中（20）").tag(20)
-                        Text("大（30）").tag(30)
+                        Text("小").tag(10)
+                        Text("中").tag(20)
+                        Text("大").tag(30)
                     }
+                } header: {
+                    Text("画質と表示")
+                } footer: {
+                    Text("仮想画面の大きさは、縦横比はそのままで、解像度を大きくします（PC の仮想ディスプレイの設定ファイルを書き直したあと、使えます）。画質が「高」のとき、大きくした解像度のまま見られます。")
                 }
 
                 Section {

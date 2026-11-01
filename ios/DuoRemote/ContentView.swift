@@ -43,6 +43,8 @@ struct ContentView: View {
     @State private var showingWindows = false
     @State private var showingMonitors = false
     @State private var showingSettings = false
+    /// 映像を拡大しているか（「拡大を戻す」のボタンを出すため）
+    @State private var videoZoomed = false
     /// 写真・ファイルの選択画面を出すか、と、PC のクリップボードにも入れるか
     @State private var showingPhotoPicker = false
     @State private var showingFileImporter = false
@@ -135,6 +137,9 @@ struct ContentView: View {
         .onChange(of: edgeMargin) { _, _ in refitWindow() }
         // 仮想画面の大きさを変えたら、いま映している仮想画面を、新しい大きさで撮り直す
         .onChange(of: virtualScale) { _, _ in refitWindow() }
+        .onReceive(NotificationCenter.default.publisher(for: .duoZoomChanged)) { note in
+            videoZoomed = note.userInfo?["zoomed"] as? Bool ?? false
+        }
         .onChange(of: audioOn) { _, _ in session.setAudio(audioOn, mixWithOthers: audioMix) }
         .onChange(of: audioMix) { _, _ in session.setAudio(audioOn, mixWithOthers: audioMix) }
         // 音を始められなかったら、スイッチをオフに戻す
@@ -419,6 +424,17 @@ struct ContentView: View {
     private func windowsButton(compact: Bool) -> some View {
         let tint: Color = session.viewMode == .window || session.viewMode == .desktop ? .accentColor : .white
         HStack(spacing: UIMetrics.spacing) {
+            if videoZoomed {
+                Button {
+                    NotificationCenter.default.post(name: .duoResetZoom, object: nil)
+                } label: {
+                    Image(systemName: "arrow.down.right.and.arrow.up.left")
+                        .modifier(BarButtonLabel(tint: .accentColor, compact: compact))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("拡大を戻す")
+                .transition(.scale.combined(with: .opacity))
+            }
             if let previous = session.previousWindow, previous.id != session.currentWindow?.id {
                 Button {
                     WindowPicker.open(previous, session: session, fitSize: fitSize)
@@ -441,6 +457,7 @@ struct ContentView: View {
             .accessibilityLabel("ウィンドウを選択")
         }
         .animation(.spring(duration: 0.3), value: session.previousWindow?.id)
+        .animation(.spring(duration: 0.3), value: videoZoomed)
     }
 
     /// トラックパッドを出す・しまうボタン（重ねて出す形）
@@ -540,6 +557,22 @@ struct ContentView: View {
             }
             if session.viewMode != .screen {
                 Button("メイン画面を表示", systemImage: "display") { session.showScreen() }
+            }
+            if session.virtualAvailable {
+                Menu("仮想画面の大きさ", systemImage: "arrow.up.left.and.arrow.down.right") {
+                    Picker("仮想画面の大きさ", selection: $virtualScale) {
+                        Text("標準（1080）").tag(1.0)
+                        Text("大（1.25倍）").tag(1.25)
+                        Text("特大（1.5倍）").tag(1.5)
+                        Text("最大（2倍）").tag(2.0)
+                    }
+                    .pickerStyle(.inline)
+                }
+            }
+            if videoZoomed {
+                Button("拡大を戻す", systemImage: "arrow.down.right.and.arrow.up.left") {
+                    NotificationCenter.default.post(name: .duoResetZoom, object: nil)
+                }
             }
             Button("カーソルを中央へ", systemImage: "scope") {
                 NotificationCenter.default.post(name: .duoCenterCursor, object: nil)

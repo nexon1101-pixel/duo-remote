@@ -65,6 +65,15 @@ final class VideoContainerView: UIView {
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleCenterCursor), name: .duoCenterCursor, object: nil
         )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleResetZoom), name: .duoResetZoom, object: nil
+        )
+    }
+
+    /// 拡大を、元の大きさに戻す
+    @objc private func handleResetZoom() {
+        zoomedRect = nil
+        layoutVideo()
     }
 
     /// カーソルを、見えている映像の真ん中に持ってくる。持ってきた場所が分かるように、輪を一瞬出す
@@ -198,7 +207,12 @@ final class VideoContainerView: UIView {
     }
 
     private func layoutVideo() {
-        VideoZoomState.isZoomed = isZoomed
+        let zoomed = isZoomed
+        if VideoZoomState.isZoomed != zoomed {
+            VideoZoomState.isZoomed = zoomed
+            // 画面のボタン（拡大を戻す）の出し入れのために知らせる
+            NotificationCenter.default.post(name: .duoZoomChanged, object: nil, userInfo: ["zoomed": zoomed])
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         videoLayer?.frame = videoRect
@@ -217,6 +231,10 @@ enum VideoZoomState {
 }
 
 extension Notification.Name {
+    /// 映像の拡大が、始まった・終わった知らせ（userInfo の "zoomed": 拡大しているか）
+    static let duoZoomChanged = Notification.Name("duoZoomChanged")
+    /// 映像の拡大を、元の大きさに戻す頼み。画面の「拡大を戻す」のボタンとメニューが送る
+    static let duoResetZoom = Notification.Name("duoResetZoom")
     /// カーソルを、見えている映像の真ん中に持ってくる頼み。メニューと、トラックパッドの3本指のタップが送る
     static let duoCenterCursor = Notification.Name("duoCenterCursor")
 
