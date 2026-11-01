@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         帯の下まで表示
 // @description  iPhone Duo の外側の画面で、Safari の右の帯の下まで、ページを広げる。左下のボタンで、サイトごとに切り替える。内側の画面では、何もしない
-// @version      4.0
+// @version      4.1
 // @match        *://*/*
 // @run-at       document-start
 // ==/UserScript==
@@ -67,7 +67,7 @@
     earlyStyle = document.createElement('style');
     earlyStyle.textContent =
       'html{width:calc(100vw + ' + saved + 'px)!important;min-width:calc(100vw + ' + saved + 'px)!important;' +
-      'overflow-x:clip!important;touch-action:pan-y pinch-zoom!important;overscroll-behavior-x:none!important}' +
+      'overflow-x:hidden!important;touch-action:pan-y pinch-zoom!important;overscroll-behavior-x:none!important}' +
       'body{width:' + (on ? '100%' : '100vw') + '!important;overflow-x:clip!important}';
     (document.head || document.documentElement).appendChild(earlyStyle);
   })();
@@ -80,7 +80,7 @@
     var w = base + g;
     return (
       'html{width:' + w + 'px!important;min-width:' + w + 'px!important;' +
-      'overflow-x:clip!important;touch-action:pan-y pinch-zoom!important;overscroll-behavior-x:none!important}' +
+      'overflow-x:hidden!important;touch-action:pan-y pinch-zoom!important;overscroll-behavior-x:none!important}' +
       'body{width:' + (wide ? '100%' : base + 'px') + '!important;overflow-x:clip!important}' +
       'html::-webkit-scrollbar{display:none!important}'
     );
