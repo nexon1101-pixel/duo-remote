@@ -206,7 +206,7 @@ struct ContentView: View {
                     .padding(.top, safeInsets.top)
                     .padding(.leading, safeInsets.leading)
                     .padding(.trailing, safeInsets.trailing)
-                    .padding(.bottom, safeInsets.bottom)
+                    .padding(.bottom, floatingBottomInset)
                     .transition(.opacity)
             }
 
@@ -219,7 +219,7 @@ struct ContentView: View {
                 .padding(.top, safeInsets.top)
                 .padding(.leading, safeInsets.leading)
                 .padding(.trailing, safeInsets.trailing)
-                .padding(.bottom, safeInsets.bottom)
+                .padding(.bottom, floatingBottomInset)
             }
 
             VStack(spacing: 0) {
@@ -415,6 +415,12 @@ struct ContentView: View {
         // 半開きのときは、折り目より上の大きさに合わせる。下部に固定したときも、設定によって、その上の大きさに合わせる
         let height = videoAreaHeight ?? fullSize.height
         return CGSize(width: max(fullSize.width - margin, 1), height: max(height - margin, 1))
+    }
+
+    /// フロートのキーボードやトラックパッドを動かせる範囲の、下の余白。下部に固定したものがあるときは、
+    /// その上までにして、固定したものの裏に入って、触れなくならないようにする
+    private var floatingBottomInset: CGFloat {
+        dockedBottomHeight > 0 ? dockedBottomHeight : safeInsets.bottom
     }
 
     /// 映像を出す範囲の高さ。画面いっぱいなら nil。半開きなら折り目より上、下部に固定していて、
