@@ -622,7 +622,7 @@ struct ContentView: View {
                     }
                     Divider().overlay(Color.white.opacity(0.1))
                     field(systemImage: "globe") {
-                        TextField("外出先のホスト（任意。例: wss://名前.ts.net）", text: $hostRemote)
+                        TextField("外出先のホスト（Tailscale、任意）", text: $hostRemote)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)

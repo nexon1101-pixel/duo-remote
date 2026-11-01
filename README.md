@@ -342,35 +342,6 @@ PCとiPhoneの両方に [Tailscale](https://tailscale.com/) を入れ、同じ�
 
 （外出先からの接続は、まだ試していません。）
 
-### iPhone に VPN を入れない方法（Tailscale Funnel）
-
-iPhone に Tailscale を入れずに、外から使えます。PC だけに Tailscale を入れて、PC の通信を、HTTPS で外に出します（Funnel）。iPhone は、普通の HTTPS のアドレスにつなぐだけです。
-
-**PC 側（1回だけ）**
-
-1. PC に Tailscale を入れて、ログインする
-2. ブラウザで Tailscale の管理画面（`login.tailscale.com/admin`）を開き、「DNS」の「HTTPS Certificates」を有効にする
-3. コマンドプロンプトで、次を実行する
-
-   ```
-   tailscale funnel --bg 8765
-   ```
-
-   初めて実行したときは、「Funnel が有効ではありません」と出て、有効にするための URL が出る。開いて許可してから、もう一度実行する
-4. 出てきた `https://<PCの名前>.<tailnet>.ts.net/` が、外から使うアドレス
-5. 止めるときは `tailscale funnel --bg off`
-
-**iPhone 側**
-
-- 接続の画面の「外出先のホスト」に、`wss://<PCの名前>.<tailnet>.ts.net` のように入れる（頭に `wss://` を付けると、暗号化でつなぎ、ポートは 443 になる）。ポートの欄は、自宅の接続にだけ使われる
-- 「通信方式」は、自動か TCP にする。Funnel は UDP を通さないので、UDP は使えない（自動なら、TCP で続ける）
-
-**注意**
-
-- Funnel を使うと、PC のサーバーが、インターネットから見える状態になる。サーバーは、トークンの合う接続しか受け付けない。トークンは、推測できない長さ（22文字ほど）。トークンは、人に教えないこと。作り直したいときは、管理画面の「トークン」の「作り直す」
-- Funnel の通信には、Tailscale が決めた、速度の制限がある。映像が途切れるときは、画質を下げる
-- 使い終わったら、`tailscale funnel --bg off` で、外に出すのをやめる
-
 ## うまくいかないとき
 
 | 困ったこと | 確認すること |
