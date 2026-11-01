@@ -20,7 +20,7 @@ enum WakeOnLAN {
         }
     }
 
-    /// "70-85-C2-76-8A-9A" や "70:85:c2:76:8a:9a" を6バイトにする
+    /// "AA-BB-CC-DD-EE-FF" や "aa:bb:cc:dd:ee:ff" を6バイトにする
     static func parseMAC(_ text: String) -> [UInt8]? {
         let hex = text.filter { $0.isHexDigit }
         guard hex.count == 12 else { return nil }

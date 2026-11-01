@@ -89,7 +89,7 @@ private struct ManualTab: View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 12) {
                 row("server.rack") {
-                    TextField("自宅のホスト（例: 192.168.0.200）", text: $host)
+                    TextField("自宅のホスト（例: 192.168.1.10）", text: $host)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
@@ -222,7 +222,7 @@ private struct UpSnapTab: View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 12) {
                 field("house") {
-                    TextField("自宅のアドレス（例: 192.168.0.155:8090）", text: $url)
+                    TextField("自宅のアドレス（例: 192.168.1.20:8090）", text: $url)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
