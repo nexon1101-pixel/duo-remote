@@ -65,12 +65,12 @@ def test_autostart_xml():
 
 def test_address_details(monkeypatch):
     monkeypatch.setattr(control, "_details_cache", None)
-    monkeypatch.setattr(control, "local_addresses", lambda: ["10.242.22.4", "192.168.0.200", "100.101.102.103"])
-    monkeypatch.setattr(control, "_primary_address", lambda: "192.168.0.200")
-    monkeypatch.setattr(control, "_interface_names", lambda: {"10.242.22.4": "ZeroTier One", "192.168.0.200": "Wi-Fi"})
+    monkeypatch.setattr(control, "local_addresses", lambda: ["10.242.22.4", "192.168.1.10", "100.101.102.103"])
+    monkeypatch.setattr(control, "_primary_address", lambda: "192.168.1.10")
+    monkeypatch.setattr(control, "_interface_names", lambda: {"10.242.22.4": "ZeroTier One", "192.168.1.10": "Wi-Fi"})
     monkeypatch.setattr(control.sys, "platform", "win32")
     details = control.address_details()
-    assert details[0] == {"address": "192.168.0.200", "name": "Wi-Fi", "recommended": True, "tailscale": False}
+    assert details[0] == {"address": "192.168.1.10", "name": "Wi-Fi", "recommended": True, "tailscale": False}
     assert {"address": "100.101.102.103", "name": "", "recommended": False, "tailscale": True} in details
     assert details[1]["name"] == "ZeroTier One"
 

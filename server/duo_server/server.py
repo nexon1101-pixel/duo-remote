@@ -17,7 +17,7 @@ from websockets.exceptions import ConnectionClosed
 from . import files, gamepad, protocol, udp as udp_mod
 from .audio import ALLOWED_CHANNELS, ALLOWED_CODECS, ALLOWED_RATES, OPUS_RATE, AudioError
 from .capture import StreamError, output_size
-from .input_win import ClipboardError, from_windows_newlines, to_windows_newlines
+from .input_win import ClipboardError, PowerError, from_windows_newlines, to_windows_newlines
 from .udp import UdpEndpoint, UdpPeer
 from .virtual_display import VirtualDisplayError, clamp_scale, monitor_of
 
@@ -858,6 +858,8 @@ class Session:
                 await self.bring(msg)
             finally:
                 await self._resume_video()
+        elif t == "power":
+            await self.power(msg)
         elif t == "restore":
             restored = await asyncio.to_thread(self.backend.restore_brought)
             await self.send({"t": "notice", "message": f"ウィンドウを元に戻しました（{len(restored)}個）"})
@@ -883,6 +885,27 @@ class Session:
             reply = dispatch_input(msg, self.backend, self.held)
             if reply:
                 await self.send(reply)
+
+    POWER_LABELS = {"shutdown": "シャットダウン", "restart": "再起動", "sleep": "スリープ"}
+
+    async def power(self, msg: dict[str, Any]) -> None:
+        """PC のシャットダウン、再起動、スリープ。先に、持ってきたウィンドウを戻し、仮想ディスプレイを
+        無効に戻してから、電源を操作する。force が真なら、開いているアプリを強制的に閉じる。"""
+        action = msg.get("action")
+        if action not in self.POWER_LABELS:
+            await self.send({"t": "error", "message": "使えない操作です"})
+            return
+        force = msg.get("force") is True and action != "sleep"
+        label = self.POWER_LABELS[action]
+        log.info("PC を%sします（強制: %s）", label, force)
+        await self.send({"t": "notice", "message": f"PC を{label}します"})
+        await self._pause_video()
+        await asyncio.to_thread(self.backend.shutdown)
+        try:
+            await asyncio.to_thread(self.backend.power, action, force)
+        except PowerError as e:
+            log.warning("電源を操作できませんでした: %s", e)
+            await self.send({"t": "error", "message": f"{label}できませんでした（{e}）"})
 
     async def clip_get(self) -> None:
         """PCのクリップボードの文字を、iPhoneに送る。"""

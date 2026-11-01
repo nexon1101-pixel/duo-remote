@@ -790,6 +790,11 @@ final class RemoteSession: ObservableObject {
         send(["t": "restore"])
     }
 
+    /// PC の電源を操作する（action は shutdown、restart、sleep）。force は、開いているアプリを強制的に閉じる
+    func power(_ action: String, force: Bool = false) {
+        send(["t": "power", "action": action, "force": force])
+    }
+
     /// 画面の大きさが変わったとき（回した、Duoを開閉した）、今の表示を、新しい大きさに合わせ直す
     func refreshDisplay(fit: CGSize) {
         switch lastDisplay {

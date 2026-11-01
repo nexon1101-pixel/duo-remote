@@ -20,7 +20,7 @@ enum WakeOnLAN {
         }
     }
 
-    /// "70-85-C2-76-8A-9A" や "70:85:c2:76:8a:9a" を6バイトにする
+    /// "AA-BB-CC-DD-EE-FF" や "aa:bb:cc:dd:ee:ff" を6バイトにする
     static func parseMAC(_ text: String) -> [UInt8]? {
         let hex = text.filter { $0.isHexDigit }
         guard hex.count == 12 else { return nil }
@@ -144,10 +144,30 @@ enum WakeOnLAN {
             throw WakeError.upsnap("UpSnap に \(wanted) の機器がありません")
         }
 
-        var wakeRequest = URLRequest(url: root.appendingPathComponent("api/upsnap/wake/\(id)"), timeoutInterval: 8)
+        // UpSnap は、PC が起動するまで返事を返さないことがある。数秒で返事がなくても、
+        // 信号はすでに送られているので、失敗にはしない（起動したかは、あとで PC への接続で確認する）
+        var wakeRequest = URLRequest(url: root.appendingPathComponent("api/upsnap/wake/\(id)"), timeoutInterval: 5)
         wakeRequest.setValue(token, forHTTPHeaderField: "Authorization")
-        let (_, wakeResponse) = try await session.data(for: wakeRequest)
-        try check(wakeResponse)
+        do {
+            let (_, wakeResponse) = try await session.data(for: wakeRequest)
+            try check(wakeResponse)
+        } catch let error as URLError where error.code == .timedOut {
+            return
+        }
+    }
+
+    /// 画面に出す、エラーの説明（日本語にする）
+    static func message(for error: Error) -> String {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut: return "接続がタイムアウトしました"
+            case .notConnectedToInternet, .dataNotAllowed: return "ネットワークにつながっていません"
+            case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost, .dnsLookupFailed:
+                return "UpSnap につながりません"
+            default: break
+            }
+        }
+        return error.localizedDescription
     }
 
     private static let session: URLSession = {
@@ -260,9 +280,9 @@ final class PCWaker: ObservableObject {
                 let broadcast = config.broadcast.isEmpty ? "255.255.255.255" : config.broadcast
                 do {
                     try WakeOnLAN.sendMagicPacket(mac: config.mac, broadcast: broadcast)
-                    notes.append("自宅のネットワークに信号を送りました")
+                    notes.append("電源を入れる信号を送りました")
                 } catch {
-                    errors.append(error.localizedDescription)
+                    errors.append(WakeOnLAN.message(for: error))
                 }
             }
             if !config.upsnapURL.isEmpty, !config.upsnapEmail.isEmpty {
@@ -270,9 +290,9 @@ final class PCWaker: ObservableObject {
                     try await WakeOnLAN.wakeWithUpSnap(
                         baseURL: config.upsnapURL, email: config.upsnapEmail,
                         password: config.upsnapPassword, deviceIP: config.deviceIP)
-                    notes.append("UpSnap に起動を頼みました")
+                    notes.append("UpSnap で電源を入れました。起動したら、自動で接続します")
                 } catch {
-                    errors.append(error.localizedDescription)
+                    errors.append(WakeOnLAN.message(for: error))
                 }
             }
             if Task.isCancelled { return }

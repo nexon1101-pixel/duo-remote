@@ -70,6 +70,7 @@ struct PCListSection: View {
             case .manual: ManualTab(connect: connect)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -89,10 +90,11 @@ private struct ManualTab: View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 12) {
                 row("server.rack") {
-                    TextField("自宅のホスト（例: 192.168.0.200）", text: $host)
+                    TextField("自宅のホスト（例: 192.168.1.10）", text: $host)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .lineLimit(1)
                 }
                 Divider().overlay(Color.white.opacity(0.1))
                 row("globe") {
@@ -100,6 +102,7 @@ private struct ManualTab: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .lineLimit(1)
                 }
                 Divider().overlay(Color.white.opacity(0.1))
                 row("number") {
@@ -185,6 +188,8 @@ private struct UpSnapTab: View {
 
     @State private var devices: [WakeOnLAN.UpSnapDevice] = []
     @State private var loaded = false
+    /// PC がオンのときの、サーバー（8765 番）につながるか。機器の ID ごと
+    @State private var serverReachable: [String: Bool] = [:]
     @State private var message: String?
     @State private var loggingIn = false
     /// いまつながっているアドレス（0: 自宅、1: 外出先）
@@ -222,10 +227,11 @@ private struct UpSnapTab: View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 12) {
                 field("house") {
-                    TextField("自宅のアドレス（例: 192.168.0.155:8090）", text: $url)
+                    TextField("自宅のアドレス（例: 192.168.1.20:8090）", text: $url)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .lineLimit(1)
                 }
                 Divider().overlay(Color.white.opacity(0.1))
                 field("globe") {
@@ -233,6 +239,7 @@ private struct UpSnapTab: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .lineLimit(1)
                 }
                 Divider().overlay(Color.white.opacity(0.1))
                 field("envelope") {
@@ -274,6 +281,7 @@ private struct UpSnapTab: View {
             Text("自宅の NAS などで動かしている UpSnap にログインすると、登録した PC の一覧と、オン・オフが見えます。外出先では、Tailscale をオンにしてください。パスワードは、この iPhone のキーチェーンにだけ入ります")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -294,7 +302,7 @@ private struct UpSnapTab: View {
             message = nil
             loggedIn = true
         } catch {
-            message = error.localizedDescription
+            message = WakeOnLAN.message(for: error)
         }
     }
 
@@ -387,13 +395,13 @@ private struct UpSnapTab: View {
             } label: {
                 HStack(spacing: 12) {
                     Circle()
-                        .fill(dotColor(device.status))
+                        .fill(serverDown(device) ? Color.orange : dotColor(device.status))
                         .frame(width: 12, height: 12)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(device.name)
                             .font(.headline)
                             .foregroundStyle(.primary)
-                        Text(isWaking ? "起動を待っています" : statusText(device.status))
+                        Text(isWaking ? "起動中…" : (serverDown(device) ? "オン（サーバーにつながりません）" : statusText(device.status)))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -401,7 +409,7 @@ private struct UpSnapTab: View {
                     if isWaking {
                         ProgressView()
                     } else {
-                        Text(isOnline ? "接続" : "起こして接続")
+                        Text(isOnline ? "接続" : "電源を入れる")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(isOnline ? Color.accentColor : Color.orange)
                     }
@@ -427,6 +435,10 @@ private struct UpSnapTab: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
+    }
+
+    private func serverDown(_ device: WakeOnLAN.UpSnapDevice) -> Bool {
+        device.status == "online" && serverReachable[device.id] == false
     }
 
     private func dotColor(_ status: String) -> Color {
@@ -500,11 +512,36 @@ private struct UpSnapTab: View {
             }
             if Task.isCancelled { return }
             message = nil
+            await probeServers()
         } catch {
             if Task.isCancelled { return }
-            message = "UpSnap から読めません（\(error.localizedDescription)）"
+            message = "UpSnap から読めません（\(WakeOnLAN.message(for: error))）"
         }
         loaded = true
+    }
+
+    /// オンの PC について、サーバーにつながるか、自宅と外出先のホストで試す
+    private func probeServers() async {
+        let targets = devices.filter { $0.status == "online" }
+        var result: [String: Bool] = [:]
+        await withTaskGroup(of: (String, Bool).self) { group in
+            for device in targets {
+                let settings = DeviceSettingsStore.load(device.id)
+                let hosts = [device.ip, settings.hostRemote].filter { !$0.isEmpty }
+                let port = Int(settings.port) ?? 8765
+                group.addTask {
+                    for host in hosts {
+                        if await WakeOnLAN.isReachable(host: host, port: port) {
+                            return (device.id, true)
+                        }
+                    }
+                    return (device.id, false)
+                }
+            }
+            for await (id, reachable) in group { result[id] = reachable }
+        }
+        if Task.isCancelled { return }
+        serverReachable = result
     }
 
     private func fetchDevices() async throws -> [WakeOnLAN.UpSnapDevice] {
@@ -549,6 +586,7 @@ private struct DeviceSettingsSheet: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .lineLimit(1)
                     TextField("ポート", text: $settings.port)
                         .keyboardType(.numberPad)
                     HStack {
