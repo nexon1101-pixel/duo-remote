@@ -269,3 +269,58 @@ def test_stats_count_sent_and_dropped_frames(monkeypatch):
     assert stats["dropped"] > 0 and stats["sent"] + stats["dropped"] == 80
     assert stats["kbps"] > 0
     assert again["sent"] == 0 and again["dropped"] == 0  # 前に取った分は引く
+
+
+@pytest.mark.parametrize("action,force,expected_force", [
+    ("shutdown", False, False),
+    ("shutdown", True, True),
+    ("restart", True, True),
+    ("sleep", True, False),  # スリープに強制はない
+])
+def test_power_runs_after_cleaning_up(action, force, expected_force):
+    backend = NullInput()
+    backend.virtual_installed = True
+    backend.virtual_enabled = True
+
+    async def body(url):
+        ws, _ = await open_session(url)
+        await ws.send(json.dumps({"t": "power", "action": action, "force": force}))
+        notice = await recv_json(ws, "notice")
+        assert "PC を" in notice["message"]
+        for _ in range(100):
+            if backend.power_calls:
+                break
+            await asyncio.sleep(0.02)
+        await ws.close()
+
+    asyncio.run(with_server(body, backend))
+    assert backend.power_calls == [(action, expected_force)]
+    assert backend.virtual_enabled is False  # 先に、仮想ディスプレイを無効に戻している
+
+
+def test_power_rejects_unknown_action():
+    backend = NullInput()
+
+    async def body(url):
+        ws, _ = await open_session(url)
+        await ws.send(json.dumps({"t": "power", "action": "format"}))
+        err = await recv_json(ws, "error")
+        assert "使えない" in err["message"]
+        await ws.close()
+
+    asyncio.run(with_server(body, backend))
+    assert backend.power_calls == []
+
+
+def test_power_failure_is_reported():
+    backend = NullInput()
+    backend.power_error = "アクセスが拒否されました"
+
+    async def body(url):
+        ws, _ = await open_session(url)
+        await ws.send(json.dumps({"t": "power", "action": "shutdown"}))
+        err = await recv_json(ws, "error")
+        assert "シャットダウンできませんでした" in err["message"] and "拒否" in err["message"]
+        await ws.close()
+
+    asyncio.run(with_server(body, backend))

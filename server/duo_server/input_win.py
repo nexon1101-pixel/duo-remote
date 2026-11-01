@@ -23,6 +23,10 @@ EXTENDED_VKS = {
 }
 
 
+class PowerError(Exception):
+    """電源の操作（シャットダウン、再起動、スリープ）が、できなかった。"""
+
+
 class ClipboardError(Exception):
     """PCのクリップボードを読み書きできなかった。"""
 
@@ -94,6 +98,8 @@ class NullInput(_BringMixin):
         self._virtual_height = 1080
         self.clipboard = ""
         self.keep_awake_calls: list[bool] = []  # keep_awake に渡された値の記録
+        self.power_calls: list[tuple[str, bool]] = []  # power に渡された値の記録
+        self.power_error: str | None = None  # 設定すると、power が失敗する
         # クリップボードの、ファイルと画像（テスト用）。画像は ("png", PNGのバイト列) か ("dib", DIBのバイト列)
         self.clipboard_files: list[str] = []
         self.clipboard_image: tuple[str, bytes] | None = None
@@ -253,6 +259,11 @@ class NullInput(_BringMixin):
 
     def keep_awake(self, on: bool) -> None:
         self.keep_awake_calls.append(on)  # calls には入れない（入力の記録と分けておく）
+
+    def power(self, action: str, force: bool = False) -> None:
+        if self.power_error:
+            raise PowerError(self.power_error)
+        self.power_calls.append((action, force))
 
 
 def is_blank_bgra(data: bytes) -> bool:
@@ -1073,6 +1084,27 @@ if sys.platform == "win32":
             flags = ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED if on else ES_CONTINUOUS
             if not kernel32.SetThreadExecutionState(flags):
                 log.warning("SetThreadExecutionState が失敗しました")
+
+        def power(self, action: str, force: bool = False) -> None:
+            """PC の電源を操作する。シャットダウンと再起動は、3秒後に始める（返事を返す時間のため）。
+            force が真のときは、開いているアプリを、保存の確認なしで閉じる。"""
+            import subprocess
+            import threading
+
+            if action == "sleep":
+                # 休止状態が有効だと、休止状態になる（Windows の決まり）
+                powrprof = ctypes.WinDLL("powrprof", use_last_error=True)
+                threading.Timer(2.0, lambda: powrprof.SetSuspendState(False, True, False)).start()
+                return
+            if action not in ("shutdown", "restart"):
+                raise PowerError("使えない操作です")
+            args = ["shutdown", "/s" if action == "shutdown" else "/r", "/t", "3"]
+            if force:
+                args.append("/f")
+            result = subprocess.run(args, capture_output=True, creationflags=0x08000000)  # CREATE_NO_WINDOW
+            if result.returncode != 0:
+                detail = result.stderr.decode("mbcs", errors="replace").strip()
+                raise PowerError(detail or "電源の操作に失敗しました")
 
         def clip_files(self) -> list[str]:
             return _clip_files()

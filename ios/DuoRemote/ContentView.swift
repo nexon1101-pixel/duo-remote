@@ -45,6 +45,8 @@ struct ContentView: View {
     @State private var showingWindows = false
     @State private var showingMonitors = false
     @State private var showingSettings = false
+    /// 確認中の電源の操作（shutdown、restart、sleep）
+    @State private var pendingPower: String?
     /// 映像を拡大しているか（「拡大を戻す」のボタンを出すため）
     @State private var videoZoomed = false
     /// 写真・ファイルの選択画面を出すか、と、PC のクリップボードにも入れるか
@@ -343,6 +345,25 @@ struct ContentView: View {
                 virtualAspect: fitSize.height > 0 ? Double(fitSize.width / fitSize.height) : 0
             )
         }
+        .confirmationDialog(
+            powerTitle,
+            isPresented: Binding(get: { pendingPower != nil }, set: { if !$0 { pendingPower = nil } }),
+            titleVisibility: .visible
+        ) {
+            if let action = pendingPower {
+                Button(powerLabel(action)) { session.power(action) }
+                if action != "sleep" {
+                    Button("開いているアプリを閉じて\(powerLabel(action))", role: .destructive) {
+                        session.power(action, force: true)
+                    }
+                }
+            }
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            if pendingPower != nil && pendingPower != "sleep" {
+                Text("保存していない内容がある場合、アプリが止めることがあります。「アプリを閉じて」を選ぶと、保存していない内容は失われます")
+            }
+        }
         .fileSendPickers(
             photosShown: $showingPhotoPicker,
             filesShown: $showingFileImporter,
@@ -361,6 +382,19 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .GCKeyboardDidDisconnect)) { _ in
             if inputMode == .hardware { inputMode = .touch }
         }
+    }
+
+    private func powerLabel(_ action: String) -> String {
+        switch action {
+        case "sleep": return "スリープ"
+        case "restart": return "再起動"
+        default: return "シャットダウン"
+        }
+    }
+
+    private var powerTitle: String {
+        guard let action = pendingPower else { return "" }
+        return "PC を\(powerLabel(action))しますか？"
     }
 
     /// 映像を出している範囲の大きさ（余白を除く）。ウィンドウや仮想画面の大きさを、これに合わせる
@@ -621,6 +655,11 @@ struct ContentView: View {
                 }
             }
             Divider()
+            Menu("PC の電源", systemImage: "power") {
+                Button("スリープ", systemImage: "moon") { pendingPower = "sleep" }
+                Button("再起動", systemImage: "arrow.clockwise") { pendingPower = "restart" }
+                Button("シャットダウン", systemImage: "power") { pendingPower = "shutdown" }
+            }
             Button("設定", systemImage: "slider.horizontal.3") { showingSettings = true }
             Button("切断", systemImage: "xmark.circle", role: .destructive) { session.disconnect() }
         } label: {
