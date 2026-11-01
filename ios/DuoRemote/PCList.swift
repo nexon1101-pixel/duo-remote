@@ -120,6 +120,8 @@ struct PCListSection: View {
         var profile: PCProfile
         var token: String
         var isNew: Bool
+        /// 登録せずに、入力した内容で1回だけつなぐ
+        var connectOnly = false
         var id: UUID { profile.id }
     }
 
@@ -153,6 +155,12 @@ struct PCListSection: View {
                         editing = EditTarget(profile: PCProfile(), token: "", isNew: true)
                     } label: {
                         Label("PC を追加", systemImage: "plus")
+                    }
+                    Spacer()
+                    Button {
+                        editing = EditTarget(profile: PCProfile(), token: "", isNew: true, connectOnly: true)
+                    } label: {
+                        Label("手入力", systemImage: "keyboard")
                     }
                     Spacer()
                     Button {
@@ -196,6 +204,8 @@ struct PCListSection: View {
                 store.save(profile, token: token)
             } onDelete: { id in
                 store.delete(id)
+            } onConnect: { profile, token in
+                connect(profile, token)
             }
         }
         .sheet(isPresented: $showingUpSnap) {
@@ -377,23 +387,47 @@ private struct PCEditSheet: View {
     private let isNew: Bool
     private let onSave: (PCProfile, String) -> Void
     private let onDelete: (UUID) -> Void
+    private let onConnect: (PCProfile, String) -> Void
+    private let connectOnly: Bool
     @State private var confirmDelete = false
 
     init(target: PCListSection.EditTarget,
          onSave: @escaping (PCProfile, String) -> Void,
-         onDelete: @escaping (UUID) -> Void) {
+         onDelete: @escaping (UUID) -> Void,
+         onConnect: @escaping (PCProfile, String) -> Void) {
         _profile = State(initialValue: target.profile)
         _token = State(initialValue: target.token)
         isNew = target.isNew
+        connectOnly = target.connectOnly
         self.onSave = onSave
         self.onDelete = onDelete
+        self.onConnect = onConnect
+    }
+
+    private var cleanedProfile: PCProfile {
+        var saved = profile
+        saved.name = ContentView.cleaned(saved.name)
+        saved.host = ContentView.cleaned(saved.host)
+        saved.hostRemote = ContentView.cleaned(saved.hostRemote)
+        saved.port = ContentView.cleaned(saved.port).isEmpty ? "8765" : ContentView.cleaned(saved.port)
+        saved.mac = ContentView.cleaned(saved.mac)
+        saved.broadcast = ContentView.cleaned(saved.broadcast)
+        saved.deviceIP = ContentView.cleaned(saved.deviceIP)
+        return saved
+    }
+
+    private var canSave: Bool {
+        !(profile.host.trimmingCharacters(in: .whitespaces).isEmpty
+          && profile.hostRemote.trimmingCharacters(in: .whitespaces).isEmpty)
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("名前") {
-                    TextField("例: 自宅の PC", text: $profile.name)
+                if !connectOnly {
+                    Section("名前") {
+                        TextField("例: 自宅の PC", text: $profile.name)
+                    }
                 }
                 Section {
                     TextField("自宅のホスト（例: 192.168.0.200）", text: $profile.host)
@@ -429,6 +463,7 @@ private struct PCEditSheet: View {
                 } header: {
                     Text("接続先")
                 }
+                if !connectOnly {
                 Section {
                     TextField("MAC アドレス（有線）", text: $profile.mac)
                         .textInputAutocapitalization(.never)
@@ -448,33 +483,42 @@ private struct PCEditSheet: View {
                 } footer: {
                     Text("自宅の Wi-Fi では、MAC アドレスとブロードキャストで直接起こせます。外出先では、UpSnap を通して起こします")
                 }
+                }
+                if isNew && !connectOnly {
+                    Section {
+                        Button("保存せずに、この内容で接続") {
+                            onConnect(cleanedProfile, ContentView.cleaned(token))
+                            dismiss()
+                        }
+                        .disabled(!canSave || token.isEmpty)
+                    }
+                }
                 if !isNew {
                     Section {
                         Button("この PC を削除", role: .destructive) { confirmDelete = true }
                     }
                 }
             }
-            .navigationTitle(isNew ? "PC を追加" : "PC の設定")
+            .navigationTitle(connectOnly ? "手入力で接続" : (isNew ? "PC を追加" : "PC の設定"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("キャンセル") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
-                        var saved = profile
-                        saved.name = ContentView.cleaned(saved.name)
-                        saved.host = ContentView.cleaned(saved.host)
-                        saved.hostRemote = ContentView.cleaned(saved.hostRemote)
-                        saved.port = ContentView.cleaned(saved.port).isEmpty ? "8765" : ContentView.cleaned(saved.port)
-                        saved.mac = ContentView.cleaned(saved.mac)
-                        saved.broadcast = ContentView.cleaned(saved.broadcast)
-                        saved.deviceIP = ContentView.cleaned(saved.deviceIP)
-                        onSave(saved, ContentView.cleaned(token))
-                        dismiss()
+                    if connectOnly {
+                        Button("接続") {
+                            onConnect(cleanedProfile, ContentView.cleaned(token))
+                            dismiss()
+                        }
+                        .disabled(!canSave || token.isEmpty)
+                    } else {
+                        Button("保存") {
+                            onSave(cleanedProfile, ContentView.cleaned(token))
+                            dismiss()
+                        }
+                        .disabled(!canSave)
                     }
-                    .disabled(profile.host.trimmingCharacters(in: .whitespaces).isEmpty
-                              && profile.hostRemote.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
             .confirmationDialog("この PC を削除しますか？", isPresented: $confirmDelete, titleVisibility: .visible) {
