@@ -22,6 +22,8 @@ struct ContentView: View {
     @AppStorage("quality") private var quality = VideoQuality.high
     @AppStorage("audioOn") private var audioOn = false
     @AppStorage("audioMix") private var audioMix = false
+    @AppStorage("audioVolume") private var audioVolume = 1.0
+    @AppStorage("muteLocal") private var muteLocal = false
     /// 画面の端の余白（ポイント）。Duo の角が丸く、映像の角が削れるときに、広げる
     @AppStorage("edgeMargin") private var edgeMargin = 0
     @AppStorage(RemoteSession.virtualScaleKey) private var virtualScale = 1.0
@@ -150,6 +152,8 @@ struct ContentView: View {
         }
         .onChange(of: audioOn) { _, _ in session.setAudio(audioOn, mixWithOthers: audioMix) }
         .onChange(of: audioMix) { _, _ in session.setAudio(audioOn, mixWithOthers: audioMix) }
+        .onChange(of: audioVolume) { _, value in session.setAudioVolume(value) }
+        .onChange(of: muteLocal) { _, value in session.setLocalMute(value) }
         // 音を始められなかったら、スイッチをオフに戻す
         .onChange(of: session.audioFailures) { _, _ in audioOn = false }
     }
@@ -649,6 +653,15 @@ struct ContentView: View {
             }
             Divider()
             Toggle("PC の音声を再生", systemImage: session.audioOn ? "speaker.wave.2.fill" : "speaker.slash", isOn: $audioOn)
+            Menu("音量", systemImage: "speaker.wave.2") {
+                Picker("音量", selection: $audioVolume) {
+                    ForEach([1.0, 0.75, 0.5, 0.25], id: \.self) { level in
+                        Text("\(Int(level * 100))%").tag(level)
+                    }
+                }
+                .pickerStyle(.inline)
+            }
+            Toggle("PC のスピーカーを消音", systemImage: "speaker.slash.circle", isOn: $muteLocal)
             Toggle("ゲームモード", systemImage: "gamecontroller", isOn: $gameMode)
             Menu("入力方法", systemImage: "keyboard") {
                 Picker("入力方法", selection: $inputMode) {
@@ -856,6 +869,8 @@ struct ContentView: View {
         port = Self.cleaned(pc.port)
         token = Self.cleaned(savedToken)
         session.setAudio(audioOn, mixWithOthers: audioMix)
+        session.setAudioVolume(audioVolume)
+        session.setLocalMute(muteLocal)
         session.connect(hosts: hostCandidates(), port: Int(port) ?? 8765, token: token, quality: quality)
     }
 

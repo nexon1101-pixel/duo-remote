@@ -12,7 +12,7 @@ final class AudioPlayer: @unchecked Sendable {
     var onFailure: (@Sendable (String) -> Void)?
 
     /// 溜まった音がこれ（秒）を超えたら、新しい音を捨てる。遅れをためないため
-    private static let maxQueuedSeconds = 0.3
+    private static let maxQueuedSeconds = 0.15
 
     private let queue = DispatchQueue(label: "duo.audio")
     private var engine: AVAudioEngine?
@@ -23,6 +23,8 @@ final class AudioPlayer: @unchecked Sendable {
     private var converter: AVAudioConverter?
     private var mixWithOthers = false
     private var queuedFrames = 0
+    /// 音量（0〜1）
+    private var volume: Float = 1
     private var observers: [NSObjectProtocol] = []
 
     /// 鳴らし始める。すでに鳴らしていれば、やり直す
@@ -79,6 +81,14 @@ final class AudioPlayer: @unchecked Sendable {
             node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
                 self?.queue.async { self?.queuedFrames -= frames }
             }
+        }
+    }
+
+    /// 音量を変える（0〜1）。鳴らしている最中でも、鳴らす前でも使える
+    func setVolume(_ value: Float) {
+        queue.async { [self] in
+            volume = min(max(value, 0), 1)
+            engine?.mainMixerNode.outputVolume = volume
         }
     }
 
@@ -145,6 +155,8 @@ final class AudioPlayer: @unchecked Sendable {
         let session = AVAudioSession.sharedInstance()
         // .playback は、消音スイッチがオンでも鳴る
         try session.setCategory(.playback, mode: .default, options: mixWithOthers ? [.mixWithOthers] : [])
+        // 出力の小さな溜めを短くして、音の遅れを減らす（5ミリ秒。端末が受け付ける範囲に丸められる）
+        try? session.setPreferredIOBufferDuration(0.005)
         try session.setActive(true)
     }
 
@@ -154,6 +166,7 @@ final class AudioPlayer: @unchecked Sendable {
         let node = AVAudioPlayerNode()
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
+        engine.mainMixerNode.outputVolume = volume
         try engine.start()
         node.play()
         self.engine = engine

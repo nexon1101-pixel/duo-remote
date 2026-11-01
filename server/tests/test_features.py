@@ -324,3 +324,38 @@ def test_power_failure_is_reported():
         await ws.close()
 
     asyncio.run(with_server(body, backend))
+
+
+def test_local_mute_on_and_restored_when_connection_ends():
+    backend = NullInput()
+
+    async def body(url):
+        ws, _ = await open_session(url)
+        await ws.send(json.dumps({"t": "local_mute", "on": True}))
+        for _ in range(100):
+            if backend.output_muted:
+                break
+            await asyncio.sleep(0.02)
+        assert backend.output_muted
+        await ws.close()
+        for _ in range(100):
+            if not backend.output_muted:
+                break
+            await asyncio.sleep(0.02)
+
+    asyncio.run(with_server(body, backend))
+    assert backend.mute_calls == [True, False]  # 接続が終わると、元に戻っている
+
+
+def test_local_mute_failure_is_reported():
+    backend = NullInput()
+    backend.mute_error = "pycaw が入っていません"
+
+    async def body(url):
+        ws, _ = await open_session(url)
+        await ws.send(json.dumps({"t": "local_mute", "on": True}))
+        err = await recv_json(ws, "error")
+        assert "消せませんでした" in err["message"] and "pycaw" in err["message"]
+        await ws.close()
+
+    asyncio.run(with_server(body, backend))

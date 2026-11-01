@@ -719,6 +719,19 @@ final class RemoteSession: ObservableObject {
         requestAudio()
     }
 
+    /// PC の音の音量（0〜1）。iPhone で鳴らす音だけが変わる
+    func setAudioVolume(_ value: Double) {
+        audio.setVolume(Float(value))
+    }
+
+    /// 接続している間、PC のスピーカーを消音にするか。つながったとき、つなぎ直したときも、送り直す
+    func setLocalMute(_ on: Bool) {
+        muteLocal = on
+        if state == .connected { send(["t": "local_mute", "on": on]) }
+    }
+
+    private var muteLocal = false
+
     private func requestAudio() {
         if audioWanted {
             // 音は Opus で圧縮して受け取る（PCM の約 1.5Mbps が、約 0.1Mbps になる）。Opus は 48000Hz だけ。
@@ -877,6 +890,7 @@ final class RemoteSession: ObservableObject {
             startHeartbeat(for: source)
             startUDP(from: json)
             if audioWanted { requestAudio() }
+            if muteLocal { send(["t": "local_mute", "on": true]) }
             if reconnected {
                 show(notice: "再接続しました")
                 // サーバーは本物の画面全体から始めるので、見ていた表示（仮想画面、ウィンドウ）に戻す
