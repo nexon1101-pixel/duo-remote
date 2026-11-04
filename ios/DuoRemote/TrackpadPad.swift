@@ -7,7 +7,7 @@ import UIKit
 /// - 1本指で動かす＝カーソルを動かす（速く動かすほど、多めに動く）
 /// - 1本指でタップ＝左クリック、2本指でタップ＝右クリック、3本指でタップ＝カーソルを、見えている映像の真ん中に持ってくる
 /// - 2本指で動かす＝スクロール（指を離したあとも、少し流れ続ける）。映像を拡大しているときは、スクロールではなく、映像を映す位置を動かす
-/// - 右端の細い帯を、1本指で上下になぞる＝スクロール
+/// - 右端の細い帯を、1本指で上下になぞる＝スクロール（はじいて指を止めたままにすると、その向きに進み続ける。指を離したあとも、少し流れ続ける）
 /// - 長押ししてから動かす＝左ボタンを押したまま動かす（ドラッグ）
 /// - クリックの場所（文字は出さず、薄い線で分ける）。押している間だけ、ボタンを押した状態にする。
 ///   押したまま、パッドを別の指で動かすと、ドラッグになる。場所は、使い方で変える（ClickZoneLayout）
@@ -88,14 +88,31 @@ struct TrackpadPad: View {
 
 /// パッドの右端の、1本指でスクロールする帯。上下になぞると、ホイールを回す。
 /// 向きは、2本指のスクロールと同じ（指を下に動かすと、画面が上へ動く）
+/// はじいて指を止めたままにすると、その向きに進み続ける。指を離したあとも、少し流れ続ける
 private struct ScrollStrip: View {
     let send: @MainActor ([String: Any]) -> Void
 
     @State private var sent: CGFloat = 0 // 送り済みのホイール量（wheelSubdivisions 単位）
     @State private var active = false
+    @State private var keepTask: Task<Void, Never>?
+    @State private var inertiaTask: Task<Void, Never>?
+    /// 指を止めたままにしたとき、進み続ける向き（指を下に動かしたときが 1、上に動かしたときが -1）
+    @State private var keepDirection: CGFloat = 0
+    /// 指を離した速さを求めるための、最後に指が動いたときの記録
+    @State private var sampleTime: Date?
+    @State private var sampleTranslation: CGFloat = 0
+    @State private var sampleVelocity: CGFloat = 0
 
     /// 指の動きに対する、スクロール量の倍率（帯が短いので、2本指より少し多めにする）
     private static let gain: CGFloat = 1.5
+    /// 指を止めたままにしたとみなす、指の動きの大きさ（ポイント）。これより小さい動きでは、進み続けない
+    private static let keepMinDistance: CGFloat = 20
+    /// 指が止まってから、進み始めるまでの時間（秒）と、進む間隔（秒）と、1回に進む量（wheelSubdivisions 単位）
+    private static let keepDelay: TimeInterval = 0.35
+    private static let keepInterval: TimeInterval = 0.05
+    private static let keepStep: CGFloat = 3
+    /// 指を離したときに、流れ始めるとみなす速さ（ポイント／秒）。2本指のスクロールと同じ
+    private static let inertiaMinSpeed: CGFloat = 300
 
     var body: some View {
         ZStack {
@@ -114,7 +131,31 @@ private struct ScrollStrip: View {
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
+                    stopInertia()
                     active = true
+                    // 指の速さを記録する。少し間があいたときは、その前の動きでまとめて求める
+                    if let sampleTime {
+                        let dt = CGFloat(value.time.timeIntervalSince(sampleTime))
+                        if dt >= 0.01 {
+                            let instant = (value.translation.height - sampleTranslation) / dt
+                            sampleVelocity = sampleVelocity * 0.5 + instant * 0.5
+                            self.sampleTime = value.time
+                            sampleTranslation = value.translation.height
+                        }
+                    } else {
+                        sampleTime = value.time
+                        sampleTranslation = value.translation.height
+                        sampleVelocity = 0
+                    }
+                    // 指が動いているあいだは、止めたままの続きを始め直す（止まってから数え直す）
+                    if value.translation.height >= Self.keepMinDistance {
+                        keepDirection = 1
+                    } else if value.translation.height <= -Self.keepMinDistance {
+                        keepDirection = -1
+                    } else {
+                        keepDirection = 0
+                    }
+                    scheduleKeep()
                     let scale = TouchInput.wheelSubdivisions / TouchInput.pointsPerWheelStep * Self.gain
                     let total = (value.translation.height * scale).rounded(.towardZero)
                     let delta = total - sent
@@ -122,12 +163,76 @@ private struct ScrollStrip: View {
                     sent = total
                     send(["t": "scroll", "dx": 0.0, "dy": Double(delta / TouchInput.wheelSubdivisions)])
                 }
-                .onEnded { _ in
+                .onEnded { value in
+                    stopKeep()
                     active = false
                     sent = 0
+                    keepDirection = 0
+                    // 指が止まってから離したときは、流さない（止めたままの続きと、二重にならないように）
+                    var velocity: CGFloat = 0
+                    if let sampleTime, value.time.timeIntervalSince(sampleTime) < 0.1 {
+                        velocity = sampleVelocity
+                    }
+                    sampleTime = nil
+                    sampleTranslation = 0
+                    sampleVelocity = 0
+                    startInertia(velocity: velocity)
                 }
         )
+        .onDisappear {
+            stopKeep()
+            stopInertia()
+        }
         .accessibilityLabel("スクロール")
+    }
+
+    /// 指を止めたままにしたら、その向きにホイールを送り続ける
+    private func scheduleKeep() {
+        stopKeep()
+        guard keepDirection != 0 else { return }
+        let direction = keepDirection
+        keepTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(Self.keepDelay))
+            while !Task.isCancelled {
+                send(["t": "scroll", "dx": 0.0, "dy": Double(direction * Self.keepStep / TouchInput.wheelSubdivisions)])
+                try? await Task.sleep(for: .seconds(Self.keepInterval))
+            }
+        }
+    }
+
+    private func stopKeep() {
+        keepTask?.cancel()
+        keepTask = nil
+    }
+
+    /// 指を離したあとも、だんだん遅くしながらスクロールを続ける（2本指のスクロールと同じ決め方）
+    private func startInertia(velocity: CGFloat) {
+        stopInertia()
+        guard abs(velocity) > Self.inertiaMinSpeed else { return }
+        inertiaTask = Task { @MainActor in
+            var v = velocity
+            var advanced: CGFloat = 0 // 指が離れてから、進んだことにする動きの合計（ポイント）
+            var inertiaSent: CGFloat = 0 // 送り済みのホイール量（wheelSubdivisions 単位）
+            let frame = 1.0 / 60
+            while !Task.isCancelled, abs(v) > 30 {
+                try? await Task.sleep(for: .seconds(frame))
+                guard !Task.isCancelled else { return }
+                advanced += v * frame
+                let scale = TouchInput.wheelSubdivisions / TouchInput.pointsPerWheelStep * Self.gain
+                let total = (advanced * scale).rounded(.towardZero)
+                let delta = total - inertiaSent
+                if delta != 0 {
+                    inertiaSent = total
+                    send(["t": "scroll", "dx": 0.0, "dy": Double(delta / TouchInput.wheelSubdivisions)])
+                }
+                v *= 0.93
+            }
+        }
+    }
+
+    private func stopInertia() {
+        inertiaTask?.cancel()
+        inertiaTask = nil
     }
 }
 
