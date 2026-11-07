@@ -19,6 +19,7 @@
               {"cmd": "mode", "mode": "window", "id": 123} / {"cmd": "mode", "mode": "screen"}
               {"cmd": "quality", "max_height": 0, "fps": 15, "bitrate": 8000}（0 は元の大きさ）
               {"cmd": "clip"} / {"cmd": "clipset", "s": "貼る文字"} / {"cmd": "ping"} / {"cmd": "info"}
+              {"cmd": "peek", "x": 0.5, "y": 0.5}  （入力欄を全選択＋コピーして中身を読み、クリップボードは元に戻す）
               {"cmd": "quit"}
   返事:       {"ok": true, ...}（"id" を付けると、そのまま返す）
 
@@ -309,6 +310,28 @@ class DuoClient:
         if name == "clipset":
             await self._send({"t": "clip_set", "s": cmd["s"]})
             return {}
+        if name == "peek":
+            # 入力欄の中身を読む：今のクリップボードを退避 →（任意でクリックして）全選択＋コピー
+            # → クリップボードを読む → 元のクリップボード（文字のときだけ）に戻す。
+            # パスワード欄は OS がコピーさせないので読めない。ターミナルでは Ctrl+C が
+            # 中断になることがあるので、そういう場所では使わないこと。
+            if "x" in cmd and "y" in cmd:
+                await self._send({"t": "button", "b": "left", "d": "down", "x": cmd["x"], "y": cmd["y"]})
+                await self._send({"t": "button", "b": "left", "d": "up"})
+                await asyncio.sleep(0.15)
+            await self._send({"t": "clip_get"})
+            saved = (await self._wait_for("clip", timeout=10)).get("s", "")
+            await self.run_command({"cmd": "chord", "keys": ["ctrl", "a"]})
+            await self.run_command({"cmd": "chord", "keys": ["ctrl", "c"]})
+            await asyncio.sleep(0.25)
+            await self._send({"t": "clip_get"})
+            got = (await self._wait_for("clip", timeout=10)).get("s", "")
+            if saved:
+                await self._send({"t": "clip_set", "s": saved})
+            # 選択状態を解除しておく（末尾へ）
+            await self._send({"t": "key", "vk": 39, "d": "down"})
+            await self._send({"t": "key", "vk": 39, "d": "up"})
+            return {"s": got}
         if name == "bring":
             self.last_error = None
             await self._send({"t": "bring", "id": int(cmd["id"])})

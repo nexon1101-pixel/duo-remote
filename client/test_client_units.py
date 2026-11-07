@@ -107,3 +107,15 @@ def test_clipset_sends_clip_set():
     client, sent = make_client()
     run(client, {"cmd": "clipset", "s": "貼る文字"})
     assert sent == [{"t": "clip_set", "s": "貼る文字"}]
+
+
+def test_peek_reads_via_clipboard_and_restores():
+    client, sent = make_client({"clip": {"t": "clip", "s": "欄の中身"}})
+    out = run(client, {"cmd": "peek"})
+    assert out == {"s": "欄の中身"}
+    types = [m["t"] for m in sent]
+    # 退避の clip_get → 全選択＋コピー（key の並び）→ clip_get → 復帰の clip_set → 選択解除の key
+    assert types[0] == "clip_get"
+    clip_gets = [i for i, t in enumerate(types) if t == "clip_get"]
+    assert len(clip_gets) == 2
+    assert "clip_set" in types[clip_gets[1]:]
