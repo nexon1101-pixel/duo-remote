@@ -5,13 +5,14 @@ git clone で取った場合は git pull、ZIP で取った場合は ZIP を取�
 """
 from __future__ import annotations
 
+import base64
 import io
+import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
-import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -57,21 +58,25 @@ def install_method(root: Path = REPO_ROOT) -> str:
 
 
 def _download(url: str, timeout: float) -> bytes:
-    # raw.githubusercontent.com は、数分間、古い内容を返すことがある。古い表示を読まないようにする
+    # 途中の保存（キャッシュ）に残った古い内容を読まないよう、再利用しない指定も付ける
     req = urllib.request.Request(url, headers={"User-Agent": "duo-remote-updater", "Cache-Control": "no-cache"})
     with urllib.request.urlopen(req, timeout=timeout) as res:
         return res.read()
 
 
 def latest_version(timeout: float = 10) -> str:
-    # 毎回違う値を付けて、途中の保存（キャッシュ）に残った古い内容を読まないようにする
-    url = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/server/duo_server/__init__.py?nocache={int(time.time())}"
+    # raw.githubusercontent.com は、?nocache= を付けても、長い間古い内容を返すことがあった
+    # （2026-11-07 の実機で、push のあとも「最新は 0.28.1」と出続けた）。
+    # GitHub API（contents）は、その保存を経由しないので、こちらで __init__.py の中身を取る。
+    url = f"https://api.github.com/repos/{REPO}/contents/server/duo_server/__init__.py?ref={BRANCH}"
     try:
-        text = _download(url, timeout).decode("utf-8")
+        data = json.loads(_download(url, timeout).decode("utf-8"))
+        # 中身は base64（途中に改行が入る）で届く
+        text = base64.b64decode(data["content"]).decode("utf-8")
         return parse_version(text)
     except UpdateError as e:
         raise UpdateError(f"新しい版を調べられませんでした: {e}") from e
-    except (OSError, ValueError) as e:  # URLError、タイムアウト、文字コードの誤りなど
+    except (OSError, ValueError, KeyError, TypeError) as e:  # URLError、JSON や base64 の形の誤り、項目なしなど
         raise UpdateError(f"新しい版を調べられませんでした: {e}") from e
 
 

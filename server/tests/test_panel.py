@@ -114,6 +114,14 @@ def test_status(app):
     assert data["pad"]["available"] is False and data["pad"]["reason"]
 
 
+def test_status_version_is_running_package_version(app):
+    """画面に出る版数は、管理画面のプロセス自身が読み込んだパッケージの版数（__version__）。"""
+    import duo_server
+
+    status, data = app("GET", "/api/status")
+    assert status == 200 and data["version"] == duo_server.__version__
+
+
 def test_start_stop_restart(app):
     status, data = app("POST", "/api/start")
     assert status == 200 and data["running"] is True
