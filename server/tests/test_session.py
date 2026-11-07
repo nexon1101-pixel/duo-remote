@@ -106,6 +106,7 @@ def test_welcome_video_and_input():
             welcome = json.loads(await ws.recv())
             assert welcome == {
                 "t": "welcome", "v": 1, "w": 960, "h": 540, "codec": "h264", "mode": "screen", "virtual": False, "pad": False,
+                "role": "control",
             }
             key, ts, payload = await recv_frame(ws)
             assert key and payload.endswith(b"KEY")
@@ -314,23 +315,61 @@ def test_clamp_region():
     assert clamp_region((1900, 0, 800, 600), (1920, 1080)) is None  # はみ出して、小さすぎる
 
 
-def test_new_client_replaces_old_and_stream_is_stopped():
+def test_second_client_is_viewer_and_first_keeps_control():
     streams = []
 
     async def body(url, backend):
         async with connect(url) as first:
             await first.send(hello())
-            await first.recv()
+            assert (await recv_until(first, "welcome"))["role"] == "control"
             async with connect(url) as second:
                 await second.send(hello())
-                assert json.loads(await second.recv())["t"] == "welcome"
-                with pytest.raises(ConnectionClosed):
-                    while True:
-                        await asyncio.wait_for(first.recv(), 3)
+                welcome = await recv_until(second, "welcome")
+                assert welcome["role"] == "view"  # 操作の枠が埋まっているので、視聴になる
+                notice = await recv_until(second, "notice")
+                assert "視聴モード" in notice["message"]
+                # 視聴にも映像は届く
+                key, _, payload = await recv_frame(second)
+                assert key and payload.endswith(b"KEY")
+                # 最初の接続は生きていて、操作もできる
+                await first.send(json.dumps({"t": "move", "x": 0.5, "y": 0.5}))
+                await first.send(json.dumps({"t": "ping", "n": 1}))
+                await recv_until(first, "pong")
+                assert ("move", 0.5, 0.5) in backend.calls
         await asyncio.sleep(0.2)
         assert len(streams) == 2 and all(s.stopped for s in streams)
 
     asyncio.run(run_with_server(body, streams=streams))
+
+
+def test_viewer_cannot_operate_but_can_ask():
+    async def body(url, backend):
+        async with connect(url) as controller:
+            await controller.send(hello())
+            await recv_until(controller, "welcome")
+            async with connect(url) as viewer:
+                await viewer.send(hello(role="view"))
+                assert (await recv_until(viewer, "welcome"))["role"] == "view"
+                send = lambda **m: viewer.send(json.dumps(m))
+                # 入力は静かに捨てられる（backend に届かない。ping の返事だけが返る）
+                await send(t="move", x=0.5, y=0.5)
+                await send(t="key", vk=0x41, d="down")
+                await send(t="ping", n=7)
+                assert (await recv_until(viewer, "pong"))["n"] == 7
+                assert backend.calls == []
+                # 状態を変える操作は、error で断られる
+                await send(t="mode", mode="screen")
+                assert (await recv_until(viewer, "error"))["message"] == "視聴モードでは、この操作はできません"
+                await send(t="clip_set", s="x")
+                await recv_until(viewer, "error")
+                assert backend.calls == []
+                # 問い合わせは使える
+                await send(t="list_windows")
+                assert (await recv_until(viewer, "windows"))["list"] == []
+                await send(t="clip_get")
+                assert (await recv_until(viewer, "clip"))["s"] == ""
+
+    asyncio.run(run_with_server(body))
 
 
 def test_text_newlines_become_enter():
@@ -396,7 +435,7 @@ def test_window_that_cannot_be_captured_falls_back_to_screen():
     asyncio.run(run_with_server(body, backend=make_backend(), stream_cls=WindowFailsStream))
 
 
-def test_unresponsive_previous_client_does_not_delay_new_one():
+def test_unresponsive_controller_keeps_slot_and_new_client_is_viewer():
     streams = []
 
     async def body(url, backend):
@@ -412,12 +451,17 @@ def test_unresponsive_previous_client_does_not_delay_new_one():
             started = loop.time()
             async with connect(url) as second:
                 await second.send(hello())
-                await recv_until(second, "welcome")
+                welcome = await recv_until(second, "welcome")
+                # 応答しない操作中の接続に待たされず、視聴としてすぐつながる
                 assert loop.time() - started < 1.0
-            # 前の接続の後片付けが、新しい映像の前に終わっている
-            assert streams[0].stopped
-            assert ("key", 0x41, False) in backend.calls
+                assert welcome["role"] == "view"
             first.transport.resume_reading()
+        # 操作中の接続が実際に切れたら、押したままのキーは離される
+        for _ in range(40):
+            if ("key", 0x41, False) in backend.calls:
+                break
+            await asyncio.sleep(0.05)
+        assert ("key", 0x41, False) in backend.calls
 
     asyncio.run(run_with_server(body, streams=streams))
 

@@ -43,8 +43,6 @@ VIRTUAL_RETRY_SEC = 1.5
 RESTART_DELAY_SEC = 1.0
 RESTART_MAX = 5
 RESTART_WINDOW_SEC = 30
-# 前の接続の後片付けを待つ時間の上限
-PREVIOUS_CLEANUP_SEC = 3
 # 送り待ちの映像がこれを超えたら、次のキーフレームまで映像を捨てる（遅れをためないため）
 MAX_QUEUED_FRAMES = 4
 MAX_BUFFERED_BYTES = 256 * 1024
@@ -67,6 +65,16 @@ TRANSPORTS = ("tcp", "udp", "auto")
 
 # 操作の入力のメッセージ。数えて、ログに出す（タッチやキーが PC に届いているかを見分けるため）
 INPUT_TYPES = frozenset({"move", "move_rel", "button", "scroll", "key", "text", "ime"})
+
+# 視聴（role="view"）の接続でも受け付けるメッセージ。映像と音のほか、状態を変えない問い合わせだけ
+VIEWER_ALLOWED = frozenset({
+    "list_windows", "window_thumb", "list_monitors", "quality", "transport",
+    "audio", "clip_get", "clip_pull",
+})
+# 視聴の接続では受け付けない、PC の状態を変えるメッセージ。error で理由を返す
+VIEWER_DENIED = frozenset({
+    "mode", "bring", "restore", "power", "local_mute", "clip_set", "file_put", "file_end",
+})
 
 VK_RETURN = 0x0D
 _NEWLINE = re.compile(r"\r\n|\r|\n")
@@ -258,8 +266,11 @@ class Session:
         self, ws: ServerConnection, settings: Settings, backend, stream_factory: StreamFactory,
         audio_factory: AudioFactory | None = None, udp: UdpEndpoint | None = None,
         pad_factory: Callable[[], gamepad.VirtualPad] | None = None, pad_reason: str | None = "未対応です",
+        role: str = "control",
     ) -> None:
         self.ws = ws
+        # 接続の役割。"control" は操作できる（同時に1つだけ）。"view" は視聴だけ
+        self.role = role
         # 仮想のゲームパッド。pad_reason は、使えないときの理由（使えるときは None）
         self.pad_factory = pad_factory
         self.pad_reason = pad_reason
@@ -291,10 +302,6 @@ class Session:
         self._vscale = 1.0  # 最後の mode で指定された、仮想ディスプレイの解像度の倍率（1.0〜2.0）
         loop = asyncio.get_running_loop()
         self.failed: asyncio.Future = loop.create_future()
-        # 別の端末がつながったときに、この接続を終わらせる合図
-        self.kicked: asyncio.Future = loop.create_future()
-        # この接続の後片付け（映像を止める、押したままのキーを離す）が終わった
-        self.finished = asyncio.Event()
         self._stream: Stream | None = None
         self._video: asyncio.Task | None = None
         self._first_frame = asyncio.Event()  # 今の映像の、最初のフレームが届いた
@@ -613,10 +620,6 @@ class Session:
                 log.exception("仮想のゲームパッドを取り外せませんでした")
         log.info("仮想のゲームパッドを取り外しました")
 
-    def kick(self) -> None:
-        if not self.kicked.done():
-            self.kicked.set_result(None)
-
     def _video_done(self, task: asyncio.Task) -> None:
         if task.cancelled() or self.failed.done() or self._verifying:
             return
@@ -837,8 +840,24 @@ class Session:
 
     # --- 制御メッセージ
 
+    async def _viewer_gate(self, msg: dict[str, Any], t: Any) -> bool:
+        """視聴の接続からのメッセージを振り分ける。True なら処理済み（通常の処理には進まない）。
+
+        許可されたものだけ通常の処理に進める。入力は静かに捨て（高頻度なので error を返すと
+        洪水になる）、状態を変える操作には error で理由を返す。"""
+        if t in VIEWER_ALLOWED:
+            return False
+        if t == "ping":
+            await self.send({"t": "pong", "n": msg.get("n")})
+        elif t in VIEWER_DENIED:
+            await self.send({"t": "error", "message": "視聴モードでは、この操作はできません"})
+        # 入力（INPUT_TYPES、pad、pad_off）と、知らない形式は、静かに捨てる
+        return True
+
     async def handle(self, msg: dict[str, Any]) -> None:
         t = msg.get("t")
+        if self.role == "view" and await self._viewer_gate(msg, t):
+            return
         if t == "list_windows":
             await self.send({"t": "windows", "list": await self._window_list()})
         elif t == "window_thumb":
@@ -1158,13 +1177,6 @@ class Session:
                     await self._switch_to_window(wid, region, monitor)
 
 
-async def _close_quietly(ws: ServerConnection, code: int, reason: str) -> None:
-    try:
-        await ws.close(code, reason)
-    except ConnectionClosed:
-        pass
-
-
 def make_handler(
     settings: Settings, backend, stream_factory: StreamFactory, audio_factory: AudioFactory | None = None,
     udp: UdpEndpoint | None = None,
@@ -1177,7 +1189,7 @@ def make_handler(
         pad_ok, pad_reason = pad_probe if pad_probe is not None else gamepad.probe(pad_factory)
     if not pad_ok:
         log.info("仮想のゲームパッドは使えません: %s", pad_reason)
-    active: dict[str, Session | None] = {"session": None}
+    active: dict[str, Session | None] = {"control": None}
     background: set[asyncio.Task] = set()
     cleanup: dict[str, asyncio.Task | None] = {"task": None}
 
@@ -1212,7 +1224,7 @@ def make_handler(
             cancel_cleanup()  # 予定していた後片付けは、ここで済ませる
             try:
                 was_on = bool(await asyncio.to_thread(virtual_present))
-                session = active["session"]
+                session = active["control"]
                 if session is not None:
                     await session.leave_virtual()
                 restored, off_error = await run_cleanup()
@@ -1282,7 +1294,9 @@ def make_handler(
     async def receive(session: Session) -> None:
         async for raw in session.ws:
             if isinstance(raw, bytes):
-                await session.files.handle_binary(raw)
+                # バイナリはファイルの受け渡しの中身だけ。視聴の接続からは受け付けない
+                if session.role != "view":
+                    await session.files.handle_binary(raw)
                 continue
             msg = protocol.loads(raw)
             if msg is not None:
@@ -1352,42 +1366,36 @@ def make_handler(
             settings.hevc_available,
             short_gop=use_udp_offer,
         )
+        # 役割の決定。操作できる接続は同時に1つだけ。操作を希望しても、枠が埋まっていれば視聴になる。
+        # 枠の確認から確保までは await を挟まないので、2つの接続が同時に枠を取り合うことはない
+        wants_control = hello.get("role") != "view"
+        is_control = wants_control and active["control"] is None
         session = Session(
             ws, per_conn, backend, stream_factory, audio_factory, udp,
             pad_factory if pad_ok else None, None if pad_ok else (pad_reason or "使えません"),
+            role="control" if is_control else "view",
         )
-        cancel_cleanup()  # 切れていた間に、戻す予定だったものは、続きから使う
-
-        # 同時に1台だけ。前の接続は切る。
-        # 前の接続が応答しなくても待たされないよう、閉じるのは裏で行い、後片付けだけを待つ
-        # （ffmpegが2つ同時に動かないようにするため）
-        previous = active["session"]
-        active["session"] = session
-        if previous is not None:
-            previous.kick()
-            task = asyncio.create_task(_close_quietly(previous.ws, 1000, "別の端末がつながりました"))
-            background.add(task)
-            task.add_done_callback(background.discard)
-            try:
-                await asyncio.wait_for(previous.finished.wait(), PREVIOUS_CLEANUP_SEC)
-            except asyncio.TimeoutError:
-                log.warning("前の接続の後片付けが終わらないまま、新しい接続を始めます")
-
-        backend.set_region(None)
+        demoted = wants_control and not is_control
+        if is_control:
+            cancel_cleanup()  # 切れていた間に、戻す予定だったものは、続きから使う
+            active["control"] = session
+            backend.set_region(None)
         tasks: list[asyncio.Task] = []
         try:
             await session.open_stream()
             w, h = session.size
             welcome = {
                 "t": "welcome", "v": protocol.VERSION, "w": w, "h": h, "codec": session.settings.codec, "mode": "screen",
-                "virtual": bool(backend.virtual_available()), "pad": pad_ok,
+                "virtual": bool(backend.virtual_available()), "pad": pad_ok and is_control, "role": session.role,
             }
             if use_udp_offer:
                 session.peer = udp.new_peer()
                 welcome["udp_port"] = udp.port
                 welcome["udp_key"] = session.peer.key
             await ws.send(protocol.dumps(welcome))
-            log.info("接続しました: %s（%dx%d, %dfps）", ws.remote_address, w, h, per_conn.fps)
+            if demoted:
+                await session.send({"t": "notice", "message": "操作中の接続があるため、視聴モードで接続しました"})
+            log.info("接続しました: %s（%dx%d, %dfps、%s）", ws.remote_address, w, h, per_conn.fps, session.role)
             session.start_video()
             tasks = [
                 asyncio.create_task(receive(session)),
@@ -1398,7 +1406,7 @@ def make_handler(
             if session.peer is not None:
                 tasks.append(asyncio.create_task(session.watch_udp()))
             done, _ = await asyncio.wait(
-                [*tasks, session.failed, session.kicked], return_when=asyncio.FIRST_COMPLETED
+                [*tasks, session.failed], return_when=asyncio.FIRST_COMPLETED
             )
             for task in done:
                 exc = task.exception()
@@ -1423,25 +1431,23 @@ def make_handler(
             await session.stop_stream()
             # 押したまま切れると、PCでボタンやキーが押されたままになるので、離す
             release_held(backend, session.held)
-            if active["session"] is session:
-                active["session"] = None
+            if active["control"] is session:
+                active["control"] = None
                 backend.set_region(None)
-            if session.kicked.done():
-                # 別の端末に代わったときは、その端末が、仮想ディスプレイとウィンドウを引き継ぐ。
-                # この接続を閉じるのも待たない（裏で閉じている）
-                log.info("別の端末に切り替えました")
-            elif ws.close_code == 1000:
-                # iPhone の「切断」ボタン。すぐ元に戻す
-                await run_cleanup()
-                log.info("切断しました（受け取った操作: %s）", _input_summary(session))
+                if ws.close_code == 1000:
+                    # iPhone の「切断」ボタン。すぐ元に戻す
+                    await run_cleanup()
+                    log.info("切断しました（受け取った操作: %s）", _input_summary(session))
+                else:
+                    # 通信が切れた、アプリが裏に回った、など。少し待ってから戻す
+                    schedule_cleanup(RESTORE_GRACE_SEC)
+                    log.info(
+                        "切れました（%d秒以内につなぎ直せば、続きから使えます。受け取った操作: %s）",
+                        RESTORE_GRACE_SEC, _input_summary(session),
+                    )
             else:
-                # 通信が切れた、アプリが裏に回った、など。少し待ってから戻す
-                schedule_cleanup(RESTORE_GRACE_SEC)
-                log.info(
-                    "切れました（%d秒以内につなぎ直せば、続きから使えます。受け取った操作: %s）",
-                    RESTORE_GRACE_SEC, _input_summary(session),
-                )
-            session.finished.set()
+                # 視聴の接続は PC の状態を持たないので、後片付け（仮想ディスプレイの復帰など）はしない
+                log.info("視聴の接続が切れました: %s", ws.remote_address)
 
     # 管理画面から、動いているサーバーに頼むための入り口（localctl.py が使う）
     handler.cleanup_now = cleanup_now
