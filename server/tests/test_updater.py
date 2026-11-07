@@ -172,13 +172,32 @@ def test_install_method_zip_without_git_dir(tmp_path):
     assert updater.install_method(tmp_path) == "zip"
 
 
-def test_latest_version_avoids_cached_copy(monkeypatch):
+def test_latest_version_uses_github_api(monkeypatch):
+    """raw の保存（CDN キャッシュ）ではなく、GitHub API で最新版を取る。"""
+    import base64
+    import json as _json
+
     seen = {}
 
     def fake_download(url, timeout):
         seen["url"] = url
-        return b'__version__ = "1.2.3"\n'
+        body = {"content": base64.b64encode(b'__version__ = "1.2.3"\n').decode("ascii")}
+        return _json.dumps(body).encode("utf-8")
 
     monkeypatch.setattr(updater, "_download", fake_download)
     assert updater.latest_version() == "1.2.3"
-    assert "?nocache=" in seen["url"]
+    assert seen["url"].startswith("https://api.github.com/repos/")
+    assert "raw.githubusercontent.com" not in seen["url"]
+    assert "ref=main" in seen["url"]
+
+
+def test_latest_version_bad_api_response(monkeypatch):
+    import json as _json
+
+    # API がファイルの中身を返さなかった（制限超過の返事など）ときは、UpdateError にする
+    monkeypatch.setattr(
+        updater, "_download",
+        lambda url, timeout: _json.dumps({"message": "API rate limit exceeded"}).encode("utf-8"),
+    )
+    with pytest.raises(UpdateError, match="新しい版を調べられませんでした"):
+        updater.latest_version()
