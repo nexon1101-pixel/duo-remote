@@ -1208,7 +1208,14 @@ def _post_webhook(url: str, text: str) -> None:
     import urllib.request
     body = json.dumps({"content": text}).encode("utf-8")
     req = urllib.request.Request(
-        url, data=body, headers={"Content-Type": "application/json"}, method="POST",
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            # Discord（Cloudflare）は urllib の既定 UA を 403 で弾くため、明示する。
+            "User-Agent": "DuoRemote-Server (https://github.com/nexon1101-pixel/duo-remote)",
+        },
+        method="POST",
     )
     with urllib.request.urlopen(req, timeout=5):
         pass
