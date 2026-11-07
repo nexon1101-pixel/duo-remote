@@ -10,10 +10,15 @@
   コマンド:   {"cmd": "shot", "path": "/tmp/shot.png"}
               {"cmd": "click", "x": 0.5, "y": 0.5}
               {"cmd": "move", "x": 0.5, "y": 0.5} / {"cmd": "button", "b": "left", "d": "down"}
-              {"cmd": "scroll", "dx": 0, "dy": -3}
-              {"cmd": "key", "vk": 13}            （d を省略すると押して離す）
+              {"cmd": "drag", "x1": 0.2, "y1": 0.2, "x2": 0.6, "y2": 0.2}
+              {"cmd": "scroll", "dx": 0, "dy": -3} / {"cmd": "sscroll", "dy": -3, "steps": 6}（滑らかに割って送る）
+              {"cmd": "key", "vk": 13}            （d を省略すると押して離す。hold で押している秒数）
+              {"cmd": "chord", "keys": ["ctrl", "v"]}  （修飾キーを押さえたまま最後のキーを押す）
               {"cmd": "text", "s": "こんにちは"}
-              {"cmd": "windows"} / {"cmd": "clip"} / {"cmd": "ping"} / {"cmd": "info"}
+              {"cmd": "windows"} / {"cmd": "bring", "id": 123}（窓を仮想画面に持ってきて前に出す）
+              {"cmd": "mode", "mode": "window", "id": 123} / {"cmd": "mode", "mode": "screen"}
+              {"cmd": "quality", "max_height": 0, "fps": 15, "bitrate": 8000}（0 は元の大きさ）
+              {"cmd": "clip"} / {"cmd": "clipset", "s": "貼る文字"} / {"cmd": "ping"} / {"cmd": "info"}
               {"cmd": "quit"}
   返事:       {"ok": true, ...}（"id" を付けると、そのまま返す）
 
@@ -222,21 +227,73 @@ class DuoClient:
             await self._send({"t": "button", "b": b, "d": "up"})
             return {}
         if name == "button":
-            msg = {"t": "button", "b": cmd.get("b", "left"), "d": cmd["d"]}
+            b, d = cmd.get("b", "left"), cmd.get("d")
+            if b not in ("left", "right", "middle"):
+                raise RuntimeError(f"ボタンの指定が違います: {b!r}（left / right / middle）")
+            if d not in ("down", "up"):
+                raise RuntimeError(f"d には down か up を書いてください: {d!r}")
+            msg = {"t": "button", "b": b, "d": d}
             if "x" in cmd and "y" in cmd:
                 msg["x"], msg["y"] = cmd["x"], cmd["y"]
             await self._send(msg)
             return {}
+        if name == "drag":
+            x1, y1, x2, y2 = (float(cmd[f]) for f in ("x1", "y1", "x2", "y2"))
+            b = cmd.get("b", "left")
+            if b not in ("left", "right", "middle"):
+                raise RuntimeError(f"ボタンの指定が違います: {b!r}（left / right / middle）")
+            steps = max(2, int(cmd.get("steps", 12)))
+            await self._send({"t": "move", "x": x1, "y": y1})
+            await asyncio.sleep(0.05)
+            await self._send({"t": "button", "b": b, "d": "down", "x": x1, "y": y1})
+            await asyncio.sleep(0.05)
+            for i in range(1, steps + 1):
+                t = i / steps
+                await self._send({"t": "move", "x": x1 + (x2 - x1) * t, "y": y1 + (y2 - y1) * t})
+                await asyncio.sleep(0.02)
+            await self._send({"t": "button", "b": b, "d": "up", "x": x2, "y": y2})
+            return {}
         if name == "scroll":
             await self._send({"t": "scroll", "dx": cmd.get("dx", 0), "dy": cmd.get("dy", 0)})
             return {}
+        if name == "sscroll":
+            dx, dy = float(cmd.get("dx", 0)), float(cmd.get("dy", 0))
+            steps = max(1, int(cmd.get("steps", 6)))
+            for _ in range(steps):
+                await self._send({"t": "scroll", "dx": dx / steps, "dy": dy / steps})
+                await asyncio.sleep(0.04)
+            return {}
         if name == "key":
-            key = {k: cmd[k] for k in ("vk", "sc") if k in cmd}
+            key = resolve_key(cmd["key"]) if "key" in cmd else {k: cmd[k] for k in ("vk", "sc") if k in cmd}
+            if not key:
+                raise RuntimeError("vk / sc / key のどれかでキーを指定してください")
             if "d" in cmd:
+                if cmd["d"] not in ("down", "up"):
+                    raise RuntimeError(f"d には down か up を書いてください: {cmd['d']!r}")
                 await self._send({"t": "key", **key, "d": cmd["d"]})
             else:
                 await self._send({"t": "key", **key, "d": "down"})
+                hold = float(cmd.get("hold", 0))
+                if hold > 0:
+                    await asyncio.sleep(hold)
                 await self._send({"t": "key", **key, "d": "up"})
+            return {}
+        if name == "chord":
+            raw = cmd.get("keys")
+            if not raw and "vk" in cmd:
+                raw = [*(cmd.get("mods") or []), cmd["vk"]]
+            if not raw or len(raw) < 2:
+                raise RuntimeError("chord には keys に2つ以上のキー（最後が押すキー）が要ります")
+            keys = [resolve_key(k) for k in raw]
+            for k in keys[:-1]:
+                await self._send({"t": "key", **k, "d": "down"})
+                await asyncio.sleep(0.06)
+            await self._send({"t": "key", **keys[-1], "d": "down"})
+            await asyncio.sleep(0.05)
+            await self._send({"t": "key", **keys[-1], "d": "up"})
+            for k in reversed(keys[:-1]):
+                await asyncio.sleep(0.03)
+                await self._send({"t": "key", **k, "d": "up"})
             return {}
         if name == "text":
             await self._send({"t": "text", "s": cmd["s"]})
@@ -249,6 +306,42 @@ class DuoClient:
             await self._send({"t": "clip_get"})
             msg = await self._wait_for("clip", timeout=10)
             return {"s": msg.get("s", "")}
+        if name == "clipset":
+            await self._send({"t": "clip_set", "s": cmd["s"]})
+            return {}
+        if name == "bring":
+            self.last_error = None
+            await self._send({"t": "bring", "id": int(cmd["id"])})
+            try:
+                msg = await self._wait_for("brought", timeout=10)
+            except asyncio.TimeoutError:
+                raise RuntimeError(self.last_error or "窓を前に出せませんでした（時間切れ）")
+            return {"id": msg.get("id"), "title": msg.get("title")}
+        if name == "mode":
+            msg = {"t": "mode", "mode": cmd["mode"]}
+            for f in ("id", "fit_w", "fit_h", "vscale", "to_virtual"):
+                if f in cmd:
+                    msg[f] = cmd[f]
+            self.last_error = None
+            await self._send(msg)
+            try:
+                got = await self._wait_for("mode", timeout=15)
+            except asyncio.TimeoutError:
+                raise RuntimeError(self.last_error or "表示の範囲を変えられませんでした（時間切れ）")
+            # 表示範囲が変わると、前の解像度の蓄えは混ざるので捨てる
+            self.buffer = FrameBuffer()
+            return {"mode": got.get("mode"), "id": got.get("id"), "name": got.get("name")}
+        if name == "quality":
+            msg = {"t": "quality"}
+            for f in ("fps", "max_height", "bitrate"):
+                if f in cmd:
+                    msg[f] = cmd[f]
+            if len(msg) == 1:
+                raise RuntimeError("fps / max_height / bitrate のどれかを指定してください")
+            await self._send(msg)
+            await asyncio.sleep(0.3)
+            self.buffer = FrameBuffer()
+            return {}
         if name == "ping":
             n = int(time.monotonic() * 1000) % 100000
             await self._send({"t": "ping", "n": n})
@@ -265,6 +358,40 @@ class DuoClient:
 
 def emit(obj: dict) -> None:
     print(json.dumps(obj, ensure_ascii=False), flush=True)
+
+
+# chord や key で使うキーの名前。数（vk）を直接書いてもいい。
+KEY_NAMES: dict[str, int] = {
+    "ctrl": 17, "lctrl": 162, "rctrl": 163,
+    "shift": 16, "lshift": 160, "rshift": 161,
+    "alt": 164, "lalt": 164, "ralt": 165,
+    "win": 91, "lwin": 91, "rwin": 92,
+    "enter": 13, "tab": 9, "esc": 27, "space": 32, "backspace": 8,
+    "delete": 46, "insert": 45, "home": 36, "end": 35,
+    "pgup": 33, "pgdn": 34,
+    "up": 38, "down": 40, "left": 37, "right": 39,
+    "capslock": 20, "f1": 112, "f2": 113, "f3": 114, "f4": 115,
+    "f5": 116, "f6": 117, "f7": 118, "f8": 119, "f9": 120,
+    "f10": 121, "f11": 122, "f12": 123,
+}
+
+
+def resolve_key(k) -> dict:
+    """キー指定（vk の数、スキャンコード {"sc": n}、名前）を、送信用の {"vk":…} か {"sc":…} にする。"""
+    if isinstance(k, dict):
+        out = {f: k[f] for f in ("vk", "sc") if f in k}
+        if out:
+            return out
+        raise RuntimeError(f"キーの指定が読めません: {k!r}")
+    if isinstance(k, int):
+        return {"vk": k}
+    if isinstance(k, str):
+        name = k.lower()
+        if name in KEY_NAMES:
+            return {"vk": KEY_NAMES[name]}
+        if len(k) == 1 and k.isalnum():
+            return {"vk": ord(k.upper())}
+    raise RuntimeError(f"キーの指定が読めません: {k!r}")
 
 
 async def amain(args) -> int:
