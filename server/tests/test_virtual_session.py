@@ -133,6 +133,30 @@ def test_desktop_mode_shows_virtual_monitor_and_turns_it_off_on_disconnect():
     assert backend.region is None
 
 
+def test_controller_disconnect_restores_virtual_even_with_viewer():
+    backend = make_backend()
+    streams = []
+
+    async def body(url):
+        ws, _ = await open_session(url)
+        await send(ws, t="mode", mode="desktop", fit_w=669, fit_h=951)
+        assert (await recv_json(ws, "mode"))["mode"] == "desktop"
+        assert backend.virtual_enabled
+        ws2, welcome2 = await open_session(url)  # 2つ目は視聴としてつながる
+        assert welcome2["role"] == "view"
+        await ws.close()  # 操作側が切断ボタンで切れたら、視聴が残っていても元に戻す
+        await asyncio.sleep(0.3)
+        assert not backend.virtual_enabled and ("virtual_off",) in backend.calls
+        # 視聴はつながったままで、映像も届く
+        while True:
+            raw = await asyncio.wait_for(ws2.recv(), 5)
+            if isinstance(raw, bytes):
+                break
+        await ws2.close()
+
+    asyncio.run(with_server(body, backend, streams))
+
+
 def test_desktop_mode_errors():
     async def body(url):
         ws, _ = await open_session(url)

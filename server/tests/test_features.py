@@ -154,9 +154,12 @@ def test_keep_awake_on_while_connected_and_off_after_disconnect():
         ws, _ = await open_session(url)
         assert backend.keep_awake_calls == [True]
 
-        # 別の端末がつないで、前の接続が切られても、入れたまま（切れ目に戻さない）
+        # 視聴の接続が増えても、1つ以上つながっている間は入れたまま（切れ目に戻さない）
         ws2, _ = await open_session(url)
-        await asyncio.wait_for(ws.wait_closed(), 5)
+        await asyncio.sleep(0.2)
+        assert backend.keep_awake_calls == [True]
+
+        await ws.close()  # 操作側が切れても、視聴が残っているので戻さない
         await asyncio.sleep(0.2)
         assert backend.keep_awake_calls == [True]
 

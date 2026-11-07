@@ -275,14 +275,17 @@ def test_disconnect_resets_and_closes():
     asyncio.run(run(body, Pads()))
 
 
-def test_kicked_by_other_device_closes_pad():
+def test_second_connection_does_not_close_first_pad():
     async def body(url, pads):
         ws1, _ = await open_ws(url)
         await ws1.send(padmsg(b=1))
         await recv_until(ws1, "pad_state")
-        ws2, _ = await open_ws(url)
-        await wait_for(lambda: ("close",) in pads.sessions[0].calls)
-        assert ("reset",) in pads.sessions[0].calls
+        ws2, welcome2 = await open_ws(url)  # 2つ目は視聴としてつながる
+        assert welcome2["role"] == "view"
+        await asyncio.sleep(0.3)
+        # 最初の接続のパッドは、そのまま使える（切られたり取り外されたりしない）
+        assert ("close",) not in pads.sessions[0].calls
+        assert ("reset",) not in pads.sessions[0].calls
         await ws2.close()
         await ws1.close()
 
