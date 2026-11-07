@@ -104,6 +104,7 @@ footer { text-align: center; margin-top: 24px; }
     <span class="badge" id="badge"><span class="dot"></span><span id="badgeText">確認中</span></span>
     <button class="primary big" id="toggle" disabled>起動</button>
     <button id="restart" disabled>再起動</button>
+    <button class="danger" id="disconnect" disabled>接続をすべて切る</button>
   </header>
 
   <section class="card">
@@ -128,6 +129,9 @@ footer { text-align: center; margin-top: 24px; }
       <label>エンコーダー<select id="s_encoder"></select></label>
       <label>モニター番号<input type="number" id="s_output_idx"></label>
     </div>
+    <div class="row"><span class="label">接続の通知</span>
+      <input type="text" id="s_notify_webhook_url" placeholder="Discord の Webhook URL（空なら知らせない）" style="flex:1"></div>
+    <div class="small">接続と、操作の引き継ぎがあったときに、この Webhook へ知らせます。URL は、この PC の設定ファイルだけに保存されます。</div>
     <div class="row"><button class="primary" id="save">保存</button>
       <span class="small">フレームレート・ビットレート・高さは、アプリで画質を選ぶとアプリの値になります。</span></div>
     <div class="notice" id="restartNotice" hidden>再起動すると反映されます。<button id="restartNow">今すぐ再起動</button></div>
@@ -235,7 +239,7 @@ function renderStatus() {
   $("badgeText").textContent = st.running ? "実行中" : "停止中";
   $("toggle").textContent = st.running ? "停止" : "起動";
   $("toggle").className = st.running ? "big" : "primary big";
-  $("toggle").disabled = busy; $("restart").disabled = busy || !st.running;
+  $("toggle").disabled = busy; $("restart").disabled = busy || !st.running; $("disconnect").disabled = busy || !st.running;
   $("adminText").textContent = st.admin ? "管理者として実行中"
     : "管理者ではありません（仮想ディスプレイに必要です）";
   $("adminBtn").hidden = st.admin;
@@ -324,16 +328,22 @@ async function loadSettings() {
     if (cfg.limits[k]) { el.min = cfg.limits[k][0]; el.max = cfg.limits[k][1]; }
   }
   sel.value = cfg.settings.encoder;
+  $("s_notify_webhook_url").value = cfg.settings.notify_webhook_url || "";
   $("panelBrowser").value = cfg.settings.panel_browser || "edge";
   renderToken();
 }
 
 $("toggle").onclick = () => runBusy(() => api(st.running ? "/api/stop" : "/api/start", "POST"));
+$("disconnect").onclick = async () => {
+  if (!(await ask("つながっている接続を、すべて切ります。続けますか。"))) return;
+  try { const r = await api("/api/disconnect", "POST"); toast(r.message || "切りました"); }
+  catch (e) { fail(e); }
+};
 $("restart").onclick = () => runBusy(() => api("/api/restart", "POST"));
 $("restartNow").onclick = async () => { await runBusy(() => api("/api/restart", "POST")); $("restartNotice").hidden = true; };
 
 $("save").onclick = async () => {
-  const changes = { encoder: $("s_encoder").value };
+  const changes = { encoder: $("s_encoder").value, notify_webhook_url: $("s_notify_webhook_url").value.trim() };
   for (const k of ["port", "fps", "bitrate_kbps", "max_height", "output_idx"]) changes[k] = Number($("s_" + k).value);
   try {
     const r = await api("/api/settings", "POST", { changes });

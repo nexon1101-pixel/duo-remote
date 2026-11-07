@@ -69,7 +69,7 @@ INPUT_TYPES = frozenset({"move", "move_rel", "button", "scroll", "key", "text", 
 # 視聴（role="view"）の接続でも受け付けるメッセージ。映像と音のほか、状態を変えない問い合わせだけ
 VIEWER_ALLOWED = frozenset({
     "list_windows", "window_thumb", "list_monitors", "quality", "transport",
-    "audio", "clip_get", "clip_pull",
+    "audio", "clip_get", "clip_pull", "takeover",
 })
 # 視聴の接続では受け付けない、PC の状態を変えるメッセージ。error で理由を返す
 VIEWER_DENIED = frozenset({
@@ -95,6 +95,8 @@ class Settings:
     # キーフレームの間隔を短くする（約0.5秒）。hello の transport が udp か auto のときだけ。
     # ffmpeg の間隔は、撮り始めに決まるので、接続の途中では変えない（TCP に戻しても、短いまま）
     short_gop: bool = False
+    # 接続と、操作の引き継ぎを知らせる Webhook（Discord）の URL。空なら知らせない
+    notify_webhook_url: str = ""
 
 
 class Stream(Protocol):
@@ -271,6 +273,12 @@ class Session:
         self.ws = ws
         # 接続の役割。"control" は操作できる（同時に1つだけ）。"view" は視聴だけ
         self.role = role
+        # 操作の引き継ぎを頼まれたときに呼ぶ（make_handler が入れる。視聴の接続だけが使う）
+        self.on_takeover: "Callable[[Session], Any] | None" = None
+        # 別の接続に操作を引き継いで、この接続が終わるところか
+        self.taken_over = False
+        # hello で名乗ったクライアント名（通知に出す。なければ空）
+        self.client_name = ""
         # 仮想のゲームパッド。pad_reason は、使えないときの理由（使えるときは None）
         self.pad_factory = pad_factory
         self.pad_reason = pad_reason
@@ -854,11 +862,21 @@ class Session:
         # 入力（INPUT_TYPES、pad、pad_off）と、知らない形式は、静かに捨てる
         return True
 
+    async def request_takeover(self) -> None:
+        """視聴の接続が、操作を引き継ぐ。今の操作側は切られ、状態（仮想ディスプレイなど）は引き継ぐ。"""
+        if self.role == "control":
+            await self.send({"t": "role", "role": "control"})  # すでに操作側。その旨だけ返す
+            return
+        if self.on_takeover is not None:
+            await self.on_takeover(self)
+
     async def handle(self, msg: dict[str, Any]) -> None:
         t = msg.get("t")
         if self.role == "view" and await self._viewer_gate(msg, t):
             return
-        if t == "list_windows":
+        if t == "takeover":
+            await self.request_takeover()
+        elif t == "list_windows":
             await self.send({"t": "windows", "list": await self._window_list()})
         elif t == "window_thumb":
             await self.window_thumbs(msg)
@@ -1177,10 +1195,34 @@ class Session:
                     await self._switch_to_window(wid, region, monitor)
 
 
+async def _close_quietly(ws: ServerConnection, code: int, reason: str) -> None:
+    try:
+        await ws.close(code, reason)
+    except ConnectionClosed:
+        pass
+
+
+def _post_webhook(url: str, text: str) -> None:
+    """Discord の Webhook に、1件の文を送る（同期。呼ぶ側はスレッドで動かす）。"""
+    import urllib.request
+    body = json.dumps({"content": text}).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5):
+        pass
+
+
+def _addr_text(ws: ServerConnection) -> str:
+    addr = ws.remote_address
+    return f"{addr[0]}:{addr[1]}" if addr else "不明"
+
+
 def make_handler(
     settings: Settings, backend, stream_factory: StreamFactory, audio_factory: AudioFactory | None = None,
     udp: UdpEndpoint | None = None,
     pad_factory: Callable[[], gamepad.VirtualPad] | None = None, pad_probe: tuple[bool, str] | None = None,
+    webhook_post: Callable[[str, str], None] | None = None,
 ):
     # 仮想のゲームパッドを使えるかは、起動のときに1回だけ調べる（pad_probe は調べた結果。なければここで調べる）
     if pad_factory is None:
@@ -1192,6 +1234,24 @@ def make_handler(
     active: dict[str, Session | None] = {"control": None}
     background: set[asyncio.Task] = set()
     cleanup: dict[str, asyncio.Task | None] = {"task": None}
+    sessions: set[Session] = set()  # つながっている接続の全部（強制切断のため）
+
+    def notify(text: str) -> None:
+        """接続などの出来事を、設定された Webhook（Discord）に知らせる。失敗しても、接続には影響させない。"""
+        url = settings.notify_webhook_url.strip()
+        if not url:
+            return
+        post = webhook_post or _post_webhook
+
+        async def run() -> None:
+            try:
+                await asyncio.to_thread(post, url, text)
+            except Exception:
+                log.warning("接続の通知を送れませんでした", exc_info=True)
+
+        task = asyncio.create_task(run())
+        background.add(task)
+        task.add_done_callback(background.discard)
 
     async def run_cleanup() -> tuple[int, str | None]:
         """持ってきたウィンドウを元に戻し、仮想ディスプレイを無効に戻す。
@@ -1336,6 +1396,32 @@ def make_handler(
             except Exception:
                 log.exception("PC のスピーカーの消音を戻せませんでした")
 
+    async def takeover(requester: Session) -> None:
+        """視聴の接続に、操作を引き継がせる。今の操作側は閉じ、状態は引き継ぎ先がそのまま使う。"""
+        old = active["control"]
+        if old is requester:
+            return
+        active["control"] = requester
+        requester.role = "control"
+        cancel_cleanup()  # 戻す予定があったら、引き継ぎ先が続きから使う
+        backend.set_region(None)  # 引き継ぎ先は画面全体の表示。入力の座標も、そこに合わせる
+        await requester.send({"t": "role", "role": "control", "pad": pad_ok})
+        log.info("操作を引き継ぎました: %s", requester.ws.remote_address)
+        notify(
+            "DuoRemote の操作が、別の端末に引き継がれました\n"
+            f"新しい操作側： {_addr_text(requester.ws)}\nクライアント： {requester.client_name or '不明'}"
+        )
+        if old is not None:
+            old.taken_over = True
+            try:
+                await old.send({"t": "notice", "message": "別の端末が操作を引き継ぎました"})
+            except ConnectionClosed:
+                pass
+            # 閉じるのは裏で行う（この接続の応答を待たせないため）
+            task = asyncio.create_task(_close_quietly(old.ws, 1000, "別の端末が操作を引き継ぎました"))
+            background.add(task)
+            task.add_done_callback(background.discard)
+
     async def handler(ws: ServerConnection) -> None:
         hello = await authenticate(ws)
         if hello is None:
@@ -1375,6 +1461,10 @@ def make_handler(
             pad_factory if pad_ok else None, None if pad_ok else (pad_reason or "使えません"),
             role="control" if is_control else "view",
         )
+        session.on_takeover = takeover
+        client_name = hello.get("client")
+        session.client_name = client_name[:64] if isinstance(client_name, str) else ""
+        sessions.add(session)
         demoted = wants_control and not is_control
         if is_control:
             cancel_cleanup()  # 切れていた間に、戻す予定だったものは、続きから使う
@@ -1396,6 +1486,16 @@ def make_handler(
             if demoted:
                 await session.send({"t": "notice", "message": "操作中の接続があるため、視聴モードで接続しました"})
             log.info("接続しました: %s（%dx%d, %dfps、%s）", ws.remote_address, w, h, per_conn.fps, session.role)
+            if is_control:
+                role_text = "操作"
+            elif demoted:
+                role_text = "視聴（操作中の接続があるため）"
+            else:
+                role_text = "視聴"
+            notify(
+                "DuoRemote に接続がありました\n"
+                f"役割： {role_text}\n接続元： {_addr_text(ws)}\nクライアント： {session.client_name or '不明'}"
+            )
             session.start_video()
             tasks = [
                 asyncio.create_task(receive(session)),
@@ -1419,6 +1519,7 @@ def make_handler(
             log.error("%s", e)
             await reject(ws, "映像を始められませんでした。サーバーのログを確認してください")
         finally:
+            sessions.discard(session)
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -1445,11 +1546,29 @@ def make_handler(
                         "切れました（%d秒以内につなぎ直せば、続きから使えます。受け取った操作: %s）",
                         RESTORE_GRACE_SEC, _input_summary(session),
                     )
+            elif session.taken_over:
+                # 別の接続が操作を引き継いだ。仮想ディスプレイなどの状態は、引き継ぎ先がそのまま使う
+                log.info("操作を別の端末に引き継ぎました（受け取った操作: %s）", _input_summary(session))
             else:
                 # 視聴の接続は PC の状態を持たないので、後片付け（仮想ディスプレイの復帰など）はしない
                 log.info("視聴の接続が切れました: %s", ws.remote_address)
 
+    async def disconnect_now() -> dict[str, Any]:
+        """つながっている接続を全部切る（PC 側の強制切断）。操作側の後片付けは、各接続の終了処理が行う。"""
+        targets = list(sessions)
+        for s in targets:
+            try:
+                await s.send({"t": "notice", "message": "PC側から切断されました"})
+            except ConnectionClosed:
+                pass
+            task = asyncio.create_task(_close_quietly(s.ws, 1000, "PC側から切断されました"))
+            background.add(task)
+            task.add_done_callback(background.discard)
+        log.info("PC側の操作で、接続を %d 件切りました", len(targets))
+        return {"ok": True, "disconnected": len(targets)}
+
     # 管理画面から、動いているサーバーに頼むための入り口（localctl.py が使う）
     handler.cleanup_now = cleanup_now
     handler.status_now = status_now
+    handler.disconnect_now = disconnect_now
     return handler

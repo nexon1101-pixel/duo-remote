@@ -137,7 +137,7 @@ class DuoClient:
             "t": "hello", "v": 1, "token": self.token,
             "fps": self.args.fps, "max_height": self.args.max_height,
             "bitrate": self.args.bitrate, "codecs": ["h264"],
-            "transport": "tcp", "role": self.args.role,
+            "transport": "tcp", "role": self.args.role, "client": "agent",
         }
         await self.ws.send(json.dumps(hello))
         self._recv_task = asyncio.create_task(self._receive_loop())
@@ -175,6 +175,8 @@ class DuoClient:
                     self.last_notice = msg.get("message")
                 elif t == "error":
                     self.last_error = msg.get("message")
+                elif t == "role":
+                    self.role = msg.get("role")  # takeover で役割が変わったとき
                 for fut in self._waiters.pop(t, []):
                     if not fut.done():
                         fut.set_result(msg)
@@ -270,7 +272,7 @@ async def amain(args) -> int:
     config_path = Path(args.config).expanduser()
     if config_path.exists():
         config = json.loads(config_path.read_text())
-    args.host = args.host or config.get("host") or "desktop-akr39hu"
+    args.host = args.host or config.get("host") or "localhost"
     args.port = args.port or int(config.get("port") or 8765)
     token = os.environ.get("DUO_TOKEN") or config.get("token")
     if not token:

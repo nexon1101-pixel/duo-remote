@@ -320,17 +320,33 @@ struct ContentView: View {
             if dockedFold == nil { menu() }
         }
         .overlay(alignment: .top) {
-            if let notice = session.notice {
-                Label(notice, systemImage: "info.circle.fill")
-                    .font(.callout.weight(.medium))
+            VStack(spacing: 8) {
+                if let notice = session.notice {
+                    Label(notice, systemImage: "info.circle.fill")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .glass(in: Capsule())
+                        .padding(.horizontal, 64)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                if session.isViewer {
+                    // 視聴のあいだ出しっぱなし。ここから操作を引き継げる
+                    HStack(spacing: 12) {
+                        Label("視聴モード", systemImage: "eye.fill")
+                            .font(.callout.weight(.medium))
+                        Button("操作する") { session.requestTakeover() }
+                            .font(.callout.weight(.semibold))
+                    }
                     .foregroundStyle(.white)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
                     .glass(in: Capsule())
-                    .padding(.top, 8 + safeInsets.top)
-                    .padding(.horizontal, 64)
                     .transition(.move(edge: .top).combined(with: .opacity))
+                }
             }
+            .padding(.top, 8 + safeInsets.top)
         }
         .overlay {
             if session.state == .reconnecting {
@@ -351,6 +367,7 @@ struct ContentView: View {
             }
         }
         .animation(.spring(duration: 0.35), value: session.notice)
+        .animation(.spring(duration: 0.35), value: session.isViewer)
         .animation(.spring(duration: 0.35), value: session.state)
         .sheet(isPresented: $showingWindows, onDismiss: { refocus += 1 }) {
             WindowPicker(fitSize: fitSize)

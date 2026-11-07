@@ -166,6 +166,11 @@ final class RemoteSession: ObservableObject {
     @Published private(set) var virtualAvailable = false
     /// PCに、仮想のゲームパッド（ViGEmBus）が入っている
     @Published private(set) var padAvailable = false
+    /// この接続の役割。"control"（操作できる）か "view"（視聴だけ）。
+    /// 古いサーバーは role を返さないので、そのときは操作できる（control）として扱う
+    @Published private(set) var role = "control"
+    /// 視聴だけの接続か
+    var isViewer: Bool { role == "view" }
     /// 仮想のゲームパッドを作れたか（pad を初めて送ったあとに届く）。まだ届いていないときは nil
     @Published private(set) var padState: PadStatus?
     /// ゲームパッドを送ってよい（PC に部品があり、作れなかったと言われていない）
@@ -307,7 +312,7 @@ final class RemoteSession: ObservableObject {
         self.task = task
         task.resume()
 
-        var hello: [String: Any] = ["t": "hello", "v": 1, "token": target.token]
+        var hello: [String: Any] = ["t": "hello", "v": 1, "token": target.token, "client": "ios"]
         // つなぎ直しのときは、自動で下げた画質のまま始める
         hello.merge((autoQuality?.current ?? quality).helloFields) { _, new in new }
         // H.265 は、同じ画質で通信量が H.264 の半分くらい。この端末が速く読めて、設定でオフにしていなければ、先に頼む
@@ -745,6 +750,11 @@ final class RemoteSession: ObservableObject {
 
     // MARK: - 表示する範囲
 
+    /// 視聴の接続が、操作を引き継ぐ。今の操作側は切られ、状態はこちらが引き継ぐ
+    func requestTakeover() {
+        send(["t": "takeover"])
+    }
+
     func requestWindows() {
         isLoadingWindows = true
         send(["t": "list_windows"])
@@ -877,6 +887,7 @@ final class RemoteSession: ObservableObject {
             }
             virtualAvailable = json["virtual"] as? Bool ?? false
             padAvailable = json["pad"] as? Bool ?? false
+            role = json["role"] as? String ?? "control"
             let reconnected = state == .reconnecting
             welcomed = true
             lastGoodIndex = hostIndex
@@ -1031,6 +1042,11 @@ final class RemoteSession: ObservableObject {
             }
         case "monitors":
             handleMonitors(json)
+        case "role":
+            // takeover で操作を引き継いだ
+            role = json["role"] as? String ?? "control"
+            if let pad = json["pad"] as? Bool { padAvailable = pad }
+            if role == "control" { show(notice: "操作を引き継ぎました") }
         case "file_begin", "file_end", "file_saved":
             fileTransfer.handleControl(type, json)
         case "notice":
