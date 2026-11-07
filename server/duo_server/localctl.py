@@ -2,7 +2,7 @@
 iPhone との通信ではない（docs/protocol.md の対象外）。127.0.0.1 だけで待ち受け、鍵が合う相手だけを受け付ける。
 
 1行ごとの JSON。クライアントは {"key": "...", "cmd": "cleanup"} のような1行を送り、サーバーは1行で返す。
-cmd は cleanup と status だけ。"""
+cmd は cleanup と status と disconnect。"""
 from __future__ import annotations
 
 import asyncio
@@ -31,6 +31,7 @@ async def start_control_server(
     cleanup: Callable[[], Awaitable[dict[str, Any]]],
     status: Callable[[], dict[str, Any]],
     read_timeout: float = READ_TIMEOUT,
+    disconnect: Callable[[], Awaitable[dict[str, Any]]] | None = None,
 ) -> asyncio.Server:
     """制御用の入り口を始める。port が 0 なら空いている番号を使う（テスト用）。"""
     key_bytes = key.encode("utf-8")
@@ -66,6 +67,8 @@ async def start_control_server(
                     result = await cleanup()
                 elif cmd == "status":
                     result = await asyncio.to_thread(status)
+                elif cmd == "disconnect" and disconnect is not None:
+                    result = await disconnect()
                 else:
                     result = {"ok": False, "error": f"知らない cmd です: {str(cmd)[:40]!r}"}
             except Exception as e:  # noqa: BLE001 片付けの失敗で、サーバーを落とさない

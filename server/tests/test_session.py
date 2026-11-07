@@ -372,6 +372,74 @@ def test_viewer_cannot_operate_but_can_ask():
     asyncio.run(run_with_server(body))
 
 
+def test_viewer_can_take_over_control():
+    async def body(url, backend):
+        async with connect(url) as first:
+            await first.send(hello())
+            assert (await recv_until(first, "welcome"))["role"] == "control"
+            async with connect(url) as second:
+                await second.send(hello())
+                assert (await recv_until(second, "welcome"))["role"] == "view"
+                await recv_until(second, "notice")  # 視聴になったお知らせ
+                await second.send(json.dumps({"t": "takeover"}))
+                assert (await recv_until(second, "role"))["role"] == "control"
+                # 前の操作側には、お知らせが届いてから、接続が閉じる
+                assert "引き継ぎ" in (await recv_until(first, "notice"))["message"]
+                with pytest.raises(ConnectionClosed):
+                    while True:
+                        await asyncio.wait_for(first.recv(), 5)
+                # 引き継いだ側は、操作できる
+                await second.send(json.dumps({"t": "move", "x": 0.5, "y": 0.25}))
+                await second.send(json.dumps({"t": "ping", "n": 3}))
+                assert (await recv_until(second, "pong"))["n"] == 3
+                assert ("move", 0.5, 0.25) in backend.calls
+
+    asyncio.run(run_with_server(body))
+
+
+def test_connect_and_takeover_are_notified_and_disconnect_all():
+    sent: list[tuple[str, str]] = []
+    backend = NullInput((1920, 1080))
+    streams: list = []
+
+    def factory(settings, src, region, monitor=None, window=None):
+        s = FakeStream()
+        s.settings, s.src, s.region, s.window = settings, src, region, window
+        streams.append(s)
+        return s
+
+    async def body():
+        settings = Settings(token=TOKEN, notify_webhook_url="https://hook.example.jp/x")
+        handler = make_handler(settings, backend, factory, webhook_post=lambda url, text: sent.append((url, text)))
+        async with serve(handler, "127.0.0.1", 0) as server:
+            url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+            async with connect(url) as first:
+                await first.send(hello(client="agent"))
+                assert (await recv_until(first, "welcome"))["role"] == "control"
+                async with connect(url) as second:
+                    await second.send(hello(client="ios"))
+                    assert (await recv_until(second, "welcome"))["role"] == "view"
+                    await second.send(json.dumps({"t": "takeover"}))
+                    assert (await recv_until(second, "role"))["role"] == "control"
+                    for _ in range(50):  # 通知は裏で送られるので、少し待つ
+                        if len(sent) >= 3:
+                            break
+                        await asyncio.sleep(0.1)
+                    # PC 側の強制切断。残っている接続が切れる
+                    result = await handler.disconnect_now()
+                    assert result["ok"] and result["disconnected"] >= 1
+                    assert "PC側から切断されました" in (await recv_until(second, "notice"))["message"]
+                    with pytest.raises(ConnectionClosed):
+                        while True:
+                            await asyncio.wait_for(second.recv(), 5)
+        texts = [text for _, text in sent]
+        assert any("接続がありました" in t and "役割： 操作" in t and "クライアント： agent" in t for t in texts)
+        assert any("接続がありました" in t and "視聴" in t and "クライアント： ios" in t for t in texts)
+        assert any("引き継がれました" in t and "クライアント： ios" in t for t in texts)
+
+    asyncio.run(body())
+
+
 def test_text_newlines_become_enter():
     async def body(url, backend):
         async with connect(url) as ws:

@@ -324,6 +324,20 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
             "message": cleanup_message(0, was_on, None, "direct"),
         }, None
 
+    def disconnect_all() -> tuple[int, dict[str, Any], None]:
+        """つながっている接続を全部切る（PC 側の強制切断）。サーバーが動いていないときは、その旨を返す。"""
+        endpoint = process.control_endpoint() if process.running else None
+        if endpoint is None:
+            return 400, {"error": "サーバーが動いていません"}, None
+        try:
+            r = control_call(endpoint, "disconnect")
+        except (OSError, ValueError):
+            return 502, {"error": "サーバーに届きませんでした"}, None
+        if not r.get("ok"):
+            return 502, {"error": str(r.get("error") or "切断に失敗しました")}, None
+        n = int(r.get("disconnected") or 0)
+        return 200, {"disconnected": n, "message": f"接続を {n} 件切りました"}, None
+
     def quit_panel() -> None:
         """サーバーを止めて、管理画面を終わる合図を出す。"""
         process.stop()
@@ -475,6 +489,7 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
                 ("GET", "/api/update/log"): lambda: (200, update_log(), None),
                 ("POST", "/api/driver/vigem"): lambda: self._driver_vigem(),
                 ("POST", "/api/virtual/cleanup"): lambda: self._virtual_cleanup(),
+                ("POST", "/api/disconnect"): lambda: self._disconnect(),
                 ("POST", "/api/admin"): lambda: self._admin(),
                 ("POST", "/api/quit"): lambda: self._quit(),
             }
@@ -573,6 +588,10 @@ def make_app(process: Any, key: str, config: Path = control.DEFAULT_CONFIG):
         def _virtual_cleanup(self):
             """利用者への確認は、ページの側でする。"""
             return virtual_cleanup()
+
+        def _disconnect(self):
+            """利用者への確認は、ページの側でする。"""
+            return disconnect_all()
 
         def _admin(self):
             if not run_as_admin(["--key", next_key]):

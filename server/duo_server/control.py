@@ -34,7 +34,7 @@ ENCODERS = ("auto", "h264_nvenc", "libx264")
 PANEL_BROWSERS = ("edge", "chrome", "default")
 DEFAULTS: dict[str, Any] = {
     "port": 8765, "fps": 60, "bitrate_kbps": 8000, "max_height": 0, "encoder": "auto", "output_idx": 0,
-    "panel_browser": "edge", "tray": True,
+    "panel_browser": "edge", "tray": True, "notify_webhook_url": "",
 }
 
 
@@ -70,6 +70,10 @@ def save_settings(changes: dict[str, Any], path: Path = DEFAULT_CONFIG) -> dict[
         elif key == "encoder":
             if value not in ENCODERS:
                 raise SettingsError(f"encoder は {'、'.join(ENCODERS)} のどれかにしてください")
+            cfg[key] = value
+        elif key == "notify_webhook_url":
+            if not isinstance(value, str) or len(value) > 512 or (value and not value.startswith("https://")):
+                raise SettingsError("notify_webhook_url は、空か、https:// で始まる URL にしてください")
             cfg[key] = value
         else:
             raise SettingsError(f"{key} は変えられません")

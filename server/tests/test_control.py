@@ -25,6 +25,17 @@ def test_save_settings_checks_ranges(tmp_path):
     assert json.loads(cfg.read_text(encoding="utf-8"))["fps"] == 30
 
 
+def test_notify_webhook_url_setting(tmp_path):
+    cfg = tmp_path / "config.json"
+    assert control.read_settings(cfg)["notify_webhook_url"] == ""
+    saved = control.save_settings({"notify_webhook_url": "https://discord.com/api/webhooks/123/abc"}, cfg)
+    assert saved["notify_webhook_url"] == "https://discord.com/api/webhooks/123/abc"
+    assert control.save_settings({"notify_webhook_url": ""}, cfg)["notify_webhook_url"] == ""
+    for bad in ("http://example.jp/hook", "discord.gg/x", 42):
+        with pytest.raises(control.SettingsError):
+            control.save_settings({"notify_webhook_url": bad}, cfg)
+
+
 def test_regenerate_token(tmp_path):
     cfg = tmp_path / "config.json"
     old = control.read_settings(cfg)["token"]

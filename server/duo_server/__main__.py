@@ -81,6 +81,7 @@ async def run(args: argparse.Namespace) -> None:
         fps=args.fps or cfg.get("fps", 60),
         bitrate_kbps=args.bitrate or cfg.get("bitrate_kbps", 8000),
         max_height=args.max_height if args.max_height is not None else cfg.get("max_height", 0),
+        notify_webhook_url=str(cfg.get("notify_webhook_url", "") or ""),
     )
     port = args.port or cfg.get("port", 8765)
     encoder = detect_encoder(args.ffmpeg) if args.encoder == "auto" else args.encoder
@@ -143,6 +144,7 @@ async def run(args: argparse.Namespace) -> None:
         try:
             control_server = await localctl.start_control_server(
                 args.control_port, args.control_key, handler.cleanup_now, handler.status_now,
+                disconnect=handler.disconnect_now,
             )
         except OSError as e:
             log.warning("制御用の入り口を開けませんでした（管理画面の「無効にする」は、直接の方法になります）: %s", e)

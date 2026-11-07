@@ -12,7 +12,7 @@
 （トークンは PC 側の `server/config.json` のもの。リポジトリには入れない）。
 
 ```json
-{"host": "desktop-akr39hu", "port": 8765, "token": "..."}
+{"host": "your-pc", "port": 8765, "token": "..."}
 ```
 
 起動（Tailscale 越し）:

@@ -157,6 +157,29 @@ def test_controller_disconnect_restores_virtual_even_with_viewer():
     asyncio.run(with_server(body, backend, streams))
 
 
+def test_takeover_keeps_virtual_and_new_controller_restores_on_disconnect():
+    backend = make_backend()
+    streams = []
+
+    async def body(url):
+        ws, _ = await open_session(url)
+        await send(ws, t="bring", id=101)
+        await recv_json(ws, "brought")
+        ws2, welcome2 = await open_session(url)  # 2つ目は視聴としてつながる
+        assert welcome2["role"] == "view"
+        await send(ws2, t="takeover")
+        assert (await recv_json(ws2, "role"))["role"] == "control"
+        await asyncio.sleep(0.3)
+        # 引き継いでも、仮想ディスプレイと、持ってきたウィンドウは戻さない
+        assert backend.virtual_enabled and backend.windows[101]["rect"] != (100, 50, 800, 600)
+        await ws2.close()  # 新しい操作側が切断ボタンで切れたら、戻す
+        await asyncio.sleep(0.3)
+        assert not backend.virtual_enabled and backend.windows[101]["rect"] == (100, 50, 800, 600)
+        await ws.close()
+
+    asyncio.run(with_server(body, backend, streams))
+
+
 def test_desktop_mode_errors():
     async def body(url):
         ws, _ = await open_session(url)
