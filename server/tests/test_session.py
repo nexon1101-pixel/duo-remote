@@ -397,6 +397,34 @@ def test_viewer_can_take_over_control():
     asyncio.run(run_with_server(body))
 
 
+def test_post_webhook_sends_json_body(monkeypatch):
+    """本物の _post_webhook が JSON を組み立てて送れること（import 漏れの回帰防止）。"""
+    import urllib.request
+
+    from duo_server.server import _post_webhook
+
+    captured: dict = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["body"] = req.data
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    _post_webhook("https://hook.example.jp/x", "接続がありました")
+    assert captured["url"] == "https://hook.example.jp/x"
+    assert json.loads(captured["body"].decode("utf-8")) == {"content": "接続がありました"}
+    assert captured["timeout"] == 5
+
+
 def test_connect_and_takeover_are_notified_and_disconnect_all():
     sent: list[tuple[str, str]] = []
     backend = NullInput((1920, 1080))
