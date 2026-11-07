@@ -420,9 +420,10 @@ def test_post_webhook_sends_json_body(monkeypatch):
         return FakeResponse()
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    _post_webhook("https://hook.example.jp/x", "接続がありました")
+    payload = {"embeds": [{"title": "接続がありました", "color": 0x2ECC71, "fields": []}]}
+    _post_webhook("https://hook.example.jp/x", payload)
     assert captured["url"] == "https://hook.example.jp/x"
-    assert json.loads(captured["body"].decode("utf-8")) == {"content": "接続がありました"}
+    assert json.loads(captured["body"].decode("utf-8")) == payload
     assert captured["timeout"] == 5
     # Discord は urllib 既定の User-Agent を 403 で弾くので、明示されていること
     ua = captured["headers"].get("User-agent", "")
@@ -430,7 +431,7 @@ def test_post_webhook_sends_json_body(monkeypatch):
 
 
 def test_connect_and_takeover_are_notified_and_disconnect_all():
-    sent: list[tuple[str, str]] = []
+    sent: list[tuple[str, dict]] = []
     backend = NullInput((1920, 1080))
     streams: list = []
 
@@ -442,7 +443,7 @@ def test_connect_and_takeover_are_notified_and_disconnect_all():
 
     async def body():
         settings = Settings(token=TOKEN, notify_webhook_url="https://hook.example.jp/x")
-        handler = make_handler(settings, backend, factory, webhook_post=lambda url, text: sent.append((url, text)))
+        handler = make_handler(settings, backend, factory, webhook_post=lambda url, payload: sent.append((url, payload)))
         async with serve(handler, "127.0.0.1", 0) as server:
             url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
             async with connect(url) as first:
@@ -464,10 +465,19 @@ def test_connect_and_takeover_are_notified_and_disconnect_all():
                     with pytest.raises(ConnectionClosed):
                         while True:
                             await asyncio.wait_for(second.recv(), 5)
-        texts = [text for _, text in sent]
-        assert any("接続がありました" in t and "役割： 操作" in t and "クライアント： agent" in t for t in texts)
-        assert any("接続がありました" in t and "視聴" in t and "クライアント： ios" in t for t in texts)
-        assert any("引き継がれました" in t and "クライアント： ios" in t for t in texts)
+        def flatten(payload: dict) -> str:
+            embed = payload["embeds"][0]
+            lines = [embed["title"]]
+            lines += [f"{f['name']}：{f['value']}" for f in embed["fields"]]
+            return "\n".join(lines)
+
+        texts = [flatten(payload) for _, payload in sent]
+        assert any("接続がありました" in t and "役割：操作" in t and "クライアント：agent" in t for t in texts)
+        assert any("接続がありました" in t and "視聴" in t and "クライアント：ios" in t for t in texts)
+        assert any("引き継がれました" in t and "クライアント：ios" in t for t in texts)
+        # 種類ごとに色が違うこと（Discord で見分けるための左帯）
+        colors = [payload["embeds"][0]["color"] for _, payload in sent]
+        assert len(set(colors)) == 3
 
     asyncio.run(body())
 
