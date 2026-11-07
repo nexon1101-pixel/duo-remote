@@ -10,6 +10,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable, Protocol
 
 from websockets.asyncio.server import ServerConnection
@@ -1203,10 +1204,10 @@ async def _close_quietly(ws: ServerConnection, code: int, reason: str) -> None:
         pass
 
 
-def _post_webhook(url: str, text: str) -> None:
-    """Discord の Webhook に、1件の文を送る（同期。呼ぶ側はスレッドで動かす）。"""
+def _post_webhook(url: str, payload: dict) -> None:
+    """Discord の Webhook に、1件の通知を送る（同期。呼ぶ側はスレッドで動かす）。"""
     import urllib.request
-    body = json.dumps({"content": text}).encode("utf-8")
+    body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=body,
@@ -1230,7 +1231,7 @@ def make_handler(
     settings: Settings, backend, stream_factory: StreamFactory, audio_factory: AudioFactory | None = None,
     udp: UdpEndpoint | None = None,
     pad_factory: Callable[[], gamepad.VirtualPad] | None = None, pad_probe: tuple[bool, str] | None = None,
-    webhook_post: Callable[[str, str], None] | None = None,
+    webhook_post: Callable[[str, dict], None] | None = None,
 ):
     # 仮想のゲームパッドを使えるかは、起動のときに1回だけ調べる（pad_probe は調べた結果。なければここで調べる）
     if pad_factory is None:
@@ -1244,16 +1245,38 @@ def make_handler(
     cleanup: dict[str, asyncio.Task | None] = {"task": None}
     sessions: set[Session] = set()  # つながっている接続の全部（強制切断のため）
 
-    def notify(text: str) -> None:
-        """接続などの出来事を、設定された Webhook（Discord）に知らせる。失敗しても、接続には影響させない。"""
+    # 通知の色（Discord の埋め込みの左帯）。出来事の種類を、色で見分けられるようにする
+    COLOR_CONNECT_CONTROL = 0x2ECC71  # 接続（操作）: 緑
+    COLOR_CONNECT_VIEW = 0x3498DB  # 接続（視聴）: 青
+    COLOR_TAKEOVER = 0xE67E22  # 操作の引き継ぎ: オレンジ
+
+    def notify(title: str, fields: list[tuple[str, str]], color: int) -> None:
+        """接続などの出来事を、設定された Webhook（Discord）に知らせる。失敗しても、接続には影響させない。
+
+        Discord の埋め込み（embed）で送る。1件がカード状に区切られ、左帯の色で
+        種類が分かるので、チャンネルで通知同士の切り替わりが見分けやすい。
+        """
         url = settings.notify_webhook_url.strip()
         if not url:
             return
         post = webhook_post or _post_webhook
+        payload = {
+            "embeds": [
+                {
+                    "title": title,
+                    "color": color,
+                    "fields": [
+                        {"name": name, "value": value, "inline": False}
+                        for name, value in fields
+                    ],
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            ]
+        }
 
         async def run() -> None:
             try:
-                await asyncio.to_thread(post, url, text)
+                await asyncio.to_thread(post, url, payload)
             except Exception:
                 log.warning("接続の通知を送れませんでした", exc_info=True)
 
@@ -1416,8 +1439,12 @@ def make_handler(
         await requester.send({"t": "role", "role": "control", "pad": pad_ok})
         log.info("操作を引き継ぎました: %s", requester.ws.remote_address)
         notify(
-            "DuoRemote の操作が、別の端末に引き継がれました\n"
-            f"新しい操作側： {_addr_text(requester.ws)}\nクライアント： {requester.client_name or '不明'}"
+            "DuoRemote の操作が引き継がれました",
+            [
+                ("新しい操作側", _addr_text(requester.ws)),
+                ("クライアント", requester.client_name or "不明"),
+            ],
+            COLOR_TAKEOVER,
         )
         if old is not None:
             old.taken_over = True
@@ -1501,8 +1528,13 @@ def make_handler(
             else:
                 role_text = "視聴"
             notify(
-                "DuoRemote に接続がありました\n"
-                f"役割： {role_text}\n接続元： {_addr_text(ws)}\nクライアント： {session.client_name or '不明'}"
+                "DuoRemote に接続がありました",
+                [
+                    ("役割", role_text),
+                    ("接続元", _addr_text(ws)),
+                    ("クライアント", session.client_name or "不明"),
+                ],
+                COLOR_CONNECT_CONTROL if is_control else COLOR_CONNECT_VIEW,
             )
             session.start_video()
             tasks = [
