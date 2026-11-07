@@ -20,10 +20,17 @@ def make_client(wait_replies: dict | None = None) -> tuple[DuoClient, list[dict]
     client.role = "control"
     client.last_notice = None
     client.last_error = None
+    client._file_seq = 0
+    client._pulls = {}
+    client._waiters = {}
     sent: list[dict] = []
+    sent_bytes: list[bytes] = []
 
     async def fake_send(msg: dict) -> None:
         sent.append(msg)
+
+    async def fake_send_bytes(data: bytes) -> None:
+        sent_bytes.append(data)
 
     async def fake_wait(t: str, timeout: float) -> dict:
         if wait_replies and t in wait_replies:
@@ -31,7 +38,9 @@ def make_client(wait_replies: dict | None = None) -> tuple[DuoClient, list[dict]
         raise asyncio.TimeoutError
 
     client._send = fake_send  # type: ignore[method-assign]
+    client._send_bytes = fake_send_bytes  # type: ignore[method-assign]
     client._wait_for = fake_wait  # type: ignore[method-assign]
+    client.sent_bytes = sent_bytes  # type: ignore[attr-defined]
     return client, sent
 
 
@@ -119,3 +128,38 @@ def test_peek_reads_via_clipboard_and_restores():
     clip_gets = [i for i, t in enumerate(types) if t == "clip_get"]
     assert len(clip_gets) == 2
     assert "clip_set" in types[clip_gets[1]:]
+
+
+def test_send_file_frames(tmp_path):
+    src = tmp_path / "hello.txt"
+    src.write_bytes(b"hello" * 1000)
+    client, sent = make_client({"file_saved": {"t": "file_saved", "id": 1, "path": "C:/x/hello.txt"}})
+    out = run(client, {"cmd": "send", "path": str(src)})
+    assert sent[0] == {"t": "file_put", "id": 1, "name": "hello.txt", "size": 5000}
+    assert sent[-1] == {"t": "file_end", "id": 1}
+    frames = client.sent_bytes  # type: ignore[attr-defined]
+    assert all(f[0] & 0x04 for f in frames)  # FLAG_FILE
+    assert b"".join(f[5:] for f in frames) == b"hello" * 1000
+    assert out == {"path": "C:/x/hello.txt", "size": 5000}
+
+
+def test_pull_file_roundtrip(tmp_path):
+    import struct as _struct
+
+    from duo_client import FRAME_HEADER
+
+    client, sent = make_client()
+
+    async def scenario():
+        task = asyncio.create_task(client.run_command({"cmd": "pull", "dir": str(tmp_path)}))
+        await asyncio.sleep(0.05)
+        client._handle_text('{"t":"file_begin","id":3,"name":"pic.png","size":4,"mime":"image/png"}')
+        client._handle_bytes(FRAME_HEADER.pack(0x04, 3) + b"PNG!")
+        client._handle_text('{"t":"file_end","id":3}')
+        return await task
+
+    out = asyncio.run(scenario())
+    assert sent == [{"t": "clip_pull"}]
+    assert out["kind"] == "file" and out["size"] == 4
+    assert (tmp_path / "pic.png").read_bytes() == b"PNG!"
+    assert _struct.calcsize(">BI") == 5

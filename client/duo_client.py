@@ -20,6 +20,8 @@
               {"cmd": "quality", "max_height": 0, "fps": 15, "bitrate": 8000}（0 は元の大きさ）
               {"cmd": "clip"} / {"cmd": "clipset", "s": "貼る文字"} / {"cmd": "ping"} / {"cmd": "info"}
               {"cmd": "peek", "x": 0.5, "y": 0.5}  （入力欄を全選択＋コピーして中身を読み、クリップボードは元に戻す）
+              {"cmd": "send", "path": "/tmp/a.txt"}（PC の Downloads\\DuoRemote へ送る。to_clipboard も可）
+              {"cmd": "pull", "dir": "/tmp"}（PC のクリップボードのファイル／画像を受け取る。文字なら文字で返す）
               {"cmd": "quit"}
   返事:       {"ok": true, ...}（"id" を付けると、そのまま返す）
 
@@ -123,6 +125,9 @@ class DuoClient:
         self._waiters: dict[str, list[asyncio.Future]] = {}
         self.last_notice: str | None = None
         self.last_error: str | None = None
+        self._file_seq = 0
+        # clip_pull で受け取り中のファイル: id → {"name", "size", "mime", "data": bytearray}
+        self._pulls: dict[int, dict] = {}
 
     # --- 接続
 
@@ -163,31 +168,49 @@ class DuoClient:
         try:
             async for raw in self.ws:
                 if isinstance(raw, bytes):
-                    if len(raw) < FRAME_HEADER.size:
-                        continue
-                    flags, _ts = FRAME_HEADER.unpack_from(raw)
-                    if flags & (FLAG_AUDIO | FLAG_FILE):
-                        continue  # 音とファイルは、今は使わない
-                    self.buffer.add(bool(flags & FLAG_KEYFRAME), raw[FRAME_HEADER.size:])
+                    self._handle_bytes(raw)
                     continue
-                try:
-                    msg = json.loads(raw)
-                except ValueError:
-                    continue
-                if not isinstance(msg, dict):
-                    continue
-                t = msg.get("t")
-                if t == "notice":
-                    self.last_notice = msg.get("message")
-                elif t == "error":
-                    self.last_error = msg.get("message")
-                elif t == "role":
-                    self.role = msg.get("role")  # takeover で役割が変わったとき
-                for fut in self._waiters.pop(t, []):
-                    if not fut.done():
-                        fut.set_result(msg)
+                self._handle_text(raw)
         except Exception:
             pass  # 切れたことは、コマンド側の失敗として現れる
+
+    def _handle_bytes(self, raw: bytes) -> None:
+        if len(raw) < FRAME_HEADER.size:
+            return
+        flags, ident = FRAME_HEADER.unpack_from(raw)
+        if flags & FLAG_FILE:
+            item = self._pulls.get(ident)
+            if item is not None:
+                item["data"] += raw[FRAME_HEADER.size:]
+            return
+        if flags & FLAG_AUDIO:
+            return  # 音は、今は使わない
+        self.buffer.add(bool(flags & FLAG_KEYFRAME), raw[FRAME_HEADER.size:])
+
+    def _handle_text(self, raw: str) -> None:
+        try:
+            msg = json.loads(raw)
+        except ValueError:
+            return
+        if not isinstance(msg, dict):
+            return
+        t = msg.get("t")
+        if t == "notice":
+            self.last_notice = msg.get("message")
+        elif t == "error":
+            self.last_error = msg.get("message")
+        elif t == "role":
+            self.role = msg.get("role")  # takeover で役割が変わったとき
+        elif t == "file_begin":
+            self._pulls[msg.get("id")] = {
+                "name": msg.get("name") or "file",
+                "size": msg.get("size"),
+                "mime": msg.get("mime"),
+                "data": bytearray(),
+            }
+        for fut in self._waiters.pop(t, []):
+            if not fut.done():
+                fut.set_result(msg)
 
     async def _wait_for(self, t: str, timeout: float) -> dict:
         fut = asyncio.get_running_loop().create_future()
@@ -201,6 +224,9 @@ class DuoClient:
 
     async def _send(self, msg: dict) -> None:
         await self.ws.send(json.dumps(msg, ensure_ascii=False))
+
+    async def _send_bytes(self, data: bytes) -> None:
+        await self.ws.send(data)
 
     # --- コマンド
 
@@ -332,6 +358,59 @@ class DuoClient:
             await self._send({"t": "key", "vk": 39, "d": "down"})
             await self._send({"t": "key", "vk": 39, "d": "up"})
             return {"s": got}
+        if name == "send":
+            src = Path(cmd["path"]).expanduser()
+            data = src.read_bytes()
+            self._file_seq += 1
+            fid = self._file_seq
+            put = {
+                "t": "file_put", "id": fid,
+                "name": cmd.get("name") or src.name, "size": len(data),
+            }
+            if cmd.get("to_clipboard"):
+                put["to_clipboard"] = True
+            self.last_error = None
+            await self._send(put)
+            for i in range(0, len(data), 256 * 1024):
+                await self._send_bytes(FRAME_HEADER.pack(FLAG_FILE, fid) + data[i:i + 256 * 1024])
+            await self._send({"t": "file_end", "id": fid})
+            try:
+                saved = await self._wait_for("file_saved", timeout=60)
+            except asyncio.TimeoutError:
+                raise RuntimeError(self.last_error or "保存の返事が来ませんでした（時間切れ）")
+            return {"path": saved.get("path"), "size": len(data)}
+        if name == "pull":
+            out_dir = Path(cmd.get("dir") or "/tmp").expanduser()
+            self.last_error = None
+            clip_fut = asyncio.get_running_loop().create_future()
+            end_fut = asyncio.get_running_loop().create_future()
+            self._waiters.setdefault("clip", []).append(clip_fut)
+            self._waiters.setdefault("file_end", []).append(end_fut)
+            await self._send({"t": "clip_pull"})
+            done, _pending = await asyncio.wait(
+                {clip_fut, end_fut}, timeout=60, return_when=asyncio.FIRST_COMPLETED,
+            )
+            for f in (clip_fut, end_fut):
+                if not f.done():
+                    f.cancel()
+                    for lst in self._waiters.values():
+                        if f in lst:
+                            lst.remove(f)
+            if not done:
+                raise RuntimeError(self.last_error or "受け取りが終わりませんでした（時間切れ）")
+            if clip_fut in done:
+                return {"kind": "text", "s": clip_fut.result().get("s", "")}
+            end = end_fut.result()
+            item = self._pulls.pop(end.get("id"), None)
+            if item is None:
+                raise RuntimeError("ファイルの中身を受け取れませんでした")
+            name = Path(str(item["name"]).replace("\\", "/")).name or "file"
+            dest = out_dir / name
+            dest.write_bytes(bytes(item["data"]))
+            return {
+                "kind": "file", "path": str(dest),
+                "size": len(item["data"]), "mime": item["mime"],
+            }
         if name == "bring":
             self.last_error = None
             await self._send({"t": "bring", "id": int(cmd["id"])})
