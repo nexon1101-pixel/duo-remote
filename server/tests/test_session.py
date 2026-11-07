@@ -416,6 +416,7 @@ def test_post_webhook_sends_json_body(monkeypatch):
         captured["url"] = req.full_url
         captured["body"] = req.data
         captured["timeout"] = timeout
+        captured["headers"] = dict(req.headers)
         return FakeResponse()
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
@@ -423,6 +424,9 @@ def test_post_webhook_sends_json_body(monkeypatch):
     assert captured["url"] == "https://hook.example.jp/x"
     assert json.loads(captured["body"].decode("utf-8")) == {"content": "接続がありました"}
     assert captured["timeout"] == 5
+    # Discord は urllib 既定の User-Agent を 403 で弾くので、明示されていること
+    ua = captured["headers"].get("User-agent", "")
+    assert ua and "Python-urllib" not in ua
 
 
 def test_connect_and_takeover_are_notified_and_disconnect_all():
