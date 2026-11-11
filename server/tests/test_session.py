@@ -472,12 +472,43 @@ def test_connect_and_takeover_are_notified_and_disconnect_all():
             return "\n".join(lines)
 
         texts = [flatten(payload) for _, payload in sent]
-        assert any("接続がありました" in t and "役割：操作" in t and "クライアント：agent" in t for t in texts)
+        assert any("接続がありました" in t and "役割：操作" in t and "クライアント：うい" in t for t in texts)
         assert any("接続がありました" in t and "視聴" in t and "クライアント：ios" in t for t in texts)
         assert any("引き継がれました" in t and "クライアント：ios" in t for t in texts)
         # 種類ごとに色が違うこと（Discord で見分けるための左帯）
         colors = [payload["embeds"][0]["color"] for _, payload in sent]
         assert len(set(colors)) == 3
+
+    asyncio.run(body())
+
+
+def test_control_idle_timeout_disconnects_and_notifies():
+    """操作の接続が無操作のまま続いたら、タイムアウトで切って、通知する。"""
+    sent: list[tuple[str, dict]] = []
+
+    def factory(settings, src, region, monitor=None, window=None):
+        s = FakeStream()
+        s.settings, s.src, s.region, s.window = settings, src, region, window
+        return s
+
+    async def body():
+        settings = Settings(token=TOKEN, notify_webhook_url="https://hook.example.jp/x", control_idle_timeout_sec=0.3)
+        handler = make_handler(settings, NullInput((1920, 1080)), factory, webhook_post=lambda url, payload: sent.append((url, payload)))
+        async with serve(handler, "127.0.0.1", 0) as server:
+            url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+            async with connect(url) as ws:
+                await ws.send(hello(client="agent"))
+                assert (await recv_until(ws, "welcome"))["role"] == "control"
+                # 何も送らないでいると、サーバー側から切られる
+                with pytest.raises(ConnectionClosed):
+                    while True:
+                        await asyncio.wait_for(ws.recv(), 5)
+            for _ in range(50):  # 通知は裏で送られるので、少し待つ
+                if any("タイムアウト" in payload["embeds"][0]["title"] for _, payload in sent):
+                    break
+                await asyncio.sleep(0.1)
+        texts = ["\n".join([p["embeds"][0]["title"]] + [f"{f['name']}：{f['value']}" for f in p["embeds"][0]["fields"]]) for _, p in sent]
+        assert any("タイムアウト" in t and "クライアント：うい" in t for t in texts)
 
     asyncio.run(body())
 

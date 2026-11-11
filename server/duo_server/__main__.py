@@ -82,6 +82,7 @@ async def run(args: argparse.Namespace) -> None:
         bitrate_kbps=args.bitrate or cfg.get("bitrate_kbps", 8000),
         max_height=args.max_height if args.max_height is not None else cfg.get("max_height", 0),
         notify_webhook_url=str(cfg.get("notify_webhook_url", "") or ""),
+        control_idle_timeout_sec=float(cfg.get("control_idle_timeout_min", 10) or 0) * 60,
     )
     port = args.port or cfg.get("port", 8765)
     encoder = detect_encoder(args.ffmpeg) if args.encoder == "auto" else args.encoder

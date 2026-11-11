@@ -99,6 +99,8 @@ class Settings:
     short_gop: bool = False
     # 接続と、操作の引き継ぎを知らせる Webhook（Discord）の URL。空なら知らせない
     notify_webhook_url: str = ""
+    # 操作の接続が、この秒数ずっと無操作だったら、掴んだままの接続対策として切る（0 で無効）
+    control_idle_timeout_sec: float = 600.0
 
 
 class Stream(Protocol):
@@ -281,6 +283,9 @@ class Session:
         self.taken_over = False
         # hello で名乗ったクライアント名（通知に出す。なければ空）
         self.client_name = ""
+        # 最後にクライアントから何か届いた時刻（操作の接続の、無操作タイムアウトの判定に使う）
+        self.last_activity = time.monotonic()
+        self._idle_warned = False  # 無操作の警告（切断の約1分前）を、すでに送ったか
         # 仮想のゲームパッド。pad_reason は、使えないときの理由（使えるときは None）
         self.pad_factory = pad_factory
         self.pad_reason = pad_reason
@@ -1227,6 +1232,17 @@ def _addr_text(ws: ServerConnection) -> str:
     return f"{addr[0]}:{addr[1]}" if addr else "不明"
 
 
+# クライアントの自己申告を、通知などで見せる名前に対応付ける。
+# 内部の識別子はそのままで、表示だけ分かりやすくする（agent＝ういのヘッドレスクライアント）
+_CLIENT_LABELS = {"agent": "うい"}
+
+
+def _client_label(name: str) -> str:
+    if not name:
+        return "不明"
+    return _CLIENT_LABELS.get(name, name)
+
+
 def make_handler(
     settings: Settings, backend, stream_factory: StreamFactory, audio_factory: AudioFactory | None = None,
     udp: UdpEndpoint | None = None,
@@ -1384,6 +1400,8 @@ def make_handler(
 
     async def receive(session: Session) -> None:
         async for raw in session.ws:
+            session.last_activity = time.monotonic()
+            session._idle_warned = False
             if isinstance(raw, bytes):
                 # バイナリはファイルの受け渡しの中身だけ。視聴の接続からは受け付けない
                 if session.role != "view":
@@ -1442,7 +1460,7 @@ def make_handler(
             "DuoRemote の操作が引き継がれました",
             [
                 ("新しい操作側", _addr_text(requester.ws)),
-                ("クライアント", requester.client_name or "不明"),
+                ("クライアント", _client_label(requester.client_name)),
             ],
             COLOR_TAKEOVER,
         )
@@ -1520,7 +1538,7 @@ def make_handler(
             await ws.send(protocol.dumps(welcome))
             if demoted:
                 await session.send({"t": "notice", "message": "操作中の接続があるため、視聴モードで接続しました"})
-            log.info("接続しました: %s（%dx%d, %dfps、%s）", ws.remote_address, w, h, per_conn.fps, session.role)
+            log.info("接続しました: %s（%dx%d, %dfps、%s、クライアント: %s）", ws.remote_address, w, h, per_conn.fps, session.role, _client_label(session.client_name))
             if is_control:
                 role_text = "操作"
             elif demoted:
@@ -1532,10 +1550,47 @@ def make_handler(
                 [
                     ("役割", role_text),
                     ("接続元", _addr_text(ws)),
-                    ("クライアント", session.client_name or "不明"),
+                    ("クライアント", _client_label(session.client_name)),
                 ],
                 COLOR_CONNECT_CONTROL if is_control else COLOR_CONNECT_VIEW,
             )
+            async def watch_idle() -> None:
+                """操作の接続が、ずっと無操作だったら切る（掴んだままの接続対策）。
+
+                視聴の接続は対象にしない（見ているだけで触らないのが普通なので）。
+                切る約1分前に、クライアントへ予告を送る（何か送れば、タイマーは戻る）。
+                """
+                timeout = settings.control_idle_timeout_sec
+                if timeout <= 0:
+                    return
+                interval = max(0.05, min(10.0, timeout / 6))
+                while True:
+                    await asyncio.sleep(interval)
+                    idle = time.monotonic() - session.last_activity
+                    if idle >= timeout:
+                        log.info("無操作が続いたので切断します: %s（%.0f秒、クライアント: %s）", ws.remote_address, idle, _client_label(session.client_name))
+                        notify(
+                            "DuoRemote の接続を、無操作タイムアウトで切りました",
+                            [
+                                ("クライアント", _client_label(session.client_name)),
+                                ("接続元", _addr_text(ws)),
+                                ("無操作の時間", f"約{max(1, round(idle / 60))}分"),
+                            ],
+                            COLOR_TAKEOVER,
+                        )
+                        try:
+                            await session.send({"t": "notice", "message": "操作がないため、タイムアウトで切断します"})
+                        except Exception:
+                            pass
+                        await ws.close(code=1000, reason="idle timeout")
+                        return
+                    if timeout > 120 and idle >= timeout - 60 and not session._idle_warned:
+                        session._idle_warned = True
+                        try:
+                            await session.send({"t": "notice", "message": "あと約1分、操作がなければタイムアウトで切断します"})
+                        except Exception:
+                            pass
+
             session.start_video()
             tasks = [
                 asyncio.create_task(receive(session)),
@@ -1543,6 +1598,8 @@ def make_handler(
                 asyncio.create_task(session.watch_window()),
                 asyncio.create_task(session.send_stats()),
             ]
+            if session.role == "control":
+                tasks.append(asyncio.create_task(watch_idle()))
             if session.peer is not None:
                 tasks.append(asyncio.create_task(session.watch_udp()))
             done, _ = await asyncio.wait(

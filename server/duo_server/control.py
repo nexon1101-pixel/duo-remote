@@ -28,13 +28,14 @@ SETTING_LIMITS: dict[str, tuple[int, int]] = {
     "bitrate_kbps": (500, 20000),
     "max_height": (0, 4320),
     "output_idx": (0, 15),
+    "control_idle_timeout_min": (0, 240),
 }
 ENCODERS = ("auto", "h264_nvenc", "libx264")
 # 管理画面を開くブラウザー。edge: Edge のアプリ表示（アドレスバーのないウィンドウ）、chrome: Chrome のタブ、default: いつものブラウザー
 PANEL_BROWSERS = ("edge", "chrome", "default")
 DEFAULTS: dict[str, Any] = {
     "port": 8765, "fps": 60, "bitrate_kbps": 8000, "max_height": 0, "encoder": "auto", "output_idx": 0,
-    "panel_browser": "edge", "tray": True, "notify_webhook_url": "",
+    "panel_browser": "edge", "tray": True, "notify_webhook_url": "", "control_idle_timeout_min": 10,
 }
 
 

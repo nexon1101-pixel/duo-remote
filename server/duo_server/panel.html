@@ -128,6 +128,7 @@ footer { text-align: center; margin-top: 24px; }
       <label>映像の高さ上限（0で元の大きさ）<input type="number" id="s_max_height"></label>
       <label>エンコーダー<select id="s_encoder"></select></label>
       <label>モニター番号<input type="number" id="s_output_idx"></label>
+      <label>操作の無操作タイムアウト（分、0で無効）<input type="number" id="s_control_idle_timeout_min"></label>
     </div>
     <div class="row"><span class="label">接続の通知</span>
       <input type="text" id="s_notify_webhook_url" placeholder="Discord の Webhook URL（空なら知らせない）" style="flex:1"></div>
@@ -323,7 +324,7 @@ async function loadSettings() {
   cfg = await api("/api/settings");
   const sel = $("s_encoder");
   if (!sel.options.length) cfg.encoders.forEach((e) => sel.add(new Option(e, e)));
-  for (const k of ["port", "fps", "bitrate_kbps", "max_height", "output_idx"]) {
+  for (const k of ["port", "fps", "bitrate_kbps", "max_height", "output_idx", "control_idle_timeout_min"]) {
     const el = $("s_" + k); el.value = cfg.settings[k];
     if (cfg.limits[k]) { el.min = cfg.limits[k][0]; el.max = cfg.limits[k][1]; }
   }
@@ -344,7 +345,7 @@ $("restartNow").onclick = async () => { await runBusy(() => api("/api/restart", 
 
 $("save").onclick = async () => {
   const changes = { encoder: $("s_encoder").value, notify_webhook_url: $("s_notify_webhook_url").value.trim() };
-  for (const k of ["port", "fps", "bitrate_kbps", "max_height", "output_idx"]) changes[k] = Number($("s_" + k).value);
+  for (const k of ["port", "fps", "bitrate_kbps", "max_height", "output_idx", "control_idle_timeout_min"]) changes[k] = Number($("s_" + k).value);
   try {
     const r = await api("/api/settings", "POST", { changes });
     cfg.settings = r.settings; toast("保存しました");
