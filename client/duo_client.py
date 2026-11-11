@@ -148,7 +148,7 @@ class DuoClient:
             "t": "hello", "v": 1, "token": self.token,
             "fps": self.args.fps, "max_height": self.args.max_height,
             "bitrate": self.args.bitrate, "codecs": ["h264"],
-            "transport": "tcp", "role": self.args.role, "client": "agent",
+            "transport": "tcp", "role": self.args.role, "client": "うい",
         }
         await self.ws.send(json.dumps(hello))
         self._recv_task = asyncio.create_task(self._receive_loop())
