@@ -138,6 +138,18 @@ final class RemoteSession: ObservableObject {
     static let transportKey = "transportMode"
     /// 設定「仮想画面の大きさ」（仮想ディスプレイの高さの、標準（1080）に対する倍率。1.0、1.25、1.5、2.0）
     static let virtualScaleKey = "virtualScale"
+    /// この端末の識別子（hello で送る）。初回に作って、ずっと同じ値を使う。
+    /// サーバーは、同じ端末からのつなぎ直しを、前の接続（切れたのに残っている接続）と
+    /// 置き換えるために使う。端末を識別するためだけの値で、認証には使わない
+    static let deviceIDKey = "deviceID"
+    static var deviceID: String {
+        if let saved = UserDefaults.standard.string(forKey: deviceIDKey) {
+            return saved
+        }
+        let created = UUID().uuidString
+        UserDefaults.standard.set(created, forKey: deviceIDKey)
+        return created
+    }
 
     /// 接続中に出すお知らせ（サーバーからのエラーなど）。数秒で消す
     @Published private(set) var notice: String?
@@ -312,7 +324,7 @@ final class RemoteSession: ObservableObject {
         self.task = task
         task.resume()
 
-        var hello: [String: Any] = ["t": "hello", "v": 1, "token": target.token, "client": "ios"]
+        var hello: [String: Any] = ["t": "hello", "v": 1, "token": target.token, "client": "ios", "device": Self.deviceID]
         // つなぎ直しのときは、自動で下げた画質のまま始める
         hello.merge((autoQuality?.current ?? quality).helloFields) { _, new in new }
         // H.265 は、同じ画質で通信量が H.264 の半分くらい。この端末が速く読めて、設定でオフにしていなければ、先に頼む
