@@ -281,8 +281,13 @@ class Session:
         self.on_takeover: "Callable[[Session], Any] | None" = None
         # 別の接続に操作を引き継いで、この接続が終わるところか
         self.taken_over = False
+        # 引き継いだのが、同じ端末からのつなぎ直しか
+        self.taken_over_same_device = False
         # hello で名乗ったクライアント名（通知に出す。なければ空）
         self.client_name = ""
+        # hello で名乗った端末の識別子（なければ空）。同じ端末からのつなぎ直しを、
+        # 前の接続と置き換えるために使う。認証には使わない
+        self.device_id = ""
         # 最後にクライアントから何か届いた時刻（操作の接続の、無操作タイムアウトの判定に使う）
         self.last_activity = time.monotonic()
         self._idle_warned = False  # 無操作の警告（切断の約1分前）を、すでに送ったか
@@ -1445,8 +1450,11 @@ def make_handler(
             except Exception:
                 log.exception("PC のスピーカーの消音を戻せませんでした")
 
-    async def takeover(requester: Session) -> None:
-        """視聴の接続に、操作を引き継がせる。今の操作側は閉じ、状態は引き継ぎ先がそのまま使う。"""
+    async def takeover(requester: Session, same_device: bool = False) -> None:
+        """視聴の接続に、操作を引き継がせる。今の操作側は閉じ、状態は引き継ぎ先がそのまま使う。
+
+        same_device は、同じ端末からのつなぎ直しで、前の接続と置き換えるとき。
+        別端末への引き継ぎではないので、Webhook には知らせない。"""
         old = active["control"]
         if old is requester:
             return
@@ -1455,23 +1463,27 @@ def make_handler(
         cancel_cleanup()  # 戻す予定があったら、引き継ぎ先が続きから使う
         backend.set_region(None)  # 引き継ぎ先は画面全体の表示。入力の座標も、そこに合わせる
         await requester.send({"t": "role", "role": "control", "pad": pad_ok})
-        log.info("操作を引き継ぎました: %s", requester.ws.remote_address)
-        notify(
-            "DuoRemote の操作が引き継がれました",
-            [
-                ("新しい操作側", _addr_text(requester.ws)),
-                ("クライアント", _client_label(requester.client_name)),
-            ],
-            COLOR_TAKEOVER,
-        )
+        if same_device:
+            log.info("同じ端末からのつなぎ直しで、前の接続と置き換えました: %s", requester.ws.remote_address)
+        else:
+            log.info("操作を引き継ぎました: %s", requester.ws.remote_address)
+            notify(
+                "DuoRemote の操作が引き継がれました",
+                [
+                    ("新しい操作側", _addr_text(requester.ws)),
+                    ("クライアント", _client_label(requester.client_name)),
+                ],
+                COLOR_TAKEOVER,
+            )
         if old is not None:
             old.taken_over = True
+            old.taken_over_same_device = same_device
             try:
-                await old.send({"t": "notice", "message": "別の端末が操作を引き継ぎました"})
+                await old.send({"t": "notice", "message": "同じ端末がつなぎ直しました" if same_device else "別の端末が操作を引き継ぎました"})
             except ConnectionClosed:
                 pass
             # 閉じるのは裏で行う（この接続の応答を待たせないため）
-            task = asyncio.create_task(_close_quietly(old.ws, 1000, "別の端末が操作を引き継ぎました"))
+            task = asyncio.create_task(_close_quietly(old.ws, 1000, "同じ端末がつなぎ直しました" if same_device else "別の端末が操作を引き継ぎました"))
             background.add(task)
             task.add_done_callback(background.discard)
 
@@ -1517,7 +1529,18 @@ def make_handler(
         session.on_takeover = takeover
         client_name = hello.get("client")
         session.client_name = client_name[:64] if isinstance(client_name, str) else ""
+        device = hello.get("device")
+        session.device_id = device[:64] if isinstance(device, str) else ""
         sessions.add(session)
+        if wants_control and not is_control:
+            old = active["control"]
+            if old is not None and session.device_id and old.device_id == session.device_id:
+                # 同じ端末からのつなぎ直し。前の接続が切れたのにサーバー側に残っている
+                # （アプリが落とされた、電波が切り替わった、など）と、その端末自身が
+                # 視聴に回されてしまう。別の端末の操作は奪わないが、同じ端末なら、
+                # 前の接続と置き換えて、最初から操作にする
+                await takeover(session, same_device=True)
+                is_control = True
         demoted = wants_control and not is_control
         if is_control:
             cancel_cleanup()  # 切れていた間に、戻す予定だったものは、続きから使う
@@ -1617,6 +1640,12 @@ def make_handler(
             await reject(ws, "映像を始められませんでした。サーバーのログを確認してください")
         finally:
             sessions.discard(session)
+            # 操作の枠は、後片付け（映像の停止など）の前に空ける。後片付けに時間がかかると、
+            # その間に同じ端末がつなぎ直しても、枠が埋まったままで視聴に回されてしまうため
+            was_control = active["control"] is session
+            if was_control:
+                active["control"] = None
+                backend.set_region(None)
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -1629,9 +1658,7 @@ def make_handler(
             await session.stop_stream()
             # 押したまま切れると、PCでボタンやキーが押されたままになるので、離す
             release_held(backend, session.held)
-            if active["control"] is session:
-                active["control"] = None
-                backend.set_region(None)
+            if was_control:
                 if ws.close_code == 1000:
                     # iPhone の「切断」ボタン。すぐ元に戻す
                     await run_cleanup()
@@ -1645,7 +1672,10 @@ def make_handler(
                     )
             elif session.taken_over:
                 # 別の接続が操作を引き継いだ。仮想ディスプレイなどの状態は、引き継ぎ先がそのまま使う
-                log.info("操作を別の端末に引き継ぎました（受け取った操作: %s）", _input_summary(session))
+                if session.taken_over_same_device:
+                    log.info("同じ端末のつなぎ直しに置き換わりました（受け取った操作: %s）", _input_summary(session))
+                else:
+                    log.info("操作を別の端末に引き継ぎました（受け取った操作: %s）", _input_summary(session))
             else:
                 # 視聴の接続は PC の状態を持たないので、後片付け（仮想ディスプレイの復帰など）はしない
                 log.info("視聴の接続が切れました: %s", ws.remote_address)

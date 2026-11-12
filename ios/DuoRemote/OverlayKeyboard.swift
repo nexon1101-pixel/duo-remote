@@ -405,10 +405,15 @@ final class OverlayKeysUIView: UIView {
 
             let main: String
             var small: String?
+            // 英字のキーは、Shift の状態で大文字・小文字を出し分ける（押したときに入る文字が、見て分かるように）。
+            // 英字のラベルは、配列の表では大文字で書いてある
+            let isLetterKey = key.label.count == 1 && (key.label.first?.isLetter ?? false)
             if key.ime {
                 main = imeOn == true ? "あ" : "A"
             } else if fn, let alt = key.fn {
                 main = alt.label
+            } else if isLetterKey {
+                main = shift ? key.label : key.label.lowercased()
             } else if shift, let s = key.shiftLabel {
                 main = s
                 small = key.label

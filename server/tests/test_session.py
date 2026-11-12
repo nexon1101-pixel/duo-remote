@@ -397,6 +397,27 @@ def test_viewer_can_take_over_control():
     asyncio.run(run_with_server(body))
 
 
+def test_same_device_reconnect_replaces_previous_connection():
+    async def body(url, backend):
+        async with connect(url) as first:
+            await first.send(hello(device="phone-1"))
+            assert (await recv_until(first, "welcome"))["role"] == "control"
+            async with connect(url) as second:
+                await second.send(hello(device="phone-1"))
+                # 同じ端末からのつなぎ直しは、前の接続が残っていても視聴にならず、最初から操作になる
+                assert (await recv_until(second, "welcome"))["role"] == "control"
+                # 前の接続は閉じられる
+                with pytest.raises(ConnectionClosed):
+                    while True:
+                        await asyncio.wait_for(first.recv(), 5)
+                # 別の端末は、これまでどおり視聴になる
+                async with connect(url) as third:
+                    await third.send(hello(device="phone-2"))
+                    assert (await recv_until(third, "welcome"))["role"] == "view"
+
+    asyncio.run(run_with_server(body))
+
+
 def test_post_webhook_sends_json_body(monkeypatch):
     """本物の _post_webhook が JSON を組み立てて送れること（import 漏れの回帰防止）。"""
     import urllib.request

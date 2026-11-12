@@ -149,6 +149,9 @@ class DuoClient:
             "fps": self.args.fps, "max_height": self.args.max_height,
             "bitrate": self.args.bitrate, "codecs": ["h264"],
             "transport": "tcp", "role": self.args.role, "client": "うい",
+            # 同じ端末（このクライアント）からのつなぎ直しだと分かるようにする識別子。
+            # サーバーは、前の接続が残っていても置き換えて、視聴に回さない
+            "device": "agent-vm",
         }
         await self.ws.send(json.dumps(hello))
         self._recv_task = asyncio.create_task(self._receive_loop())
@@ -532,7 +535,13 @@ async def amain(args) -> int:
     threading.Thread(target=read_stdin, daemon=True).start()
     try:
         while True:
-            line = await queue.get()
+            # 長く何も頼まれなければ、自分から切って終わる。操作の枠を握ったまま
+            # 残り続けないため（サーバー側の無操作タイムアウトと同じ 10 分）
+            try:
+                line = await asyncio.wait_for(queue.get(), timeout=600)
+            except asyncio.TimeoutError:
+                emit({"ok": True, "bye": True, "reason": "しばらく何もなかったので、接続を切りました"})
+                break
             if line is None:
                 break
             line = line.strip()
