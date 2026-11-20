@@ -758,19 +758,13 @@ struct ContentView: View {
         connectFormContent
     }
 
-    /// スクロールの中身に、実際に渡される幅（右の帯などの、安全領域を除いた幅）。測り用の部品で測る
+    /// スクロールに実際に渡される幅（右の帯などの、安全領域を除いた幅）。スクロール自体の大きさから測る。
+    /// 中身の中で測ると、幅を固定した中身自身に引っ張られて、開閉や回転のあとも古い幅のままになることがある
     @State private var formWidth: CGFloat = 0
 
     private var connectFormContent: some View {
         ScrollView {
           VStack(spacing: 0) {
-            // 高さ 0 の測り用の部品。スクロールの中身に渡される幅を、formWidth に入れる
-            Color.clear
-                .frame(maxWidth: .infinity)
-                .frame(height: 0)
-                .background(GeometryReader { proxy in
-                    Color.clear.preference(key: FormWidthKey.self, value: proxy.size.width)
-                })
             VStack(spacing: 24) {
                 header
                     .padding(.top, 40)
@@ -820,6 +814,10 @@ struct ContentView: View {
             .animation(.spring(duration: 0.35), value: session.state)
           }
         }
+        .background(GeometryReader { proxy in
+            Color.clear.preference(key: FormWidthKey.self,
+                value: proxy.size.width - proxy.safeAreaInsets.leading - proxy.safeAreaInsets.trailing)
+        })
         .onPreferenceChange(FormWidthKey.self) { formWidth = $0 }
         .scrollDismissesKeyboard(.interactively)
     }
