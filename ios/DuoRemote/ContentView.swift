@@ -4,6 +4,11 @@ import UIKit
 
 public struct ContentView: View {
     public init() {}
+
+    /// 採用箱（DuoBox）の中から使うときに渡される、ホームへ戻る操作。
+    /// 渡されたときだけ、右上のメニューの先頭に「ホームへ戻る」が出る。接続は切れない。
+    public var onExitToHome: (() -> Void)?
+
     @EnvironmentObject private var session: RemoteSession
 
     // 接続先は端末に覚えておく。トークンはキーチェーンにしまう
@@ -634,6 +639,10 @@ public struct ContentView: View {
     /// compact のときは、半開きの下の画面の帯に置く、小さな丸いボタンにする
     private func menu(compact: Bool = false) -> some View {
         Menu {
+            if let onExitToHome {
+                Button("ホームへ戻る", systemImage: "house") { onExitToHome() }
+                Divider()
+            }
             Button("ウィンドウを選択", systemImage: "macwindow") {
                 session.requestWindows()
                 showingWindows = true
