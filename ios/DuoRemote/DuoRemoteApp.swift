@@ -6,7 +6,7 @@ struct DuoRemoteApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
                 .environmentObject(session)
                 // 映像を見るアプリなので、いつも暗い見た目にする
                 .preferredColorScheme(.dark)
