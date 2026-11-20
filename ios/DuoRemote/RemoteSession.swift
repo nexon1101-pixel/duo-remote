@@ -108,7 +108,7 @@ final class LatencyStore: ObservableObject {
 
 /// サーバーとのWebSocket接続。通信の取り決めは docs/protocol.md を参照。
 @MainActor
-final class RemoteSession: ObservableObject {
+public final class RemoteSession: ObservableObject {
     enum State: Equatable {
         case disconnected
         case connecting
@@ -259,9 +259,9 @@ final class RemoteSession: ObservableObject {
     /// 送った ping の番号と、送った時刻
     private var pendingPings: [Int: Date] = [:]
 
-    var isConnectedOrReconnecting: Bool { state == .connected || state == .reconnecting }
+    public var isConnectedOrReconnecting: Bool { state == .connected || state == .reconnecting }
 
-    init() {
+    public init() {
         audio.onFailure = { [weak self] message in
             Task { @MainActor in
                 guard let self else { return }
