@@ -768,11 +768,11 @@ public struct ContentView: View {
         connectFormContent
     }
 
-    /// スクロールに実際に渡される幅（右の帯などの、安全領域を除いた幅）。スクロール自体の大きさから測る。
-    /// 中身の中で測ると、幅を固定した中身自身に引っ張られて、開閉や回転のあとも古い幅のままになることがある
-    @State private var formWidth: CGFloat = 0
-
+    /// フォームの幅は、スクロールの外側で測る。中身の中で測ったり、測った値を状態に残したりすると、
+    /// 裏から戻ったときなどに古い（広い）幅のままになり、中身が画面からはみ出すことがある
     private var connectFormContent: some View {
+        GeometryReader { proxy in
+        let formWidth = proxy.size.width - proxy.safeAreaInsets.leading - proxy.safeAreaInsets.trailing
         ScrollView {
           VStack(spacing: 0) {
             VStack(spacing: 24) {
@@ -817,19 +817,15 @@ public struct ContentView: View {
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 32)
-            // 測れたら、その幅（560 まで）に固定する。広い部品があっても、横にはみ出さないようにする
+            // 外で測った幅（560 まで）に固定する。広い部品があっても、横にはみ出さないようにする
             .frame(width: formWidth > 0 ? min(formWidth, 560) : nil)
             .frame(maxWidth: .infinity)
             .animation(.spring(duration: 0.35), value: session.errorMessage)
             .animation(.spring(duration: 0.35), value: session.state)
           }
         }
-        .background(GeometryReader { proxy in
-            Color.clear.preference(key: FormWidthKey.self,
-                value: proxy.size.width - proxy.safeAreaInsets.leading - proxy.safeAreaInsets.trailing)
-        })
-        .onPreferenceChange(FormWidthKey.self) { formWidth = $0 }
         .scrollDismissesKeyboard(.interactively)
+        }
     }
 
     private var header: some View {
@@ -982,11 +978,3 @@ private struct DockHeightKey: PreferenceKey {
     }
 }
 
-
-/// 接続の画面の、スクロールの中身の幅
-private struct FormWidthKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
