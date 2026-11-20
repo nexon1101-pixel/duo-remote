@@ -2,7 +2,8 @@ import GameController
 import SwiftUI
 import UIKit
 
-struct ContentView: View {
+public struct ContentView: View {
+    public init() {}
     @EnvironmentObject private var session: RemoteSession
 
     // 接続先は端末に覚えておく。トークンはキーチェーンにしまう
@@ -96,7 +97,7 @@ struct ContentView: View {
         legacyDockMode = ""
     }
 
-    var body: some View {
+    public var body: some View {
         ZStack {
             if session.isConnectedOrReconnecting {
                 Color.black.ignoresSafeArea()
