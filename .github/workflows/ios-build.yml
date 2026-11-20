@@ -20,6 +20,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 同梱キーボードの本体パッケージ（DuoFlick リポジトリ）を隣に置く
+      - uses: actions/checkout@v4
+        with:
+          repository: nexon1101-pixel/DuoFlick
+          path: vendor/DuoFlick
+
       - name: Xcodeを選ぶ（入っている中でいちばん新しいもの）
         run: |
           ls -d /Applications/Xcode*.app

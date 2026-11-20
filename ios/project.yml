@@ -4,11 +4,15 @@ options:
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
+packages:
+  # キーボード本体のパッケージ。ビルド時に DuoFlick リポジトリを vendor/DuoFlick へ取得して使う
+  DuoFlickKeyboardCore:
+    path: ../vendor/DuoFlick
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.28.2"
-    CURRENT_PROJECT_VERSION: "62"
+    MARKETING_VERSION: "0.29.0"
+    CURRENT_PROJECT_VERSION: "63"
 targets:
   DuoRemote:
     type: application
@@ -39,3 +43,31 @@ targets:
         NSLocalNetworkUsageDescription: 同じネットワークにあるPCに接続するために使います
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
+    dependencies:
+      - target: DuoRemoteKeyboard
+  # 同梱の DuoFlick キーボード拡張。本体は DuoFlickKeyboardCore パッケージ側にある
+  DuoRemoteKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - KeyboardHost
+      - path: ../vendor/DuoFlick/Keyboard/SkkDict
+        type: folder
+    dependencies:
+      - package: DuoFlickKeyboardCore
+    info:
+      path: KeyboardHost/Info.plist
+      properties:
+        CFBundleDisplayName: DuoFlick
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.keyboard-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).DuoFlickKeyboardHost
+          NSExtensionAttributes:
+            IsASCIICapable: false
+            PrefersRightToLeft: false
+            PrimaryLanguage: ja-JP
+            RequestsOpenAccess: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.duoremote.app.keyboard
+        TARGETED_DEVICE_FAMILY: "1,2"
