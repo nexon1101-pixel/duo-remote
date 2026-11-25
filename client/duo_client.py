@@ -640,6 +640,69 @@ async def run_oneshot(client: DuoClient, raw_cmds: list[str]) -> tuple[list[dict
     return replies, all_ok
 
 
+def add_profile(config_path: str, name: str, host: str | None, port: int | None,
+                token: str | None, make_default: bool) -> dict:
+    """設定ファイルにプロファイルを足す（無ければ作る）。返り値にトークンは含めない。"""
+    if not host and not port and not token:
+        raise RuntimeError("--host / --port / トークンのどれかは入れてください")
+    path = Path(config_path).expanduser()
+    config: dict = {}
+    if path.exists():
+        config = json.loads(path.read_text())
+    profiles, effective_default = config_profiles(config)
+    entry = dict(profiles.get(name) or {})
+    if host:
+        entry["host"] = host
+    if port:
+        entry["port"] = int(port)
+    if token:
+        entry["token"] = token
+    profiles[name] = entry
+    config["profiles"] = profiles
+    for k in ("host", "port", "token"):
+        config.pop(k, None)  # 旧形式のキーはプロファイル側へ寄せたので消す
+    if make_default:
+        config["default"] = name
+    elif not config.get("default") and effective_default:
+        config["default"] = effective_default  # 旧形式の既定（名前なし単一）はそのまま既定に残す
+    elif not config.get("default"):
+        config["default"] = name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return {"added": name, "host": entry.get("host"), "port": int(entry.get("port") or 8765),
+            "has_token": bool(entry.get("token")), "default": config.get("default") == name}
+
+
+async def check_one(args, config: dict, name: str) -> dict:
+    """1プロファイルに view でつないで ping まで試し、結果を dict で返す。"""
+    import argparse as _ap
+
+    sub = _ap.Namespace(**vars(args))
+    sub.profile = name
+    sub.role = "view"
+    started = time.monotonic()
+    try:
+        host, port, token, _ = resolve_target(sub, config)
+        sub.host, sub.port = host, port
+        if not token:
+            raise RuntimeError("トークンがありません")
+        client = DuoClient(sub, token)
+        try:
+            await asyncio.wait_for(client.connect(), timeout=45)
+            pong = await asyncio.wait_for(client.run_command({"cmd": "ping"}), timeout=15)
+        finally:
+            await client.close()
+        return {"profile": name, "host": host, "port": port, "ok": True,
+                "role": client.role, "ms": int((time.monotonic() - started) * 1000), "n": pong.get("n")}
+    except Exception as e:
+        return {"profile": name, "ok": False, "error": describe_error(e),
+                "ms": int((time.monotonic() - started) * 1000)}
+
+
 def load_config(path: str) -> dict:
     config_path = Path(path).expanduser()
     if config_path.exists():
@@ -649,6 +712,15 @@ def load_config(path: str) -> dict:
 
 async def amain(args) -> int:
     config = load_config(args.config)
+    if args.check:
+        profiles, _ = config_profiles(config)
+        names = [args.profile] if args.profile else list(profiles)
+        all_ok = True
+        for name in names:
+            result = await check_one(args, config, name)
+            all_ok = all_ok and bool(result.get("ok"))
+            emit({"check": result})
+        return 0 if all_ok else 1
     try:
         args.host, args.port, token, profile = resolve_target(args, config)
     except Exception as e:
@@ -734,6 +806,10 @@ def main() -> None:
     parser.add_argument("--config", default="~/.config/duo-client/config.json")
     parser.add_argument("--profile", default=None, help="設定ファイルのプロファイル名（例: main-pc / ui-pc）")
     parser.add_argument("--list-profiles", action="store_true", help="プロファイルの一覧を出して終わる（トークンは出さない）")
+    parser.add_argument("--check", action="store_true", help="プロファイルごとに接続と ping を試して結果を出して終わる（--profile で1つだけも可）")
+    parser.add_argument("--add-profile", default=None, metavar="NAME", help="プロファイルを設定ファイルへ登録して終わる（--host/--port/--token と併用）")
+    parser.add_argument("--token", default=None, help="--add-profile で登録するトークン（環境変数 DUO_TOKEN でも可）")
+    parser.add_argument("--make-default", action="store_true", help="--add-profile で、そのプロファイルを既定にする")
     parser.add_argument("--run", action="append", default=None, metavar="JSON",
                         help="ワンショット実行: 接続してこのコマンドを実行し、切って終わる（複数指定可）")
     parser.add_argument("--host", default=None)
@@ -747,6 +823,17 @@ def main() -> None:
     args = parser.parse_args()
     if args.list_profiles:
         emit({"profiles": profile_summaries(load_config(args.config))})
+        raise SystemExit(0)
+    if args.add_profile:
+        try:
+            summary = add_profile(
+                args.config, args.add_profile, args.host, args.port,
+                args.token or os.environ.get("DUO_TOKEN"), args.make_default,
+            )
+        except Exception as e:
+            emit({"added": None, "error": describe_error(e)})
+            raise SystemExit(2)
+        emit(summary)
         raise SystemExit(0)
     raise SystemExit(asyncio.run(amain(args)))
 

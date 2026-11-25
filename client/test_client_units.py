@@ -3,6 +3,7 @@
 接続はせず、_send を捕まえて、サーバーへ送るメッセージの並びだけを確かめる。
 """
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -251,3 +252,30 @@ def test_pull_file_roundtrip(tmp_path):
     assert out["kind"] == "file" and out["size"] == 4
     assert (tmp_path / "pic.png").read_bytes() == b"PNG!"
     assert _struct.calcsize(">BI") == 5
+
+
+def test_add_profile_roundtrip(tmp_path):
+    from duo_client import add_profile, load_config, profile_summaries, resolve_target
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"host": "old", "port": 8765, "token": "t0"}))
+    out = add_profile(str(cfg), "ui-pc", "100.0.0.2", 8765, "tok-ui", False)
+    assert out == {"added": "ui-pc", "host": "100.0.0.2", "port": 8765, "has_token": True, "default": False}
+    assert "tok-ui" not in str(out)
+    loaded = load_config(str(cfg))
+    # 旧形式は default プロファイルへ寄せられ、フラットなキーは消える
+    assert "host" not in loaded and set(loaded["profiles"]) == {"default", "ui-pc"}
+    host, port, token, name = resolve_target(fake_args(profile="ui-pc"), loaded)
+    assert (host, port, token, name) == ("100.0.0.2", 8765, "tok-ui", "ui-pc")
+    # 何も入れない登録は断る
+    with pytest.raises(RuntimeError):
+        add_profile(str(cfg), "empty", None, None, None, False)
+
+
+def test_add_profile_make_default(tmp_path):
+    from duo_client import add_profile, load_config
+
+    cfg = tmp_path / "config.json"
+    out = add_profile(str(cfg), "main-pc", "100.0.0.1", None, "t", True)
+    assert out["default"] is True
+    assert load_config(str(cfg))["default"] == "main-pc"
