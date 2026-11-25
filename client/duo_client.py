@@ -25,8 +25,19 @@
               {"cmd": "quit"}
   返事:       {"ok": true, ...}（"id" を付けると、そのまま返す）
 
-トークンは引数に書かない。設定ファイル（既定 ~/.config/duo-client/config.json、
-{"host": ..., "port": 8765, "token": ...}）か、環境変数 DUO_TOKEN から読む。
+トークンは引数に書かない。設定ファイル（既定 ~/.config/duo-client/config.json）か、
+環境変数 DUO_TOKEN から読む。設定ファイルは、接続先を名前で選ぶプロファイル形式:
+
+  {"profiles": {"main-pc": {"host": ..., "port": 8765, "token": ...},
+                "ui-pc":   {"host": ..., "port": 8765, "token": ...}},
+   "default": "main-pc"}
+
+--profile で選ぶ（省略時は default、無ければ唯一のプロファイル）。--list-profiles で
+一覧（トークンは出さない）。旧形式の {"host": ..., "port": ..., "token": ...} も、
+名前なしの単一プロファイルとしてそのまま読める。--host / --port はプロファイルの値より優先。
+
+ワンショット実行: --run '{"cmd": "ping"}' のようにコマンドを引数で渡すと、接続して
+実行し、切って終わる（複数指定可、常駐しない）。失敗したら理由を必ず文章で返す。
 Tailscale 越しは --tailscale（HTTPS_PROXY のポートを 3130 に変えた CONNECT プロキシを使う）。
 """
 from __future__ import annotations
@@ -113,6 +124,36 @@ def decode_snapshot(ffmpeg: str, h264: bytes, out_path: str) -> tuple[int, int]:
     return w, h
 
 
+def describe_error(e: BaseException) -> str:
+    """例外を、必ず中身のある文章にする（空のエラーで返さない）。
+
+    TimeoutError は str() が空、接続拒否も文脈なしでは原因が分からないので、
+    種類ごとに「何が起きたか」を言葉にする。
+    """
+    if isinstance(e, asyncio.TimeoutError):
+        return "時間切れです（返事が来ませんでした）"
+    if isinstance(e, ConnectionRefusedError):
+        return f"接続を断られました（{e.strerror or str(e) or 'ConnectionRefusedError'}）"
+    if isinstance(e, ConnectionError) and str(e):
+        return str(e)
+    if isinstance(e, RuntimeError) and str(e):
+        return str(e)
+    if isinstance(e, OSError):
+        text = e.strerror or str(e) or e.__class__.__name__
+        return f"通信できませんでした（{text}）"
+    name = e.__class__.__name__
+    text = str(e)
+    # websockets の切断は、コードと理由を拾うと原因が見える
+    code = getattr(e, "code", None)
+    reason = getattr(e, "reason", None)
+    if code is not None and "ConnectionClosed" in name:
+        return f"サーバーに切断されました（コード {code}" + (f"、理由: {reason}" if reason else "") + "）"
+    status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
+    if status is not None and "InvalidStatus" in name:
+        return f"サーバーに応答を断られました（HTTP {status}）"
+    return f"{name}: {text}" if text else f"{name}（詳細なし）"
+
+
 class DuoClient:
     def __init__(self, args, token: str) -> None:
         self.args = args
@@ -125,6 +166,7 @@ class DuoClient:
         self._waiters: dict[str, list[asyncio.Future]] = {}
         self.last_notice: str | None = None
         self.last_error: str | None = None
+        self.close_detail: str | None = None  # 切断の理由（コードやサーバーの最後のエラー）
         self._file_seq = 0
         # clip_pull で受け取り中のファイル: id → {"name", "size", "mime", "data": bytearray}
         self._pulls: dict[int, dict] = {}
@@ -140,10 +182,14 @@ class DuoClient:
             if not base:
                 raise RuntimeError("--tailscale には HTTPS_PROXY の設定が必要です")
             proxy = base.rsplit(":", 1)[0] + ":3130"
-        uri = f"ws://{self.args.host}:{self.args.port}/"
-        self.ws = await connect(
-            uri, proxy=proxy, max_size=1024 * 1024, open_timeout=180,
-        )
+        target = f"{self.args.host}:{self.args.port}"
+        uri = f"ws://{target}/"
+        try:
+            self.ws = await connect(
+                uri, proxy=proxy, max_size=1024 * 1024, open_timeout=30,
+            )
+        except Exception as e:
+            raise RuntimeError(f"{target} へ到達できませんでした: {describe_error(e)}") from e
         hello = {
             "t": "hello", "v": 1, "token": self.token,
             "fps": self.args.fps, "max_height": self.args.max_height,
@@ -153,9 +199,21 @@ class DuoClient:
             # サーバーは、前の接続が残っていても置き換えて、視聴に回さない
             "device": "agent-vm",
         }
-        await self.ws.send(json.dumps(hello))
+        try:
+            await self.ws.send(json.dumps(hello))
+        except Exception as e:
+            raise RuntimeError(f"hello を送れませんでした: {describe_error(e)}") from e
         self._recv_task = asyncio.create_task(self._receive_loop())
-        welcome = await self._wait_for("welcome", timeout=30)
+        try:
+            welcome = await self._wait_for("welcome", timeout=30)
+        except Exception as e:
+            detail = describe_error(e)
+            if isinstance(e, asyncio.TimeoutError):
+                detail = "welcome が 30 秒以内に来ませんでした（ready タイムアウト）"
+            extra = ""
+            if self.last_error and self.last_error not in detail:
+                extra = f"（サーバーの返事: {self.last_error}）"
+            raise RuntimeError(f"{target} は ready になりませんでした: {detail}{extra}") from e
         self.welcome = welcome
         self.role = welcome.get("role")
 
@@ -175,7 +233,27 @@ class DuoClient:
                     continue
                 self._handle_text(raw)
         except Exception:
-            pass  # 切れたことは、コマンド側の失敗として現れる
+            pass
+        finally:
+            # 切れたら、返事待ちの全員を待たせ続けず、理由つきで失敗させる
+            detail = ""
+            if self.ws is not None:
+                code = getattr(self.ws, "close_code", None)
+                reason = getattr(self.ws, "close_reason", None)
+                if code is not None:
+                    detail = f"コード {code}" + (f"、理由: {reason}" if reason else "")
+            if self.last_error:
+                detail = (detail + "／" if detail else "") + f"サーバーの返事: {self.last_error}"
+            self.close_detail = detail or None
+            self._fail_waiters()
+
+    def _fail_waiters(self) -> None:
+        exc = ConnectionError(f"サーバーとの接続が切れました（{self.close_detail or '理由は不明です'}）")
+        for waiters in self._waiters.values():
+            for fut in waiters:
+                if not fut.done():
+                    fut.set_exception(exc)
+        self._waiters.clear()
 
     def _handle_bytes(self, raw: bytes) -> None:
         if len(raw) < FRAME_HEADER.size:
@@ -499,30 +577,111 @@ def resolve_key(k) -> dict:
     raise RuntimeError(f"キーの指定が読めません: {k!r}")
 
 
-async def amain(args) -> int:
-    config: dict = {}
-    config_path = Path(args.config).expanduser()
+def config_profiles(config: dict) -> tuple[dict[str, dict], str | None]:
+    """設定を (プロファイル名→中身, 既定の名前) にする。旧形式は名前なしの単一プロファイル扱い。"""
+    profiles = config.get("profiles")
+    if isinstance(profiles, dict) and profiles:
+        return {str(k): (v or {}) for k, v in profiles.items()}, config.get("default")
+    flat = {k: config[k] for k in ("host", "port", "token") if k in config}
+    return {"default": flat}, "default"
+
+
+def resolve_target(args, config: dict) -> tuple[str, int, str | None, str]:
+    """(host, port, token, プロファイル名) を決める。決められなければ理由つきで RuntimeError。"""
+    profiles, default_name = config_profiles(config)
+    name = args.profile or default_name
+    if name is None:
+        if len(profiles) == 1:
+            name = next(iter(profiles))
+        else:
+            raise RuntimeError("接続先が決められません（--profile で選んでください: " + "、".join(profiles) + "）")
+    if name not in profiles:
+        raise RuntimeError(f"プロファイル '{name}' がありません（あるのは: {'、'.join(profiles)}）")
+    prof = profiles[name]
+    host = args.host or prof.get("host")
+    if not host:
+        raise RuntimeError(f"プロファイル '{name}' に host が設定されていません（設定ファイルで host を入れてください）")
+    port = args.port or int(prof.get("port") or 8765)
+    token = os.environ.get("DUO_TOKEN") or prof.get("token") or config.get("token")
+    return str(host), port, token, name
+
+
+def profile_summaries(config: dict) -> list[dict]:
+    profiles, default_name = config_profiles(config)
+    return [
+        {"name": n, "host": p.get("host"), "port": int(p.get("port") or 8765),
+         "default": n == default_name, "has_token": bool(p.get("token") or config.get("token"))}
+        for n, p in profiles.items()
+    ]
+
+
+async def run_oneshot(client: DuoClient, raw_cmds: list[str]) -> tuple[list[dict], bool]:
+    """--run のコマンド列を順に実行し、(返事の列, 全部成功か) を返す。"""
+    replies: list[dict] = []
+    all_ok = True
+    for raw in raw_cmds:
+        try:
+            cmd = json.loads(raw)
+        except ValueError:
+            replies.append({"ok": False, "error": f"--run の JSON が読めませんでした: {raw[:80]!r}"})
+            all_ok = False
+            continue
+        reply: dict = {"ok": True}
+        if "id" in cmd:
+            reply["id"] = cmd["id"]
+        try:
+            reply.update(await client.run_command(cmd))
+        except Exception as e:
+            reply = {"ok": False, "error": describe_error(e)}
+            if "id" in cmd:
+                reply["id"] = cmd["id"]
+            all_ok = False
+        replies.append(reply)
+    return replies, all_ok
+
+
+def load_config(path: str) -> dict:
+    config_path = Path(path).expanduser()
     if config_path.exists():
-        config = json.loads(config_path.read_text())
-    args.host = args.host or config.get("host") or "localhost"
-    args.port = args.port or int(config.get("port") or 8765)
-    token = os.environ.get("DUO_TOKEN") or config.get("token")
+        return json.loads(config_path.read_text())
+    return {}
+
+
+async def amain(args) -> int:
+    config = load_config(args.config)
+    try:
+        args.host, args.port, token, profile = resolve_target(args, config)
+    except Exception as e:
+        emit({"ready": False, "error": describe_error(e)})
+        return 2
     if not token:
-        emit({"ready": False, "error": "トークンがありません（設定ファイルか DUO_TOKEN で渡してください）"})
+        emit({"ready": False, "error": "トークンがありません（設定ファイルか DUO_TOKEN で渡してください）",
+              "profile": profile, "host": args.host, "port": args.port})
         return 2
 
     client = DuoClient(args, token)
     try:
         await client.connect()
     except Exception as e:
-        emit({"ready": False, "error": f"接続できませんでした: {e}"})
+        emit({"ready": False, "error": f"接続できませんでした: {describe_error(e)}",
+              "profile": profile, "host": args.host, "port": args.port})
         return 1
     emit({
-        "ready": True, "role": client.role,
+        "ready": True, "role": client.role, "profile": profile,
+        "host": args.host, "port": args.port,
         "w": client.welcome.get("w"), "h": client.welcome.get("h"),
         "codec": client.welcome.get("codec"),
         "demoted": args.role == "control" and client.role == "view",
     })
+
+    if args.run is not None:
+        try:
+            replies, all_ok = await run_oneshot(client, args.run)
+            for reply in replies:
+                emit(reply)
+        finally:
+            await client.close()
+        return 0 if all_ok else 3
 
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
@@ -561,7 +720,7 @@ async def amain(args) -> int:
             try:
                 reply.update(await client.run_command(cmd))
             except Exception as e:
-                reply = {"ok": False, "error": str(e)}
+                reply = {"ok": False, "error": describe_error(e)}
                 if "id" in cmd:
                     reply["id"] = cmd["id"]
             emit(reply)
@@ -573,6 +732,10 @@ async def amain(args) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="DuoRemote ヘッドレスクライアント")
     parser.add_argument("--config", default="~/.config/duo-client/config.json")
+    parser.add_argument("--profile", default=None, help="設定ファイルのプロファイル名（例: main-pc / ui-pc）")
+    parser.add_argument("--list-profiles", action="store_true", help="プロファイルの一覧を出して終わる（トークンは出さない）")
+    parser.add_argument("--run", action="append", default=None, metavar="JSON",
+                        help="ワンショット実行: 接続してこのコマンドを実行し、切って終わる（複数指定可）")
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--role", choices=("control", "view"), default="control")
@@ -582,6 +745,9 @@ def main() -> None:
     parser.add_argument("--proxy", default=None, help="HTTP CONNECT プロキシの URL")
     parser.add_argument("--tailscale", action="store_true", help="HTTPS_PROXY のポートを 3130 に変えて使う")
     args = parser.parse_args()
+    if args.list_profiles:
+        emit({"profiles": profile_summaries(load_config(args.config))})
+        raise SystemExit(0)
     raise SystemExit(asyncio.run(amain(args)))
 
 

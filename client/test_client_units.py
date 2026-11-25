@@ -10,7 +10,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from duo_client import DuoClient, FrameBuffer, resolve_key  # noqa: E402
+from duo_client import (  # noqa: E402
+    DuoClient,
+    FrameBuffer,
+    describe_error,
+    profile_summaries,
+    resolve_key,
+    resolve_target,
+    run_oneshot,
+)
 
 
 def make_client(wait_replies: dict | None = None) -> tuple[DuoClient, list[dict]]:
@@ -141,6 +149,86 @@ def test_send_file_frames(tmp_path):
     assert all(f[0] & 0x04 for f in frames)  # FLAG_FILE
     assert b"".join(f[5:] for f in frames) == b"hello" * 1000
     assert out == {"path": "C:/x/hello.txt", "size": 5000}
+
+
+def fake_args(**kw):
+    import types
+
+    base = {"profile": None, "host": None, "port": None}
+    base.update(kw)
+    return types.SimpleNamespace(**base)
+
+
+PROFILES_CONFIG = {
+    "profiles": {
+        "main-pc": {"host": "100.0.0.1", "port": 8765, "token": "tok-main"},
+        "ui-pc": {"port": 8765, "token": "tok-ui"},
+    },
+    "default": "main-pc",
+}
+
+
+def test_describe_error_never_empty():
+    assert "時間切れ" in describe_error(asyncio.TimeoutError())
+    assert "断られました" in describe_error(ConnectionRefusedError(111, "Connection refused"))
+    assert "x" in describe_error(RuntimeError("x"))
+    assert describe_error(RuntimeError(""))  # 空でも何か返る
+    assert describe_error(ValueError())  # 空でも何か返る
+
+
+def test_resolve_target_profiles():
+    host, port, token, name = resolve_target(fake_args(), PROFILES_CONFIG)
+    assert (host, port, token, name) == ("100.0.0.1", 8765, "tok-main", "main-pc")
+    # --host はプロファイルより優先
+    host, _, _, _ = resolve_target(fake_args(host="100.0.0.9"), PROFILES_CONFIG)
+    assert host == "100.0.0.9"
+    # 知らないプロファイルは、あるものを挙げて断る
+    with pytest.raises(RuntimeError, match="ありません"):
+        resolve_target(fake_args(profile="nope"), PROFILES_CONFIG)
+    # host 未設定のプロファイルは、理由が分かる形で断る
+    with pytest.raises(RuntimeError, match="host が設定されていません"):
+        resolve_target(fake_args(profile="ui-pc"), PROFILES_CONFIG)
+
+
+def test_resolve_target_flat_config_compat():
+    host, port, token, name = resolve_target(fake_args(), {"host": "h1", "port": 9000, "token": "t"})
+    assert (host, port, token, name) == ("h1", 9000, "t", "default")
+
+
+def test_profile_summaries_hide_token():
+    out = profile_summaries(PROFILES_CONFIG)
+    assert [p["name"] for p in out] == ["main-pc", "ui-pc"]
+    assert out[0]["default"] is True and out[0]["has_token"] is True
+    assert "tok-main" not in str(out) and "tok-ui" not in str(out)
+
+
+def test_fail_waiters_gives_reason():
+    client = DuoClient.__new__(DuoClient)
+    client._waiters = {}
+    client.close_detail = "コード 1008／サーバーの返事: トークンが違います"
+    client.last_error = None
+
+    async def scenario():
+        task = asyncio.create_task(client._wait_for("welcome", 30))
+        await asyncio.sleep(0.05)
+        client._fail_waiters()
+        return await task
+
+    with pytest.raises(ConnectionError, match="1008"):
+        asyncio.run(scenario())
+
+
+def test_run_oneshot_collects_replies_and_errors():
+    client, _sent = make_client({"pong": {"t": "pong", "n": 42}})
+    replies, all_ok = asyncio.run(run_oneshot(client, [
+        '{"cmd": "ping"}',
+        "not json",
+        '{"cmd": "bogus"}',
+    ]))
+    assert all_ok is False
+    assert replies[0]["ok"] is True and replies[0]["n"] == 42
+    assert replies[1]["ok"] is False and replies[1]["error"]
+    assert replies[2]["ok"] is False and replies[2]["error"]
 
 
 def test_pull_file_roundtrip(tmp_path):
