@@ -19,7 +19,7 @@ from websockets.exceptions import ConnectionClosed
 from . import files, gamepad, protocol, udp as udp_mod
 from .audio import ALLOWED_CHANNELS, ALLOWED_CODECS, ALLOWED_RATES, OPUS_RATE, AudioError
 from .capture import StreamError, output_size
-from .input_win import AudioMuteError, ClipboardError, PowerError, from_windows_newlines, to_windows_newlines
+from .input_win import AudioMuteError, ClipboardError, PowerError, from_windows_newlines, keyboard_layout, to_windows_newlines
 from .udp import UdpEndpoint, UdpPeer
 from .virtual_display import VirtualDisplayError, clamp_scale, monitor_of
 
@@ -1553,6 +1553,7 @@ def make_handler(
             welcome = {
                 "t": "welcome", "v": protocol.VERSION, "w": w, "h": h, "codec": session.settings.codec, "mode": "screen",
                 "virtual": bool(backend.virtual_available()), "pad": pad_ok and is_control, "role": session.role,
+                "kbd": keyboard_layout(),
             }
             if use_udp_offer:
                 session.peer = udp.new_peer()

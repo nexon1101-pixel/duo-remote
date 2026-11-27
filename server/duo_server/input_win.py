@@ -35,6 +35,23 @@ class ClipboardError(Exception):
     """PCのクリップボードを読み書きできなかった。"""
 
 
+def keyboard_layout() -> str:
+    """PC のキーボード配列（"jis" か "us"）。接続時の welcome の kbd で知らせる。
+
+    アプリの重ねキーボードはスキャンコードを送るので、出る文字は PC の配列で決まる。
+    表示を PC に合わせるため、今の入力言語が日本語なら jis、それ以外は us とする。
+    """
+    if sys.platform != "win32":
+        return "us"
+    try:
+        import ctypes
+
+        langid = ctypes.windll.user32.GetKeyboardLayout(0) & 0xFFFF
+    except Exception:
+        return "us"
+    return "jis" if (langid & 0x3FF) == 0x11 else "us"
+
+
 def to_windows_newlines(s: str) -> str:
     """改行を、Windowsのクリップボードの決まり（CRLF）にそろえる。"""
     return s.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
