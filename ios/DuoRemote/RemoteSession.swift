@@ -900,6 +900,10 @@ public final class RemoteSession: ObservableObject {
             virtualAvailable = json["virtual"] as? Bool ?? false
             padAvailable = json["pad"] as? Bool ?? false
             role = json["role"] as? String ?? "control"
+            // 重ねキーボードの表示を、つないだ PC のキーボード配列に合わせる
+            if let kbd = json["kbd"] as? String, let pcLayout = OverlayKeyboardLayout(rawValue: kbd) {
+                UserDefaults.standard.set(pcLayout.rawValue, forKey: OverlayKeyboard.layoutKey)
+            }
             let reconnected = state == .reconnecting
             welcomed = true
             lastGoodIndex = hostIndex

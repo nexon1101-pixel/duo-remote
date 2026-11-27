@@ -120,6 +120,7 @@ def test_mode_monitor_shows_whole_monitor_and_primary_is_like_screen():
     async def body(url):
         ws, welcome = await open_session(url)
         assert (welcome["w"], welcome["h"]) == (1920, 1080)
+        assert welcome["kbd"] in ("jis", "us")
 
         await send(ws, t="mode", mode="monitor", id=DISPLAY2)
         assert await recv_json(ws, "mode") == {"t": "mode", "mode": "monitor", "id": DISPLAY2, "name": "DISPLAY2"}

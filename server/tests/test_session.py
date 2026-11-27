@@ -9,7 +9,7 @@ from websockets.exceptions import ConnectionClosed
 from duo_server import protocol
 from duo_server import server as server_mod
 from duo_server.capture import StreamError
-from duo_server.input_win import NullInput
+from duo_server.input_win import NullInput, keyboard_layout
 from duo_server.server import Session, Settings, make_handler
 
 TOKEN = "test-token"
@@ -106,7 +106,7 @@ def test_welcome_video_and_input():
             welcome = json.loads(await ws.recv())
             assert welcome == {
                 "t": "welcome", "v": 1, "w": 960, "h": 540, "codec": "h264", "mode": "screen", "virtual": False, "pad": False,
-                "role": "control",
+                "role": "control", "kbd": keyboard_layout(),
             }
             key, ts, payload = await recv_frame(ws)
             assert key and payload.endswith(b"KEY")
