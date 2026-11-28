@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
+import sys
 from collections import deque
 from typing import AsyncIterator
 
@@ -224,6 +225,7 @@ class FfmpegStream:
                 *self._cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0,
             )
         except OSError as e:
             raise StreamError(
